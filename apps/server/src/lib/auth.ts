@@ -13,7 +13,7 @@ export interface AuthUser {
   permissions: Permission[];
 }
 
-const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+export const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export function loadUser(db: Db, userId: string): AuthUser | null {
   const u = db.get<{ id: string; username: string; display_name: string; is_active: number }>(

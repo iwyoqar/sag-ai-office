@@ -10,6 +10,7 @@ import { TaskPanel } from "./ui/TaskPanel";
 import { TaskDetail } from "./ui/TaskDetail";
 import { BrainPanel } from "./ui/BrainPanel";
 import { CalendarPanel } from "./ui/CalendarPanel";
+import { AccountDialog } from "./ui/AccountDialog";
 import { TopBar } from "./ui/TopBar";
 import { FloorRail } from "./ui/FloorRail";
 import { FloorPanel } from "./ui/FloorPanel";
@@ -54,6 +55,7 @@ export function App() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [brainOpen, setBrainOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
 
   useEffect(() => {
     if (!has3d || !host.current) {
@@ -168,6 +170,7 @@ export function App() {
         tasksOpen={tasksOpen}
         onBrain={ready ? () => setBrainOpen(true) : undefined}
         onCalendar={ready ? () => setCalendarOpen(true) : undefined}
+        onAccount={() => setAccountOpen(true)}
         system={ready ? system : null}
       />
 
@@ -202,6 +205,7 @@ export function App() {
       {ready && agentTip && view.mode === "floor" && !view.agentId && <AgentTip agentId={agentTip.id} x={agentTip.x} y={agentTip.y} />}
       {ready && tasksOpen && <TaskPanel onClose={() => setTasksOpen(false)} onOpen={setTaskId} system={system} />}
       {ready && brainOpen && <BrainPanel onClose={() => setBrainOpen(false)} />}
+      {accountOpen && auth === "authenticated" && <AccountDialog onClose={() => setAccountOpen(false)} />}
       {ready && calendarOpen && <CalendarPanel onClose={() => setCalendarOpen(false)} onOpenTask={setTaskId} />}
       {ready && taskId && <TaskDetail taskId={taskId} onClose={() => setTaskId(null)} onOpen={setTaskId} />}
       {ready && view.agentId && <AgentProfile agentId={view.agentId} onClose={() => dispatch({ type: "selectAgent", agentId: null })} />}

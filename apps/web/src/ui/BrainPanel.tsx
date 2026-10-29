@@ -3,10 +3,10 @@ import type { AgentDto, ConnectorDto } from "@sag/shared";
 import { api, ApiError } from "../api/client";
 import { useOffice } from "../api/office";
 
-type Tab = "company" | "instructions" | "knowledge" | "memory" | "approvals" | "agents" | "connectors";
+type Tab = "company" | "instructions" | "knowledge" | "memory" | "approvals" | "agents" | "connectors" | "users";
 const TABS: [Tab, string][] = [
   ["company", "Kompaniya"], ["instructions", "Ko'rsatmalar"], ["knowledge", "Bilimlar"], ["memory", "Xotira"],
-  ["approvals", "Tasdiqlar"], ["agents", "Agentlar"], ["connectors", "Connectorlar"],
+  ["approvals", "Tasdiqlar"], ["agents", "Agentlar"], ["connectors", "Connectorlar"], ["users", "Foydalanuvchilar"],
 ];
 
 interface Instruction { id: string; scope: string; scopeId: string | null; title: string; content: string; version: number; isActive: boolean; createdAt: string }
@@ -46,6 +46,8 @@ async function run(fn: () => Promise<unknown>, set: (m: { ok: boolean; text: str
 
 export function BrainPanel({ onClose, initialTab = "company" }: { onClose: () => void; initialTab?: Tab }) {
   const [tab, setTab] = useState<Tab>(initialTab);
+  const { can } = useOffice();
+  const tabs = TABS.filter(([k]) => k !== "users" || can("users:manage"));
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal brain" role="dialog" aria-label="The Brain" onClick={(e) => e.stopPropagation()}>
@@ -57,7 +59,7 @@ export function BrainPanel({ onClose, initialTab = "company" }: { onClose: () =>
           <button className="close" onClick={onClose} aria-label="Yopish">×</button>
         </div>
         <div className="brain-tabs" role="tablist">
-          {TABS.map(([k, l]) => (
+          {tabs.map(([k, l]) => (
             <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}</button>
           ))}
         </div>
@@ -69,6 +71,7 @@ export function BrainPanel({ onClose, initialTab = "company" }: { onClose: () =>
           {tab === "approvals" && <ApprovalsTab />}
           {tab === "agents" && <AgentsTab />}
           {tab === "connectors" && <ConnectorsTab />}
+          {tab === "users" && <UsersTab />}
         </div>
       </div>
     </div>
@@ -615,3 +618,68 @@ function TelegramCard({ info, onChange }: { info: TgInfo | null; onChange: () =>
   );
 }
 
+
+// ---------------------------------------------------------------- users & roles (admin)
+interface UserRow { id: string; username: string; displayName: string; roles: string[]; isActive: boolean; createdAt: string; lastLoginAt: string | null }
+const ROLE_LABEL: Record<string, string> = { admin: "Admin", director: "Direktor", hr: "HR", member: "Xodim", viewer: "Kuzatuvchi" };
+
+function UsersTab() {
+  const { user } = useOffice();
+  const { data, reload } = useLoad<{ users: UserRow[] }>("/api/users");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [f, setF] = useState({ username: "", displayName: "", password: "", role: "member" });
+  const roles = Object.keys(ROLE_LABEL);
+  const patch = (u: UserRow, body: Record<string, unknown>, ok: string) =>
+    void run(() => api.patch(`/api/users/${u.id}`, body), setMsg, ok).then(reload);
+  return (
+    <>
+      <p className="hint">
+        Rollar: <b>Admin</b> — hammasi; <b>Direktor</b> — vazifalar, tasdiqlar, The Brain; <b>HR</b> — agentlarni ishga olish/arxivlash;
+        <b> Xodim</b> — vazifa berish; <b>Kuzatuvchi</b> — faqat ko'rish.
+      </p>
+      <Msg m={msg} />
+      <form className="ins-card new" onSubmit={(e) => {
+        e.preventDefault();
+        void run(() => api.post("/api/users", { username: f.username.trim(), displayName: f.displayName.trim(), password: f.password, roles: [f.role] }),
+          setMsg, `${f.username} qo'shildi. Parolni unga xavfsiz yo'l bilan bering.`).then((ok) => ok && (setF({ username: "", displayName: "", password: "", role: "member" }), reload()));
+      }}>
+        <b>Yangi foydalanuvchi</b>
+        <div className="nt-row">
+          <input placeholder="Login (lotin, 3–32)" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} autoComplete="off" />
+          <input placeholder="Ism Familiya" value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value })} />
+        </div>
+        <div className="nt-row">
+          <input type="password" placeholder="Boshlang'ich parol (kamida 10 belgi)" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete="new-password" />
+          <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
+            {roles.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+          </select>
+        </div>
+        <div className="row-end"><button className="primary small" disabled={f.username.trim().length < 3 || f.password.length < 10}>Qo'shish</button></div>
+      </form>
+      <table className="runs">
+        <thead><tr><th>Foydalanuvchi</th><th>Rol</th><th>Holat</th><th>Oxirgi kirish</th><th /></tr></thead>
+        <tbody>
+          {(data?.users ?? []).map((u) => (
+            <tr key={u.id} className={u.isActive ? "" : "muted"}>
+              <td><b>{u.displayName}</b><div className="muted mono">{u.username}{u.id === user?.id ? " · siz" : ""}</div></td>
+              <td>
+                <select value={u.roles[0] ?? "member"} onChange={(e) => patch(u, { roles: [e.target.value] }, "Rol o'zgardi.")} aria-label="Rol">
+                  {roles.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                </select>
+              </td>
+              <td>{u.isActive ? "faol" : "o'chirilgan"}</td>
+              <td>{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" }) : "—"}</td>
+              <td className="agent-actions">
+                <button onClick={() => patch(u, { isActive: !u.isActive }, u.isActive ? "O'chirildi (sessiyalari tugatildi)." : "Faollashtirildi.")}>{u.isActive ? "O'chirish" : "Faollashtirish"}</button>
+                <button onClick={() => {
+                  const pw = window.prompt(`${u.username} uchun yangi parol (kamida 10 belgi):`);
+                  if (pw) void run(() => api.post(`/api/users/${u.id}/password`, { password: pw }), setMsg, "Parol yangilandi, eski sessiyalar tugatildi.");
+                }}>Parol</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}

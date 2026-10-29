@@ -2,9 +2,9 @@ import type { FloorDto } from "@sag/shared";
 import { useOffice } from "../api/office";
 import type { SystemStatus } from "../api/system";
 
-export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks, tasksOpen, system, onBrain, onCalendar }: {
+export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks, tasksOpen, system, onBrain, onCalendar, onAccount }: {
   floor?: FloorDto; building?: string; inOffice: boolean; onCampus?: () => void; onOffice?: () => void;
-  onTasks?: () => void; tasksOpen?: boolean; system?: SystemStatus | null; onBrain?: () => void; onCalendar?: () => void;
+  onTasks?: () => void; tasksOpen?: boolean; system?: SystemStatus | null; onBrain?: () => void; onCalendar?: () => void; onAccount?: () => void;
 }) {
   const { user, live, auth, logout } = useOffice();
   return (
@@ -52,7 +52,7 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
           >
             <i /> {live ? "Live" : "Qayta ulanmoqda…"}
           </span>
-          <span className="user" title={user?.roles.join(", ")}>{user?.displayName}</span>
+          <button className="user crumb" title={`${user?.roles.join(", ")} — hisob va parol`} onClick={onAccount}>{user?.displayName}</button>
           <button className="crumb" onClick={() => void logout()}>Chiqish</button>
         </div>
       )}

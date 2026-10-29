@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ADMIN_PW, addUser, client, loginCookie, makeApp } from "./helpers.js";
+import { ADMIN_PW, addUser, adminClient, client, loginCookie, makeApp } from "./helpers.js";
 
 describe("authentication", () => {
   it("rejects unauthenticated access to protected routes", async () => {
@@ -72,5 +72,45 @@ describe("authorization", () => {
     expect((await cb.patch(`/api/tasks/${t.id}`, { title: "hijack" })).status).toBe(403);
     expect((await ca.patch(`/api/tasks/${t.id}`, { title: "renamed" })).body.task.title).toBe("renamed");
     expect((await ca.post(`/api/tasks/${t.id}/cancel`)).body.task.status).toBe("CANCELLED");
+  });
+});
+
+describe("user management", () => {
+  it("admin creates users, changes roles, deactivates (sessions end), resets passwords", async () => {
+    const { app } = await makeApp();
+    const api = await adminClient(app);
+    expect((await api.post("/api/users", { username: "ab", password: "x", roles: ["member"] })).status).toBe(400);
+    expect((await api.post("/api/users", { username: "dilshod", password: "short", roles: ["member"] })).status).toBe(400);
+    const u = (await api.post("/api/users", { username: "Dilshod", displayName: "Dilshod", password: "Kuchli-Parol-2026", roles: ["member"] })).body.user;
+    expect(u).toMatchObject({ username: "dilshod", roles: ["member"], isActive: true });
+    expect((await api.post("/api/users", { username: "dilshod", password: "Kuchli-Parol-2026", roles: ["member"] })).status).toBe(409);
+
+    const dc = client(app, await loginCookie(app, "dilshod", "Kuchli-Parol-2026"));
+    expect((await dc.get("/api/users")).status).toBe(403);
+    expect((await api.patch(`/api/users/${u.id}`, { roles: ["director"] })).body.user.roles).toEqual(["director"]);
+    expect((await dc.get("/api/auth/me")).body.user.roles).toEqual(["director"]);
+    await api.patch(`/api/users/${u.id}`, { isActive: false });
+    expect((await dc.get("/api/auth/me")).status).toBe(401);
+    await api.patch(`/api/users/${u.id}`, { isActive: true });
+    await api.post(`/api/users/${u.id}/password`, { password: "Yangi-Parol-2026!" });
+    await expect(loginCookie(app, "dilshod", "Kuchli-Parol-2026")).rejects.toThrow();
+    expect(await loginCookie(app, "dilshod", "Yangi-Parol-2026!")).toContain("sag_session");
+  });
+
+  it("never leaves the system without an active admin", async () => {
+    const { app } = await makeApp();
+    const api = await adminClient(app);
+    const me = (await api.get("/api/auth/me")).body.user;
+    expect((await api.patch(`/api/users/${me.id}`, { isActive: false })).status).toBe(409);
+    expect((await api.patch(`/api/users/${me.id}`, { roles: ["member"] })).status).toBe(409);
+  });
+
+  it("users change their own password with the current one", async () => {
+    const { app } = await makeApp();
+    const api = await adminClient(app);
+    expect((await api.post("/api/auth/password", { current: "wrong", next: "Boshqa-Parol-2026" })).status).toBe(400);
+    expect((await api.post("/api/auth/password", { current: ADMIN_PW, next: "Boshqa-Parol-2026" })).status).toBe(200);
+    expect((await api.get("/api/auth/me")).status).toBe(200); // current session kept
+    expect(await loginCookie(app, "admin", "Boshqa-Parol-2026")).toContain("sag_session");
   });
 });
