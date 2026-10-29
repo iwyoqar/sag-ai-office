@@ -16,7 +16,9 @@ export interface Seat {
 export type PropKind =
   | "meetingTable" | "wallScreen" | "analyticsWall" | "credenza" | "sofaL" | "armchair" | "coffeeTable" | "rug"
   | "moodboard" | "shelf" | "kanban" | "highTable" | "stool" | "displayStand" | "coffeePoint" | "plant" | "plantTall"
-  | "glassWall" | "bench";
+  | "glassWall" | "bench"
+  // department signature pieces (Phase 3 floors)
+  | "serverRack" | "receptionDesk" | "brainCore" | "execDesk" | "whiteboard";
 
 export interface Prop {
   kind: PropKind;
@@ -33,6 +35,8 @@ export interface Prop {
 
 export interface Area {
   label: string;
+  /** department colour accent for the label */
+  color?: string;
   x: number;
   z: number;
 }
@@ -41,8 +45,10 @@ export interface FloorPlan {
   floorId: string;
   /** walkable interior (inside the facade walls) */
   bounds: Rect;
-  /** desks: one workstation per seat, indexed by agents.workstation */
+  /** desks: one workstation per seat; an agent takes the n-th seat of its department (agents.workstation = n) */
   workstations: Seat[];
+  /** department of each workstation (parallel to `workstations`) */
+  deskDept: string[];
   /** desk pods (for furniture): centre + number of desks per side */
   pods: { x: number; z: number; cols: number }[];
   meetingSeats: Seat[];
@@ -152,6 +158,7 @@ function marketingPlan(): FloorPlan {
     floorId: "5",
     bounds: { x0: -17.25, x1: 17.25, z0: -11.25, z1: 7.4 },
     workstations,
+    deskDept: workstations.map(() => "marketing"),
     pods,
     meetingSeats,
     props,
@@ -168,7 +175,120 @@ function marketingPlan(): FloorPlan {
 
 export const FLOOR_PLANS: Record<string, FloorPlan> = { "5": marketingPlan() };
 
-export const planFor = (floorId: string): FloorPlan | undefined => FLOOR_PLANS[floorId];
+const BOUNDS: Rect = { x0: -17.25, x1: 17.25, z0: -11.25, z1: 7.4 };
+const POD_PITCH = 2 * (DESK_W + 0.08) + 1.9; // pod width + aisle
+
+export interface PlanDept { id: string; name: string; color: string; weight: number }
+
+/**
+ * Generated plan for floors without a hand-made layout: departments side by side (by weight, like the overview),
+ * a row of desk pods per department, a shared meeting table, glass partitions between departments at the back,
+ * and each department's signature furniture against the back wall.
+ */
+export function zonePlan(floorId: string, deps: PlanDept[]): FloorPlan {
+  const total = deps.reduce((n, d) => n + d.weight, 0) || 1;
+  const inner = { x0: BOUNDS.x0 + 0.3, x1: BOUNDS.x1 - 0.3 };
+  let x = inner.x0;
+  const zones = deps.map((d) => {
+    const w = ((inner.x1 - inner.x0) * d.weight) / total;
+    const z = { dep: d, x0: x, x1: x + w };
+    x += w;
+    return z;
+  });
+  // meeting table goes to the widest zone's back half; the others get their signature props there
+  // …preferring a zone whose department has no centrepiece of its own (Brain core, director desk, racks, reception)
+  const widest = (zs: typeof zones) => zs.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a));
+  const plain = zones.filter((z) => !["brain", "director", "it", "reception"].includes(z.dep.id));
+  const meetZone = widest(plain.length ? plain : zones);
+  const pods: FloorPlan["pods"] = [];
+  const workstations: Seat[] = [];
+  const deskDept: string[] = [];
+  const props: Prop[] = [];
+  const areas: Area[] = [];
+  const meetingSeats: Seat[] = [];
+  const single = zones.length === 1;
+
+  zones.forEach((z, zi) => {
+    const w = z.x1 - z.x0;
+    const cx = (z.x0 + z.x1) / 2;
+    const n = Math.max(1, Math.floor((w - 1.2) / POD_PITCH));
+    // single-department floors get a second, rear row of pods
+    const rows = single && z.dep.id !== "reception" ? [-0.4, -6.0] : [-0.4];
+    for (const pz of rows) {
+      for (let i = 0; i < (pz === -0.4 ? n : Math.max(1, n - 2)); i++) {
+        const cnt = pz === -0.4 ? n : Math.max(1, n - 2);
+        const px = cx + (i - (cnt - 1) / 2) * POD_PITCH;
+        pods.push({ x: px, z: pz, cols: 2 });
+        for (const s of podSeats(px, pz, 2)) {
+          workstations.push(s);
+          deskDept.push(z.dep.id);
+        }
+      }
+    }
+    areas.push({ label: z.dep.name, color: z.dep.color, x: cx, z: 5.6 });
+    if (zi > 0) props.push({ kind: "glassWall", x: z.x0, z: -11.2, w: 7.2, rot: Math.PI / 2 });
+    props.push({ kind: "plant", x: z.x0 + 0.8, z: 3.4 });
+
+    const back = -10.6;
+    if (z === meetZone && !single) return; // meeting table takes this zone's back
+    switch (z.dep.id) {
+      case "it":
+        for (let k = 0; k < Math.min(8, Math.floor((w - 2) / 1.1)); k++) props.push({ kind: "serverRack", x: z.x0 + 1.6 + k * 1.1, z: back });
+        break;
+      case "reception":
+        props.push({ kind: "receptionDesk", x: cx, z: -7.6 });
+        props.push({ kind: "sofaL", x: cx + 7.5, z: -9.6 });
+        props.push({ kind: "coffeeTable", x: cx + 6.6, z: -7.7 });
+        props.push({ kind: "wallScreen", x: cx, z: -11.05 });
+        break;
+      case "brain":
+        props.push({ kind: "brainCore", x: cx, z: -8.2 });
+        props.push({ kind: "shelf", x: cx, z: -10.85, w: Math.min(5, w - 2) });
+        break;
+      case "director":
+        props.push({ kind: "execDesk", x: cx, z: -8.4 });
+        props.push({ kind: "credenza", x: cx, z: -10.85, w: Math.min(3.6, w - 2) });
+        break;
+      case "finance":
+        props.push({ kind: "analyticsWall", x: cx, z: -11.05 });
+        props.push({ kind: "credenza", x: cx, z: -10.75, w: Math.min(5, w - 2) });
+        break;
+      case "design":
+      case "home":
+        props.push({ kind: "moodboard", x: cx, z: -11.05, w: Math.min(4, w - 2) });
+        props.push({ kind: "highTable", x: cx, z: -8.0 });
+        props.push({ kind: "stool", x: cx - 1.1, z: -8.0 });
+        props.push({ kind: "stool", x: cx + 1.1, z: -8.0 });
+        break;
+      case "sales":
+        props.push({ kind: "displayStand", x: cx - 1.4, z: -9.8 });
+        props.push({ kind: "displayStand", x: cx + 1.4, z: -9.8 });
+        props.push({ kind: "whiteboard", x: cx, z: -11.0, w: Math.min(3, w - 2) });
+        break;
+      default: // procurement, hr, digital, …
+        props.push({ kind: "kanban", x: cx, z: -10.6, w: Math.min(3.2, w - 2) });
+        props.push({ kind: "whiteboard", x: cx + Math.min(3, w / 2 - 1.2), z: -11.0, w: 1.8 });
+    }
+    props.push({ kind: "plantTall", x: z.x1 - 0.8, z: -10.4 });
+  });
+
+  // shared meeting table (back half of the widest zone; on single-department floors, the east end)
+  const mt = single ? { x: 12.6, z: -8.4 } : { x: (meetZone.x0 + meetZone.x1) / 2, z: -8.4 };
+  props.push({ kind: "meetingTable", x: mt.x, z: mt.z }, { kind: "wallScreen", x: mt.x, z: -11.05 });
+  for (const sx of [-1.5, -0.5, 0.5, 1.5])
+    for (const side of [-1, 1]) {
+      const z = mt.z + side * 1.15;
+      meetingSeats.push({ x: mt.x + sx, z, face: side === -1 ? 0 : Math.PI, ax: mt.x + sx, az: z + side * 0.65 });
+    }
+  areas.push({ label: "Meeting", x: mt.x, z: -6.2 });
+  props.push({ kind: "coffeePoint", x: 16.6, z: 1.6, rot: -Math.PI / 2 });
+
+  return { floorId, bounds: BOUNDS, workstations, deskDept, pods, meetingSeats, props, areas, obstacles: [] };
+}
+
+export function planFor(floorId: string, deps?: PlanDept[]): FloorPlan | undefined {
+  return FLOOR_PLANS[floorId] ?? (deps?.length ? zonePlan(floorId, deps) : undefined);
+}
 
 /** Footprint rectangles of every solid prop (used for the navigation grid). */
 export function propFootprint(p: Prop): Rect[] {
@@ -180,6 +300,11 @@ export function propFootprint(p: Prop): Rect[] {
   };
   switch (p.kind) {
     case "meetingTable": return [box(4.2, 1.4)];
+    case "serverRack": return [box(0.9, 0.9)];
+    case "receptionDesk": return [box(5.4, 1.6)];
+    case "brainCore": return [box(2.4, 2.4)];
+    case "execDesk": return [box(2.4, 1.0)];
+    case "whiteboard": return [box(p.w ?? 2, 0.3)];
     case "wallScreen": case "analyticsWall": case "moodboard": case "rug": return [];
     case "credenza": return [box(p.w ?? 4, 0.5)];
     case "sofaL": return [box(4.0, 1.0), { x0: p.x + 1.0, x1: p.x + 2.0, z0: p.z, z1: p.z + 2.2 }];

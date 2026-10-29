@@ -6,7 +6,9 @@ import type { FloorDto } from "@sag/shared";
 import { agentsOfFloor, type Office } from "../api/office";
 import { ATTIC, FL, PLINTH, PODIUM, X0, X1, Z0, Z1, floorRange, outline } from "./buildingGeometry";
 import { CloudBank } from "./clouds";
-import { FloorInterior, interiorKey } from "./interior";
+import { FloorInterior, interiorKey, type Interior } from "./interior";
+import { OfficeFloor } from "./office/OfficeFloor";
+import { planFor } from "./office/plan";
 import { Tweens, ease, lerp } from "./tween";
 import { CampusScene, type CampusBuildingInfo } from "./campus/CampusScene";
 import { CAMPUS_BOUNDS } from "./campus/layout";
@@ -78,7 +80,7 @@ export class SceneController {
   private outerGround!: THREE.Mesh;
   private campus: CampusScene;
   private zones: FloorZone[] = [];
-  private interiors = new Map<string, FloorInterior>();
+  private interiors = new Map<string, Interior>();
   private clouds: CloudBank | null = null;
   private introPath: THREE.CatmullRomCurve3 | null = null;
 
@@ -98,6 +100,8 @@ export class SceneController {
   private loaded = false;
   private introStarted = false;
   private reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  /** realistic furnished floors; `?simple` in the URL falls back to the lightweight zone view */
+  private realistic = !new URLSearchParams(location.search).has("simple");
 
   constructor(private host: HTMLElement, private ev: SceneEvents) {
     // Log depth keeps ground layers (paving, asphalt, markings) stable from 20 m to 1.5 km away.
@@ -574,16 +578,21 @@ export class SceneController {
     return this.office?.floors.find((f) => f.id === id);
   }
 
-  private buildInterior(floor: FloorDto): FloorInterior {
+  private buildInterior(floor: FloorDto): Interior {
     const o = this.office!;
-    const it = new FloorInterior(floor, Object.values(o.departments), agentsOfFloor(o, floor.id));
+    const deps = Object.values(o.departments);
+    const agents = agentsOfFloor(o, floor.id);
+    const own = floor.departments.map((id) => o.departments[id]).filter((d) => !!d);
+    // Realistic office (furniture + walking people) when the floor has a plan; simple zones otherwise.
+    const plan = this.realistic ? planFor(floor.id, own.map((d) => ({ id: d.id, name: d.name, color: d.color, weight: d.weight }))) : undefined;
+    const it: Interior = plan ? new OfficeFloor(floor, plan, deps, agents) : new FloorInterior(floor, deps, agents);
     it.root.visible = false;
     this.scene.add(it.root);
     this.interiors.set(floor.id, it);
     return it;
   }
 
-  private interiorFor(floorId: string): FloorInterior {
+  private interiorFor(floorId: string): Interior {
     return this.interiors.get(floorId) ?? this.buildInterior(this.floorById(floorId)!);
   }
 

@@ -205,10 +205,44 @@ class Link {
   }
 }
 
+/** Concrete box around the basement (it has no façade of its own). */
+export function buildBasementShell(root: THREE.Object3D, y0: number) {
+  const h = -y0;
+  const w = X1 - X0, d = Z1 - Z0;
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(w + 1, 0.3, d + 1), M.concrete);
+  floor.position.set(0, y0 - 0.15, (Z0 + Z1) / 2);
+  floor.receiveShadow = true;
+  root.add(floor);
+  const walls: [number, number, number, number][] = [
+    [0, Z0 - 0.25, w + 1, 0.5], [0, Z1 + 0.25, w + 1, 0.5],
+    [X0 - 0.25, (Z0 + Z1) / 2, 0.5, d], [X1 + 0.25, (Z0 + Z1) / 2, 0.5, d],
+  ];
+  for (const [x, z, sx, sz] of walls) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(sx, h, sz), M.concrete);
+    m.position.set(x, y0 + h / 2, z);
+    m.receiveShadow = true;
+    root.add(m);
+  }
+}
+
 // ---- floor interior --------------------------------------------------------
 export interface ZoneInfo {
-  zone: Zone;
+  zone?: Zone;
   label: CSS2DObject;
+}
+
+/** What SceneController needs from a floor's interior (simple zones or the realistic office). */
+export interface Interior {
+  readonly root: THREE.Group;
+  readonly key: string;
+  readonly zones: ZoneInfo[];
+  readonly figures: { agentId: string; setHighlighted(on: boolean): void }[];
+  readonly pickables: THREE.Object3D[];
+  readonly baseY: number;
+  applyAgents(agents: AgentDto[]): void;
+  setLinks(pairs: [string, string][]): void;
+  update(t: number): void;
+  dispose(): void;
 }
 
 /** Signature of what an interior was built from; a change means rebuild, otherwise statuses update in place. */
@@ -220,7 +254,7 @@ export function interiorKey(floor: FloorDto, departments: DepartmentDto[], agent
   ].join("|");
 }
 
-export class FloorInterior {
+export class FloorInterior implements Interior {
   readonly root = new THREE.Group();
   readonly figures: AgentFigure[] = [];
   readonly zones: ZoneInfo[] = [];
@@ -237,7 +271,7 @@ export class FloorInterior {
     const fy = y0 + 0.02;
     this.root.name = `interior-${floor.id}`;
 
-    if (floor.level === -1) this.buildBasementShell(y0);
+    if (floor.level === -1) buildBasementShell(this.root, y0);
 
     // Slab following the facade outline.
     const shape = new THREE.Shape(outline(-0.08).map(([x, z]) => new THREE.Vector2(x, -z)));
@@ -319,25 +353,6 @@ export class FloorInterior {
       const link = new Link(p0, p1, STATUS_META.COMMUNICATING.color);
       this.links.push(link);
       this.root.add(link.root);
-    }
-  }
-
-  private buildBasementShell(y0: number) {
-    const h = -y0;
-    const w = X1 - X0, d = Z1 - Z0;
-    const floor = new THREE.Mesh(new THREE.BoxGeometry(w + 1, 0.3, d + 1), M.concrete);
-    floor.position.set(0, y0 - 0.15, (Z0 + Z1) / 2);
-    floor.receiveShadow = true;
-    this.root.add(floor);
-    const walls: [number, number, number, number][] = [
-      [0, Z0 - 0.25, w + 1, 0.5], [0, Z1 + 0.25, w + 1, 0.5],
-      [X0 - 0.25, (Z0 + Z1) / 2, 0.5, d], [X1 + 0.25, (Z0 + Z1) / 2, 0.5, d],
-    ];
-    for (const [x, z, sx, sz] of walls) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, h, sz), M.concrete);
-      m.position.set(x, y0 + h / 2, z);
-      m.receiveShadow = true;
-      this.root.add(m);
     }
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FLOOR_PLANS, planObstacles, propFootprint, podRect } from "../src/scene/office/plan";
+import { FLOOR_PLANS, planFor, planObstacles, propFootprint, podRect, type FloorPlan, type PlanDept } from "../src/scene/office/plan";
 import { buildNavGrid, findPath, isFree, lineOfSight, pathLength } from "../src/scene/office/nav";
 import { insidePolygon, outline } from "../src/scene/buildingGeometry";
 import { activityFor } from "../src/scene/office/behaviour";
@@ -84,5 +84,75 @@ describe("behaviour mapping (backend status → activity)", () => {
     expect(activityFor("IDLE", "ACTIVE")).toMatchObject({ place: "desk", pose: "sitRelax" });
     // paused overrides work: back at the desk, relaxed
     expect(activityFor("WORKING", "PAUSED")).toMatchObject({ place: "desk", pose: "sitRelax" });
+  });
+});
+
+// Same departments/weights as the server seed (apps/server/src/db/seedData.ts).
+const D = (id: string, weight = 1): PlanDept => ({ id, name: id, color: "#888888", weight });
+const FLOORS: Record<string, PlanDept[]> = {
+  B: [D("it")], "1": [D("reception")], "2": [D("sales", 1.1), D("design", 0.9)], "3": [D("procurement")],
+  "4": [D("director", 0.8), D("brain", 1.1), D("finance")], "6": [D("hr"), D("home", 0.9), D("digital")],
+};
+
+describe("generated floor plans (Phase 3: every floor)", () => {
+  for (const [floorId, deps] of Object.entries(FLOORS)) {
+    it(`floor ${floorId}: furniture inside, no overlaps, every seat reachable`, () => {
+      const p: FloorPlan = planFor(floorId, deps)!;
+      expect(p.deskDept).toHaveLength(p.workstations.length);
+      for (const d of deps) expect(p.deskDept.filter((x) => x === d.id).length, d.id).toBeGreaterThanOrEqual(4);
+      const solids = [...p.props.flatMap(propFootprint), ...p.pods.map(podRect)];
+      for (const r of solids)
+        for (const c of [[r.x0, r.z0], [r.x1, r.z0], [r.x0, r.z1], [r.x1, r.z1]] as [number, number][])
+          expect(insidePolygon(c, facade), `floor ${floorId} rect ${JSON.stringify(r)}`).toBe(true);
+      // seats never sit inside another solid
+      for (const s of [...p.workstations, ...p.meetingSeats])
+        for (const r of p.props.flatMap(propFootprint))
+          expect(s.x > r.x0 && s.x < r.x1 && s.z > r.z0 && s.z < r.z1, `seat ${s.x},${s.z} in ${JSON.stringify(r)}`).toBe(false);
+      const hit = (a: { x0: number; x1: number; z0: number; z1: number }, b: typeof a) => a.x0 < b.x1 && b.x0 < a.x1 && a.z0 < b.z1 && b.z0 < a.z1;
+      for (const pod of p.pods.map(podRect))
+        for (const r of p.props.flatMap(propFootprint)) expect(hit(pod, r), `pod ${JSON.stringify(pod)} × ${JSON.stringify(r)}`).toBe(false);
+      const g = buildNavGrid(p.bounds, planObstacles(p));
+      const seats = [...p.workstations, ...p.meetingSeats];
+      const hub = seats[0];
+      for (const s of seats) expect(findPath(g, [hub.ax, hub.az], [s.ax, s.az]), `floor ${floorId} → ${s.ax},${s.az}`).not.toBeNull();
+    });
+  }
+});
+
+import { ActorMotion, seatSpot } from "../src/scene/office/actor";
+
+describe("agent movement (stand up → walk → sit down)", () => {
+  it("walks from a desk to a meeting seat without crossing walls or furniture, then sits", () => {
+    const desk = plan.workstations[5];
+    const seat = plan.meetingSeats[3];
+    const m = new ActorMotion(seatSpot("d5", desk, true));
+    expect(m.seated).toBe(true);
+    m.goTo(seatSpot("m3", seat, true), grid);
+    expect(m.state).toBe("rising");
+    const states = new Set<string>();
+    let blocked = 0;
+    for (let i = 0; i < 2000 && !m.seated; i++) {
+      m.step(0.05);
+      states.add(m.state);
+      if (m.state === "walking" && !isFree(grid, m.x, m.z)) blocked++;
+    }
+    expect([...states]).toEqual(expect.arrayContaining(["rising", "walking", "sitting", "still"]));
+    expect(m.seated).toBe(true);
+    expect([m.x, m.z]).toEqual([seat.x, seat.z]);
+    expect(m.yaw).toBeCloseTo(seat.face);
+    // the start/end of a walk sit on inflated chair edges; the open-floor part must be free
+    expect(blocked).toBeLessThan(6);
+  });
+
+  it("re-targets mid-walk and stands (not sits) at the desk for waiting states", () => {
+    const desk = plan.workstations[0];
+    const m = new ActorMotion(seatSpot("d0", desk, true));
+    m.goTo(seatSpot("m0", plan.meetingSeats[0], true), grid);
+    for (let i = 0; i < 30; i++) m.step(0.05);
+    m.goTo(seatSpot("d0", desk, false), grid); // e.g. WAITING_APPROVAL arrives while walking
+    for (let i = 0; i < 2000 && m.state !== "still"; i++) m.step(0.05);
+    expect(m.state).toBe("still");
+    expect(m.seated).toBe(false);
+    expect(Math.hypot(m.x - desk.ax, m.z - desk.az)).toBeLessThan(0.01);
   });
 });

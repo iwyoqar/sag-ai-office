@@ -1,6 +1,6 @@
 # Realistik interyer — kechiktirilgan vazifalar (backlog)
 
-Holat: 2026-10-29 da to'xtatildi (foydalanuvchi qarori: avval loyiha funksional ishlashi, keyin interyer).
+Holat: 2026-10-29 — 1–5, 8–10-bandlar bajarildi (barcha qavatlar realistik). Qolgani: 6 (diorama), 7 (AO).
 Pilot qavat: **5 — Marketing**. Keyin qolgan qavatlarga (B, 1–4, 6) kengaytiriladi.
 
 ## Allaqachon tayyor (kodda bor, testlangan)
@@ -10,23 +10,20 @@ Pilot qavat: **5 — Marketing**. Keyin qolgan qavatlarga (B, 1–4, 6) kengayti
 - `apps/web/test/office.test.ts` — 8 test: stollar soni, mebel fasad ichida, har o'rindiqqa yo'l bor, barcha stollar va majlis o'rindiqlari bog'langan, yo'l shisha devorni eshikdan aylanib o'tadi, bino tashqarisiga yo'l yo'q, status xaritasi.
 - Backend: `agents.workstation` — har agentning doimiy stoli (seed, ishga olish, ko'chirish, arxivlashda to'g'ri).
 
-## Qilinadigan ishlar (tartib bilan)
-1. **Mebel to'plami** (`office/furniture.ts`, InstancedMesh):
-   - oq stol (yupqa metall oyoqlar), pod orasidagi to'siq paneli, monitor (ekran — status bo'yicha yorqinlik), klaviatura, sichqoncha, bloknot/krujka;
-   - ergonomik stul (o'rindiq, to'r suyanchiq, qo'ltiqlar, gaz-lift, 5 nurli taglik, g'ildiraklar);
-   - majlis stoli + 8 stul, devor TV, 3 ekranli analitika devori, kredenza;
-   - L-divan, kreslo, dumaloq kofe stoli, gilam, moodboard, kitob javoni;
-   - kanban doska (stikerlar), baland stol + stullar, displey stendlari, skameyka, kofe nuqtasi;
-   - o'simliklar: oq tuvak (Lathe) + barg klasterlari (instanced, rang farqi), baland "sansevieriya".
-2. **Arxitektura**: fasad konturi bo'yicha oq devorlar (qalinlik 0.25 m, kesim yuzasi oq), pol-shift shisha bo'limlar va oq ustunchalar, egri old shisha devor; kameraga qaragan old devorlar past (0.9 m) kesiladi; pol — och kulrang, yengil yaltiroq, plitka teksturasi; qalin plita (diorama "maketi").
-3. **Inson figuralari** (`office/character.ts`): protsedural skelet (son → bel → ko'krak → bo'yin → bosh; yelka/tirsak/qo'l; son/tizza/oyoq), ~1.75 m real proporsiya; teri, soch (qisqa/uzun), kiyim ranglari agent id xeshidan (barqaror). Pozalar: turish, yurish sikli, o'tirish, yozish, o'ylash, gaplashish, kutish, bloklangan, xato, tugatish; bo'g'imlar bo'yicha silliq aralashtirish.
-4. **Xatti-harakat kontrolleri**: status o'zgarganda — o'rnidan turish → A* yo'l bilan yurish (≈1.3 m/s, silliq burilish) → o'tirish; majlis o'rindig'ini band qilish; tugatgandan keyin stolga qaytish. Faqat backend holati harakatni belgilaydi; dekorativ nafas/qarash ruxsat.
-5. **Nomlar va indikatorlar**: boshi ustida kichik nom plashkasi + status nuqtasi; hover — ixcham profil; bosish — mavjud profil paneli; stolni bosish ham egasini tanlaydi.
-6. **Diorama ko'rinishi** (faqat realistik qavatlar uchun): qavat ochilganda yuqori va pastki clip tekisliklar shu qavatga yopiladi, tuman firuza rangga o'tadi, keyin GLB va kampus yashiriladi, fon — firuza (#13686b), plita ostida yumshoq soya; quyosh soyasi qavatga moslanadi.
-7. **AO**: GTAOPass faqat qavat ko'rinishida. Talab: `logarithmicDepthBuffer` ni o'chirib, kamera `near/far` ni masofaga qarab dinamik qilish (kampusdagi z-fighting uchun).
-8. **SceneController integratsiyasi**: `FloorInterior` va yangi `OfficeFloor` uchun umumiy interfeys (root, labels, pickables, update, applyAgents, highlight, key, dispose).
-9. **Tekshiruv**: brauzerda — sifat, masshtab, yurish (devor/mebel orqali o'tmaslik), 60 fps atrofida unumdorlik; skrinshotlar bilan hisobot.
-10. **Phase 3**: shu to'plamni B (IT), 1 (Reception), 2 (Sales + Design), 3 (Procurement), 4 (Director + Brain + Finance), 6 (HR + Home + Digital) qavatlariga — har biri o'z rejasi bilan.
+## Bajarildi (2026-10-29)
+1. **Mebel to'plami** — `office/furniture.ts`: stol podlari (monitor ekrani agent holati rangida), ergonomik stul, majlis stoli, devor TV, analitika devori, kredenza, L-divan, kreslo, kofe stoli, gilam, moodboard, javon, kanban, baland stol/stullar, displey stendlari, kofe nuqtasi, skameyka, o'simliklar (Lathe tuvak), shisha bo'limlar; Phase 3 uchun: server stoykalari (LED), resepshn peshtaxtasi, Brain yadrosi, direktor stoli, oq doska. Har buyum material bo'yicha bitta geometriyaga birlashtirilgan (qavatda ~350–520 draw call).
+2. **Arxitektura** — qalin plita (maket ko'rinishi), 60 sm plitkali pol, fasad bo'yicha past oq devor, orqada to'liq balandlikdagi devor (devorga osilgan ekranlar shu yuzada).
+3. **Inson figuralari** — `office/character.ts`: protsedural skelet (~1.8 m), teri/soch/kiyim agent id xeshidan; pozalar: turish, yurish sikli, o'tirish, yozish, o'ylash, gaplashish, kutish, bloklangan, xato, tugatish — bo'g'imlar bo'yicha silliq aralashtirish.
+4. **Harakat** — `office/actor.ts`: o'rnidan turish → A* bilan yurish (1.3 m/s) → o'tirish; majlis o'rindig'ini band qilish; yo'lda yangi holat kelsa qayta yo'naltirish. Testlar: devor/mebel orqali o'tmaydi.
+5. **Nomlar** — bosh ustida nom + status nuqtasi (o'tirganda pastroq), tanlanganda kattalashadi; odamni yoki uning monitorini bosish — profil.
+8. **Integratsiya** — umumiy `Interior` interfeysi; `OfficeFloor` reja bor qavatlar uchun, `?simple` URL parametri eski yengil ko'rinishga qaytaradi.
+9. **Tekshiruv** — brauzerda 5, 4, B qavatlar ko'rildi; holat o'zgarishida majlisga yurib borish va o'tirish tekshirildi.
+10. **Phase 3** — 5-qavat qo'lda chizilgan reja; qolgan qavatlar (B, 1, 2, 3, 4, 6) bo'limlar zonasidan avtomatik reja (`zonePlan`): har bo'limga stol podlari, umumiy majlis stoli, bo'limlar orasida shisha, bo'limga xos jihozlar. Har qavat uchun test: mebel ichkarida, ustma-ust tushmaydi, har o'rindiqqa yo'l bor.
+
+## Qolgan ishlar
+6. **Diorama ko'rinishi**: qavat ochilganda tuman/fon firuza (#13686b), GLB va kampus yashiriladi, plita ostida yumshoq soya.
+7. **AO**: GTAOPass faqat qavat ko'rinishida (`logarithmicDepthBuffer` ni o'chirib, kamera near/far ni dinamik qilish kerak).
+- Har qavat uchun qo'lda chizilgan (avtomatik emas) rejalar — xohishga ko'ra.
 
 ## Eslatmalar
 - Referens rasm (izometrik ofis) yuborilmagan edi; uslub matndagi tavsif bo'yicha.
