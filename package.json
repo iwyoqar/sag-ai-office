@@ -1,0 +1,15 @@
+{
+  "name": "sag-ai-office",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/web",
+    "server": "npm run dev -w apps/server",
+    "build": "npm run build -w apps/web",
+    "test": "npm test -w apps/web && npm test -w apps/server",
+    "typecheck": "npm run typecheck -w apps/server"
+  }
+}

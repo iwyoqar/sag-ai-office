@@ -1,0 +1,82 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Db } from "../src/db/db.js";
+import { seed } from "../src/db/seed.js";
+import { redact } from "../src/lib/audit.js";
+
+describe("database & migrations", () => {
+  it("applies migrations once and is idempotent", () => {
+    const db = new Db(":memory:");
+    expect(db.migrate()).toEqual(["001_init.sql", "002_agent_workstation.sql", "003_runtime.sql", "004_brain_telegram.sql"]);
+    expect(db.migrate()).toEqual([]);
+  });
+
+  it("seeds the organisation once", async () => {
+    const db = new Db(":memory:");
+    db.migrate();
+    const r = await seed(db);
+    expect(r.seeded).toBe(true);
+    expect(r.admin?.generated).toBe(true);
+    expect((await seed(db)).seeded).toBe(false);
+    const n = (t: string) => db.get<{ n: number }>(`SELECT COUNT(*) n FROM ${t}`)!.n;
+    expect(n("floors")).toBe(7);
+    expect(n("departments")).toBe(12);
+    expect(n("agents")).toBe(46);
+    expect(n("connectors")).toBe(19);
+    // honest initial state: nothing connected, every agent idle, no tasks
+    expect(db.get<{ n: number }>("SELECT COUNT(*) n FROM connectors WHERE status <> 'disconnected'")!.n).toBe(0);
+    expect(db.get<{ n: number }>("SELECT COUNT(*) n FROM agents WHERE status <> 'IDLE'")!.n).toBe(0);
+    expect(n("tasks")).toBe(0);
+  });
+
+  it("enforces foreign keys, checks and unique constraints", async () => {
+    const db = new Db(":memory:");
+    db.migrate();
+    await seed(db);
+    const t = new Date().toISOString();
+    expect(() =>
+      db.run("INSERT INTO agents (id, name, role, department_id, created_at, updated_at) VALUES ('x','x','x','nope',?,?)", t, t),
+    ).toThrow(/FOREIGN KEY/);
+    expect(() =>
+      db.run("INSERT INTO agents (id, name, role, department_id, status, created_at, updated_at) VALUES ('y','y','y','it','DANCING',?,?)", t, t),
+    ).toThrow(/CHECK/);
+    expect(() => db.run("INSERT INTO floors (id, level, title) VALUES ('Z', 1, 'dup level')")).toThrow(/UNIQUE/);
+    expect(() =>
+      db.run("INSERT INTO routine_runs (id, routine_id, scheduled_for, status, started_at) VALUES ('a','missing',?, 'running', ?)", t, t),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it("persists across reopen (server restart)", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sag-")), "t.db");
+    const a = new Db(path);
+    a.migrate();
+    await seed(a, { adminPassword: "x" });
+    a.close();
+    const b = new Db(path);
+    expect(b.migrate()).toEqual([]);
+    expect(b.get<{ n: number }>("SELECT COUNT(*) n FROM agents")!.n).toBe(46);
+    b.close();
+  });
+
+  it("transactions roll back on error", () => {
+    const db = new Db(":memory:");
+    db.migrate();
+    expect(() =>
+      db.tx(() => {
+        db.run("INSERT INTO roles (id) VALUES ('temp')");
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+    expect(db.get("SELECT id FROM roles WHERE id = 'temp'")).toBeUndefined();
+  });
+});
+
+describe("audit redaction", () => {
+  it("removes secret-looking fields at any depth", () => {
+    expect(redact({ password: "p", nested: { apiKey: "k", ok: 1 }, list: [{ token: "t" }] })).toEqual({
+      password: "[redacted]", nested: { apiKey: "[redacted]", ok: 1 }, list: [{ token: "[redacted]" }],
+    });
+  });
+});

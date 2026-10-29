@@ -1,0 +1,46 @@
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+// Load the repo-root .env if present (Node ≥ 21). Real secrets live only there / in the host env.
+const envFile = resolve(root, ".env");
+if (existsSync(envFile)) process.loadEnvFile(envFile);
+
+const int = (v: string | undefined, d: number) => (v && /^\d+$/.test(v) ? Number(v) : d);
+
+export const config = {
+  port: int(process.env.PORT, 4000),
+  host: process.env.HOST ?? "127.0.0.1",
+  databasePath: resolve(root, process.env.DATABASE_PATH ?? "data/sag.db"),
+  sessionTtlHours: int(process.env.SESSION_TTL_HOURS, 24 * 7),
+  cookieSecure: process.env.COOKIE_SECURE === "true",
+  adminPassword: process.env.ADMIN_PASSWORD || undefined,
+  logLevel: process.env.LOG_LEVEL ?? "info",
+  llm: {
+    /** gemini | mock (mock = test double, clearly labelled) */
+    provider: (process.env.LLM_PROVIDER ?? "gemini").toLowerCase(),
+    geminiApiKey: process.env.GEMINI_API_KEY || undefined,
+    geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+    /** spacing between requests; free tier allows roughly 10 requests per minute */
+    minIntervalMs: int(process.env.LLM_MIN_INTERVAL_MS, 6500),
+    /** USD per 1M tokens for the cost estimate; 0 on the free tier */
+    priceInputPerM: Number(process.env.LLM_PRICE_INPUT_PER_M ?? 0),
+    priceOutputPerM: Number(process.env.LLM_PRICE_OUTPUT_PER_M ?? 0),
+  },
+  telegram: {
+    token: process.env.TELEGRAM_BOT_TOKEN || undefined,
+    groupId: process.env.TELEGRAM_GROUP_ID || undefined,
+    adminUserIds: (process.env.TELEGRAM_ADMIN_USER_IDS ?? "").split(",").map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0),
+    enabled: process.env.TELEGRAM_ENABLED !== "false",
+  },
+  worker: {
+    enabled: process.env.WORKER_ENABLED !== "false",
+    concurrency: int(process.env.WORKER_CONCURRENCY, 2),
+    pollMs: int(process.env.WORKER_POLL_MS, 1500),
+    taskTimeoutMs: int(process.env.TASK_TIMEOUT_MS, 120_000),
+  },
+};
+
+export type Config = typeof config;

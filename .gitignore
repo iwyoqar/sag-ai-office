@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+apps/web/public/models/
+*.log
+data/
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+.vercel/
+.claude/settings.local.json
