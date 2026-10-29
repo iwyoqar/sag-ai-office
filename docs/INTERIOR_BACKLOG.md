@@ -1,6 +1,6 @@
 # Realistik interyer — kechiktirilgan vazifalar (backlog)
 
-Holat: 2026-10-29 — 1–5, 8–10-bandlar bajarildi (barcha qavatlar realistik). Qolgani: 6 (diorama), 7 (AO).
+Holat: 2026-10-30 — 1–10-bandlar bajarildi (7-band pishirilgan kontakt soyalar bilan).
 Pilot qavat: **5 — Marketing**. Keyin qolgan qavatlarga (B, 1–4, 6) kengaytiriladi.
 
 ## Allaqachon tayyor (kodda bor, testlangan)
@@ -25,10 +25,16 @@ Pilot qavat: **5 — Marketing**. Keyin qolgan qavatlarga (B, 1–4, 6) kengayti
 - Holat faqat haqiqiy ma'lumotdan: ish bajaryapti / tekshiryapti / bloklangan / bo'sh; 30 daqiqa faolliksiz — joyida emas (stol bo'sh).
 - Cheklovlar: majlis/kalendar ma'lumoti yo'q (majlis ko'rsatilmaydi); stol saqlanmaydi (bo'limdagi tartib bo'yicha); `?simple` ko'rinishida xodimlar yo'q.
 
+## Bajarildi (2026-10-30)
+6. **Diorama ko'rinishi** — realistik qavat ochilgach fon va tuman firuza (#13686b) rangga silliq o'tadi, so'ng GLB bino, kampus va yer yashiriladi; qavat plitasi ostida yumshoq soya (blob + quyosh soyasini ushlovchi tekislik). Qavat almashtirishda bino kesim animatsiyasi uchun qaytadi; orqaga/kampusga chiqishda hammasi tiklanadi.
+7. **AO** — GTAOPass o'rniga rejadan **pishirilgan kontakt soyalar**: mebel, stol podlari, stullar ostida va devor bo'ylab yumshoq qorayish (dumaloq buyumlarga dumaloq soya), plitadan tashqariga chiqmaydi. Sabab: renderer kampus uchun `logarithmicDepthBuffer` ishlatadi, chuqurlikka asoslangan post-processing uni o'qiy olmaydi; pishirilgan usul aniq va ish vaqtida bepul.
+- **Xodimlar stoli saqlanadi** (`users.desk`, migratsiya 008): bo'limdagi eng kichik bo'sh raqam; arxivlanganda bo'shaydi, boshqa bo'limga o'tganda yangisi beriladi. 3D'da xodimlar bo'lim stollarining oxiridan, agentlar boshidan o'tiradi — biri ishga olinsa, boshqasi joyidan siljimaydi.
+- **Kelish/ketish**: xodim "joyida emas" holatidan qaytsa lift oldidan stoliga yurib keladi; ketsa liftgacha yurib, yo'qoladi (xira yorlig'i bo'sh stolda qoladi).
+
 ## Qolgan ishlar
-6. **Diorama ko'rinishi**: qavat ochilganda tuman/fon firuza (#13686b), GLB va kampus yashiriladi, plita ostida yumshoq soya.
-7. **AO**: GTAOPass faqat qavat ko'rinishida (`logarithmicDepthBuffer` ni o'chirib, kamera near/far ni dinamik qilish kerak).
-- Har qavat uchun qo'lda chizilgan (avtomatik emas) rejalar — xohishga ko'ra.
+- 5-qavatdan boshqa qavatlar uchun qo'lda chizilgan rejalar (hozir avtomatik `zonePlan`) — ixtiyoriy.
+- `?simple` (yengil) ko'rinishda xodimlar ko'rsatilmaydi.
+- Xodimlar majlisga yurmaydi (kalendar/majlis ma'lumoti yo'q).
 
 ## Eslatmalar
 - Referens rasm (izometrik ofis) yuborilmagan edi; uslub matndagi tavsif bo'yicha.

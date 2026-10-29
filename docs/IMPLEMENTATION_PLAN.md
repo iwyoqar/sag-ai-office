@@ -12,7 +12,7 @@ Status legend: ✅ done & verified · 🟡 partial · ⬜ not started
 | 0 — Audit | code, GLB, stack, docs | ✅ | `PROJECT_AUDIT.md`, `ARCHITECTURE.md`, this file |
 | 1 — 3D prototype | intro, building, hover, floor select, camera, back, fallback | ✅ | [report](reports/2026-10-29-3d-prototype.md) |
 | 1b — Real-world campus | campus layout from photos/satellite, industrial buildings, roads, parking, vehicles, campus/building/office camera modes, labels, building panel | ✅ | [layout & assumptions](CAMPUS_LAYOUT.md) |
-| 2 — First realistic interior | one complete floor: architecture, furniture, glass, plants, light/AO, human characters, navigation, backend-driven behaviours | ✅ (AO + diorama backdrop open) | 5 — Marketing, hand-made plan; see [INTERIOR_BACKLOG.md](INTERIOR_BACKLOG.md) |
+| 2 — First realistic interior | one complete floor: architecture, furniture, glass, plants, light/AO, human characters, navigation, backend-driven behaviours | ✅ | 5 — Marketing, hand-made plan; see [INTERIOR_BACKLOG.md](INTERIOR_BACKLOG.md) |
 | 3 — All floor interiors | extend the validated kit to B, 1–4, 6 with department layouts | ✅ | generated per-floor plans (`zonePlan`) with department signature furniture; `?simple` keeps the old zone view |
 | 4 — Backend & agent runtime | DB, auth, agents, tasks, lifecycle, SSE, AI runner (Gemini; provider interface ready for Claude), usage, chat, task UI | ✅ | [backend](reports/2026-10-29-core-backend.md) · [runtime](reports/2026-10-29-agent-runtime.md) |
 | 5 — Orchestrator & collaboration | decomposition, DAG, parallel runs, messages, aggregation | ✅ | Director plans → subtasks → handoffs → final; approvals; task limits (tokens, cost, time, AI calls, subtasks) with UI; handoffs drawn as 3D arcs |
@@ -64,8 +64,7 @@ seeded in roster order, next free index on hire/transfer, freed on archive.
 ## Still open (outside Phase 9)
 - Gmail / Drive / Sheets / Calendar / Slack / Notion / CRM / ERP connectors: registry and UI exist; each needs the company's OAuth app or API credentials before it can be wired.
 - Company profile text ("Kompaniya haqida") and Telegram admin user IDs: waiting for the owner.
-- Interior polish: diorama backdrop and GTAO (see INTERIOR_BACKLOG.md).
-- People: personal Telegram notices, calendar/availability, persisted human desks (see the 2026-10-30 report).
+- People: personal Telegram notices, calendar/availability (see the 2026-10-30 report).
 
 ## Open items / risks
 - No reference image was attached to the prompt; the style follows the written description.

@@ -169,3 +169,40 @@ describe("human employees in the office (presence from real data)", () => {
     for (const s of ["working", "reviewing", "blocked", "available"] as const) expect(activityForPresence(s)?.place).toBe("desk");
   });
 });
+
+import { shadowRects } from "../src/scene/office/contactShadows";
+import { humanDesk } from "../src/scene/office/OfficeFloor";
+
+describe("phase 2–3 polish", () => {
+  const all = [plan, ...Object.entries(FLOORS).map(([id, deps]) => planFor(id, deps)!)];
+
+  it("people can walk from the lift lobby to every seat on every floor", () => {
+    for (const p of all) {
+      const g = buildNavGrid(p.bounds, planObstacles(p));
+      for (const s of [...p.workstations, ...p.meetingSeats])
+        expect(findPath(g, [p.entry.x, p.entry.z], [s.ax, s.az]), `floor ${p.floorId} → ${s.ax},${s.az}`).not.toBeNull();
+    }
+  });
+
+  it("contact shadows cover every desk, chair and solid prop, inside the floor", () => {
+    for (const p of all) {
+      const r = shadowRects(p);
+      const solids = p.props.filter((x) => x.kind !== "glassWall").flatMap(propFootprint).length;
+      expect(r.length).toBe(solids + p.pods.length + p.workstations.length + p.meetingSeats.length);
+      for (const x of r) {
+        expect(x.strength).toBeGreaterThan(0);
+        expect(x.strength).toBeLessThanOrEqual(0.6);
+        expect(insidePolygon([(x.x0 + x.x1) / 2, (x.z0 + x.z1) / 2], facade)).toBe(true);
+      }
+    }
+  });
+
+  it("people keep their desk (counted from the far end) and never take an agent's desk", () => {
+    const deskDept = ["m", "m", "m", "m", "x", "m"]; // department "m" owns desks 0,1,2,3,5
+    const agents = new Set([0, 1]);
+    expect(humanDesk(deskDept, "m", 0, agents)).toBe(5);
+    expect(humanDesk(deskDept, "m", 1, agents)).toBe(3);
+    expect(humanDesk(deskDept, "m", 3, new Set([0, 1, 5]))).toBe(3); // wanted desk 1 is an agent's, 5 is taken → next free from the end
+    expect(humanDesk(deskDept, "m", null, new Set([0, 1, 2, 3, 5]))).toBe(-1); // full
+  });
+});

@@ -185,6 +185,7 @@ export async function createEmployee(ctx: Ctx, u: AuthUser, i: EmployeeInput): P
       manager === id ? null : manager, i.startDate ?? null, i.capacityHoursWeek ?? 40, i.workStart ?? "09:00", i.workEnd ?? "18:00", i.timezone ?? "Asia/Tashkent",
     );
     for (const r of roles) ctx.db.run("INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)", id, r);
+    if (i.departmentId) ctx.db.run("UPDATE users SET desk = ? WHERE id = ?", nextDesk(ctx, i.departmentId, id), id);
     audit(ctx.db, actorOf(u), "employee.create", { type: "user", id }, { username, roles, departmentId: i.departmentId ?? null });
     ctx.bus.emit("employee.updated", { departmentId: i.departmentId ?? null }, { employeeId: id }, u.id);
   });
@@ -228,6 +229,9 @@ export function updateEmployee(ctx: Ctx, u: AuthUser, id: string, patch: Employe
       `UPDATE users SET ${keys.map((k) => `${cols[k]} = ?`).join(", ")} WHERE id = ?`,
       ...keys.map((k) => (vals[k] as string | number | null) ?? null), id,
     );
+    // moving to another department: a free desk there (the old one is released)
+    if (patch.departmentId !== undefined && patch.departmentId !== r.department_id)
+      ctx.db.run("UPDATE users SET desk = ? WHERE id = ?", patch.departmentId ? nextDesk(ctx, patch.departmentId, id) : null, id);
     audit(ctx.db, actorOf(u), keys.some((k) => ORG_FIELDS.has(k)) ? "employee.update_org" : "employee.update", { type: "user", id }, vals);
     ctx.bus.emit("employee.updated", { departmentId: (patch.departmentId ?? r.department_id) || null }, { employeeId: id }, u.id);
   });
@@ -246,7 +250,9 @@ export function setEmployeeStatus(ctx: Ctx, u: AuthUser, id: string, status: Emp
     if (!others) throw conflict("last_admin", "Kamida bitta faol administrator qolishi kerak");
   }
   ctx.db.tx(() => {
-    ctx.db.run("UPDATE users SET status = ?, is_active = ? WHERE id = ?", status, status === "active" ? 1 : 0, id);
+    ctx.db.run("UPDATE users SET status = ?, is_active = ?, desk = NULL WHERE id = ?", status, status === "active" ? 1 : 0, id);
+    // reactivated people get a free desk again; leavers free theirs
+    if (status === "active" && r.department_id) ctx.db.run("UPDATE users SET desk = ? WHERE id = ?", nextDesk(ctx, r.department_id, id), id);
     if (status !== "active") {
       ctx.db.run("DELETE FROM sessions WHERE user_id = ?", id);
       ctx.db.run("UPDATE departments SET head_user_id = NULL WHERE head_user_id = ?", id);
@@ -342,6 +348,10 @@ export function setDepartmentHead(ctx: Ctx, u: AuthUser, departmentId: string, u
     if (userId) {
       ctx.db.run("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, 'department_head')", userId);
       ctx.db.run("UPDATE users SET department_id = COALESCE(department_id, ?) WHERE id = ?", departmentId, userId);
+      if (!ctx.db.get("SELECT 1 FROM users WHERE id = ? AND desk IS NOT NULL", userId)) {
+        const dep = ctx.db.get<{ department_id: string }>("SELECT department_id FROM users WHERE id = ?", userId)!.department_id;
+        ctx.db.run("UPDATE users SET desk = ? WHERE id = ?", nextDesk(ctx, dep, userId), userId);
+      }
     }
     audit(ctx.db, actorOf(u), "department.head", { type: "department", id: departmentId }, { userId });
     ctx.bus.emit("employee.updated", { departmentId }, { departmentId }, u.id);
@@ -372,6 +382,18 @@ export function orgChart(ctx: Ctx, u: AuthUser) {
   };
 }
 
+/** Smallest desk number not used by an active colleague of the department. */
+export function nextDesk(ctx: Ctx, departmentId: string, exceptUserId = ""): number {
+  const used = new Set(
+    ctx.db.all<{ desk: number }>(
+      "SELECT desk FROM users WHERE department_id = ? AND status = 'active' AND desk IS NOT NULL AND id <> ?", departmentId, exceptUserId,
+    ).map((r) => r.desk),
+  );
+  let i = 0;
+  while (used.has(i)) i++;
+  return i;
+}
+
 const AWAY_MS = 30 * 60_000;
 
 /** What each active employee is doing, from real data only: tasks in progress, reviews waiting, blocks, activity. */
@@ -379,11 +401,12 @@ export function presence(ctx: Ctx): PresenceDto[] {
   const rows = ctx.db.all<UserRow>("SELECT * FROM users WHERE status = 'active' AND department_id IS NOT NULL ORDER BY created_at");
   const t = Date.now();
   return rows.map((r) => {
+    const desk = (r as UserRow & { desk: number | null }).desk ?? null;
     const st = (s: string) => !!ctx.db.get("SELECT 1 FROM tasks WHERE kind = 'human' AND assignee_user_id = ? AND status = ? LIMIT 1", r.id, s);
     const reviewing = !!ctx.db.get("SELECT 1 FROM tasks WHERE kind = 'human' AND reviewer_user_id = ? AND status = 'IN_REVIEW' LIMIT 1", r.id);
     const seen = r.last_activity_at ? t - Date.parse(r.last_activity_at) : Infinity;
     const state: PresenceState = seen > AWAY_MS ? "away" : st("IN_PROGRESS") ? "working" : reviewing ? "reviewing" : st("BLOCKED") ? "blocked" : "available";
-    return { id: r.id, displayName: r.display_name, jobTitle: r.job_title, departmentId: r.department_id!, floorId: card(ctx, r).floorId, state };
+    return { id: r.id, displayName: r.display_name, jobTitle: r.job_title, departmentId: r.department_id!, floorId: card(ctx, r).floorId, state, desk };
   });
 }
 

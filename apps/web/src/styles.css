@@ -33,6 +33,8 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .stage { position: absolute; inset: 0; }
 .stage canvas { display: block; touch-action: none; }
 .label-layer { position: absolute; inset: 0; pointer-events: none; }
+/* side/bottom panels sit above the 3D name plates (CSS2D labels must not show through them) */
+.panel { z-index: 10; }
 
 /* ---- top bar ---- */
 .topbar {

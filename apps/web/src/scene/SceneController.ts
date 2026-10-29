@@ -104,6 +104,13 @@ export class SceneController {
   private reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   /** realistic furnished floors; `?simple` in the URL falls back to the lightweight zone view */
   private realistic = !new URLSearchParams(location.search).has("simple");
+  /** Diorama (realistic floors): the open floor floats as a cut-away model on a teal surround; 0..1 while fading. */
+  private diorama = 0;
+  private dioramaTarget = 0;
+  private frameDt = 0;
+  private lastLoopT = 0;
+  private skyBackground: THREE.Texture | null = null;
+  private shadowCatcher!: THREE.Group;
 
   constructor(private host: HTMLElement, private ev: SceneEvents) {
     // Log depth keeps ground layers (paving, asphalt, markings) stable from 20 m to 1.5 km away.
@@ -157,6 +164,7 @@ export class SceneController {
     const bg = new THREE.CanvasTexture(c);
     bg.colorSpace = THREE.SRGBColorSpace;
     s.background = bg;
+    this.skyBackground = bg;
     s.fog = this.fog;
 
     // Sky environment: blue zenith, bright horizon, warm ground — gives the curtain glass its blue reflection.
@@ -210,6 +218,81 @@ export class SceneController {
     this.basementGround.receiveShadow = true;
     this.basementGround.visible = false;
     s.add(this.basementGround);
+
+    // Diorama ground: catches the floor's sun shadow + a soft contact blob, both tinted into the teal surround.
+    const blobTex = (() => {
+      const c2 = document.createElement("canvas");
+      c2.width = c2.height = 256;
+      const g2 = c2.getContext("2d")!;
+      const r = g2.createRadialGradient(128, 128, 20, 128, 128, 128);
+      r.addColorStop(0, "rgba(4,40,42,0.55)");
+      r.addColorStop(0.6, "rgba(4,40,42,0.22)");
+      r.addColorStop(1, "rgba(4,40,42,0)");
+      g2.fillStyle = r;
+      g2.fillRect(0, 0, 256, 256);
+      return new THREE.CanvasTexture(c2);
+    })();
+    const blob = new THREE.Mesh(new THREE.PlaneGeometry(58, 40), new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false, fog: false }));
+    blob.rotation.x = -Math.PI / 2;
+    blob.position.set(0, 0.01, (Z0 + Z1) / 2);
+    const catcher = new THREE.Mesh(new THREE.PlaneGeometry(140, 120), new THREE.ShadowMaterial({ color: 0x03262a, opacity: 0.28, depthWrite: false }));
+    catcher.rotation.x = -Math.PI / 2;
+    catcher.receiveShadow = true;
+    this.shadowCatcher = new THREE.Group();
+    this.shadowCatcher.add(blob, catcher);
+    this.shadowCatcher.visible = false;
+    s.add(this.shadowCatcher);
+  }
+
+  /**
+   * Fade the open realistic floor into a diorama: the surround turns teal, then the GLB building, campus and ground
+   * are hidden so only the floor's slab and interior remain, floating over a soft shadow. `on = false` restores.
+   */
+  private setDiorama(on: boolean, level?: number) {
+    this.dioramaTarget = on ? 1 : 0;
+    if (on && level !== undefined) {
+      const { y0 } = floorRange(level);
+      this.shadowCatcher.position.y = y0 - 2.2;
+    }
+    if (!on) this.applyDioramaVisibility(false);
+    if (this.reducedMotion) this.diorama = this.dioramaTarget;
+    this.invalidate();
+  }
+
+  private applyDioramaVisibility(hidden: boolean) {
+    if (this.building) this.building.visible = !hidden;
+    this.campus.root.visible = !hidden;
+    this.shadowCatcher.visible = hidden;
+    if (hidden) {
+      this.outerGround.visible = false;
+      this.basementGround.visible = false;
+      if (this.ghost) this.ghost.visible = false;
+    } else {
+      const basement = this.currentFloor ? this.floorById(this.currentFloor)?.level === -1 : false;
+      this.setBasementMode(!!basement && this.mode === "floor");
+      if (this.ghost) this.ghost.visible = this.mode === "floor";
+    }
+  }
+
+  private static readonly HORIZON = new THREE.Color(0xd9e7f5);
+  private static readonly TEAL = new THREE.Color(0x13686b);
+
+  /** Per frame: blend fog/background toward teal; once fully teal, hide everything but the floor. */
+  private stepDiorama(dt: number): boolean {
+    if (this.diorama === this.dioramaTarget && !(this.diorama > 0 && this.diorama < 1)) return false;
+    const step = dt / 0.6;
+    this.diorama = this.dioramaTarget > this.diorama ? Math.min(1, this.diorama + step) : Math.max(0, this.diorama - step);
+    const k = this.diorama;
+    if (k <= 0) {
+      this.scene.background = this.skyBackground;
+      this.fog.color.set(0xdbe7f3);
+      return true;
+    }
+    const c = SceneController.HORIZON.clone().lerp(SceneController.TEAL, k);
+    this.scene.background = c;
+    this.fog.color.copy(c);
+    if (k >= 1 && this.dioramaTarget === 1) this.applyDioramaVisibility(true);
+    return true;
   }
 
   /** Fit the sun's shadow frustum to what is on screen: the whole campus, or the office up close. */
@@ -510,6 +593,14 @@ export class SceneController {
   // ---- campus / building / office modes ------------------------------------
   private leaveFloor() {
     if (this.mode !== "floor" || !this.currentFloor) return;
+    this.dioramaTarget = 0;
+    this.diorama = 0;
+    this.scene.background = this.skyBackground;
+    this.fog.color.set(0xdbe7f3);
+    if (this.building) this.building.visible = true;
+    this.campus.root.visible = true;
+    this.shadowCatcher.visible = false;
+    this.outerGround.visible = true;
     const interior = this.interiors.get(this.currentFloor);
     if (interior) {
       interior.root.visible = false;
@@ -674,16 +765,30 @@ export class SceneController {
     const from = prev ? this.clip.constant : ATTIC + 12;
     const cam = this.floorCamera(floor.level);
     this.applyLimits("floor", floor.level === -1);
+    const realistic = interior instanceof OfficeFloor;
+    // switching floors inside the diorama: bring the building back for the clip transition
+    if (this.diorama > 0) {
+      this.diorama = 0;
+      this.dioramaTarget = 0;
+      this.scene.background = this.skyBackground;
+      this.fog.color.set(0xdbe7f3);
+      this.applyDioramaVisibility(false);
+    }
     await Promise.all([
       this.tweens.run(this.reducedMotion ? 0 : 900, (k) => this.setClip(lerp(from, cut, k)), ease.outCubic),
       this.flyTo(cam.pos, cam.target, 1200),
     ]);
+    if (this.mode === "floor" && this.currentFloor === floorId && realistic) this.setDiorama(true, floor.level);
   }
 
   async closeFloor() {
     if (this.mode !== "floor" || !this.currentFloor) return;
     const interior = this.interiors.get(this.currentFloor)!;
     for (const z of interior.zones) z.label.visible = false;
+    this.setDiorama(false);
+    this.diorama = 0;
+    this.scene.background = this.skyBackground;
+    this.fog.color.set(0xdbe7f3);
     this.mode = "overview";
     this.currentFloor = null;
     this.setAgentHighlight(null);
@@ -817,6 +922,8 @@ export class SceneController {
     this.raf = requestAnimationFrame(this.loop);
     const now = performance.now();
     const t = this.clock.getElapsedTime();
+    this.frameDt = Math.min(0.1, Math.max(0, t - this.lastLoopT));
+    this.lastLoopT = t;
     if (this.pointerDirty && !this.tweens.active) {
       this.pointerDirty = false;
       this.pick();
@@ -843,14 +950,16 @@ export class SceneController {
       this.interiors.get(this.currentFloor)?.update(t);
       animating = true;
     }
+    if (this.stepDiorama(this.frameDt)) animating = true;
     if (this.controls.enabled) this.controls.update();
     if (animating) this.needsRender = Math.max(this.needsRender, 1);
     if (this.needsRender > 0) {
       this.needsRender--;
       // Haze scales with viewing distance: clear up close, soft over the campus horizon.
       const dist = this.camera.position.distanceTo(this.controls.target);
-      this.fog.near = dist * 1.3 + 80;
-      this.fog.far = dist * 5 + 900;
+      // in the diorama the haze only softens the far side of the floor, never the room itself
+      this.fog.near = this.diorama >= 1 ? dist * 1.6 : dist * 1.3 + 80;
+      this.fog.far = this.diorama >= 1 ? dist * 4 : dist * 5 + 900;
       this.campus.updateLabelDetail(dist);
       this.renderer.render(this.scene, this.camera);
       this.labels.render(this.scene, this.camera);

@@ -256,7 +256,7 @@ export function interiorKey(
     departments.map((d) => `${d.id}:${d.weight}:${d.color}`).join(","),
     agents.map((a) => `${a.id}@${a.departmentId}`).sort().join(","),
     // a hire, transfer or departure of a person rebuilds the floor (their desk changes)
-    people.map((p) => `${p.id}@${p.departmentId}`).sort().join(","),
+    people.map((p) => `${p.id}@${p.departmentId}#${(p as { desk?: number | null }).desk ?? ""}`).sort().join(","),
   ].join("|");
 }
 

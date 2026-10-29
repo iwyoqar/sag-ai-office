@@ -394,3 +394,22 @@ describe("workload & notifications", () => {
 });
 
 export type { App };
+
+describe("people: stable desks for the 3D office", () => {
+  it("hands out the smallest free desk per department, frees it on archive, re-seats on transfer", async () => {
+    const c = await company();
+    const desk = (id: string) => c.db.get<{ desk: number | null }>("SELECT desk FROM users WHERE id = ?", id)!.desk;
+    const a = await c.mk("aa1x", "A", ["employee"], "marketing");
+    const b = await c.mk("bb1x", "B", ["employee"], "marketing");
+    expect([desk(c.ids.mHead), desk(a), desk(b)].sort()).toEqual([0, 1, 2]);
+    await c.admin.post(`/api/employees/${a}/status`, { status: "archived" });
+    expect(desk(a)).toBeNull();
+    const d = await c.mk("dd1x", "D", ["employee"], "marketing");
+    expect(desk(d)).toBe(desk(c.ids.mHead) === 1 ? 0 : 1); // takes the freed number
+    await c.admin.patch(`/api/employees/${b}`, { departmentId: "procurement" });
+    expect(desk(b)).toBe(1); // procurement head holds 0
+    const pres = (await c.admin.get("/api/employees/presence")).body.presence as { id: string; desk: number | null }[];
+    expect(pres.find((p) => p.id === b)?.desk).toBe(1);
+    expect(pres.some((p) => p.id === a)).toBe(false);
+  });
+});

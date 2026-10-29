@@ -11,6 +11,7 @@ import { ActorMotion, seatSpot, type Spot } from "./actor";
 import { activityFor, activityForPresence, isSeated, type Activity } from "./behaviour";
 import { Character } from "./character";
 import { buildProp, chairInstance, deskPod, MAT } from "./furniture";
+import { paintContactShadows } from "./contactShadows";
 import { buildNavGrid, type NavGrid } from "./nav";
 import { planObstacles, type FloorPlan } from "./plan";
 
@@ -61,6 +62,14 @@ function ringMat(s: AgentStatus) {
   return m;
 }
 
+/** Desk for a person: `deskNo` from the end of the department's desks, or the last free one. -1 = none left. */
+export function humanDesk(deskDept: string[], dep: string, deskNo: number | null, taken: Set<number>): number {
+  const desks = deskDept.flatMap((d, i) => (d === dep ? [i] : [])).reverse();
+  const want = deskNo != null ? desks[deskNo] : undefined;
+  if (want !== undefined && !taken.has(want)) return want;
+  return desks.find((d) => !taken.has(d)) ?? -1;
+}
+
 /** Pick id of a human employee in the 3D scene (agents use their plain id). */
 export const employeePickId = (id: string) => `emp:${id}`;
 
@@ -74,6 +83,8 @@ class Person {
   meetingSeat = -1;
   /** human employees only */
   presence: PresenceDto["state"] | null = null;
+  /** walking out to the lift lobby; hidden on arrival */
+  leaving = false;
 
   /** `agentId` is the pick id: the agent id, or `emp:<userId>` for a human employee. */
   constructor(
@@ -100,6 +111,11 @@ class Person {
     this.tag.position.y = 1.6;
     this.char.root.add(this.tag);
     if (!human) this.setStatus(who.status ?? "IDLE");
+  }
+
+  setVisible(on: boolean) {
+    for (const m of this.char.meshes) m.visible = on;
+    this.ring.visible = on;
   }
 
   setPresence(state: PresenceDto["state"]) {
@@ -190,9 +206,10 @@ export class OfficeFloor implements Interior {
         this.paintScreen(desk, p.status);
       });
     }
-    // Human employees take the department's free desks (in hiring order), after the agents' persisted desks.
+    // Human employees: persisted desk number counted from the far end of the department's desks (agents fill
+    // from the front), so hires on either side never move anyone; a clash falls back to the nearest free desk.
     for (const h of people) {
-      const desk = plan.deskDept.findIndex((d, i) => d === h.departmentId && !takenDesks.has(i));
+      const desk = humanDesk(plan.deskDept, h.departmentId, h.desk, takenDesks);
       if (desk < 0) continue; // no free desk on the plan: listed in the directory, not drawn
       takenDesks.add(desk);
       const act: Activity = activityForPresence(h.state) ?? { place: "desk", pose: "sitRelax" };
@@ -231,6 +248,19 @@ export class OfficeFloor implements Interior {
     const pos = top.geometry.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < uv.count; i++) uv.setXY(i, pos.getX(i), pos.getY(i));
     this.root.add(slab, top);
+
+    // baked contact shadows under furniture and along the walls (see contactShadows.ts)
+    const { canvas, bounds } = paintContactShadows(this.plan);
+    const aoTex = new THREE.CanvasTexture(canvas);
+    aoTex.colorSpace = THREE.SRGBColorSpace;
+    const ao = new THREE.Mesh(
+      new THREE.PlaneGeometry(bounds.x1 - bounds.x0, bounds.z1 - bounds.z0),
+      new THREE.MeshBasicMaterial({ map: aoTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, toneMapped: false }),
+    );
+    ao.rotation.x = -Math.PI / 2;
+    ao.position.set((bounds.x0 + bounds.x1) / 2, fy + 0.006, (bounds.z0 + bounds.z1) / 2);
+    ao.renderOrder = 1;
+    this.root.add(ao);
 
     // white perimeter wall: low toward the camera, full height along the back
     const ring = new THREE.Shape(outline(0).map(([x, z]) => new THREE.Vector2(x, -z)));
@@ -318,16 +348,38 @@ export class OfficeFloor implements Interior {
     this.screenMats[p.desk]?.color.setHex(p.presence === "working" ? SCREEN.WORKING : p.presence === "away" ? 0x111827 : SCREEN.IDLE);
   }
 
-  /** Presence changes of human employees: they stay at their desk; only pose and visibility follow the data. */
+  private entrySpot(): Spot {
+    const e = this.plan.entry;
+    return { key: "entry", x: e.x, z: e.z, ax: e.x, az: e.z, yaw: Math.PI, sit: false };
+  }
+
+  /**
+   * Presence changes of human employees. Coming back (away → present) they walk in from the lift lobby to their
+   * desk; going away they walk out and disappear. Otherwise they stay at the desk and only the pose changes.
+   */
   applyPeople(people: PresenceDto[]) {
     const byId = new Map(people.map((h) => [employeePickId(h.id), h]));
     for (const p of this.figures) {
       if (!p.human) continue;
       const h = byId.get(p.agentId);
       if (!h || h.state === p.presence) continue;
+      const was = p.presence;
       p.setPresence(h.state);
-      p.activity = activityForPresence(h.state) ?? p.activity;
       this.paintHumanScreen(p);
+      if (h.state === "away") {
+        // keep the figure visible while it walks out
+        p.setVisible(true);
+        p.leaving = true;
+        p.motion.goTo(this.entrySpot(), this.grid);
+        continue;
+      }
+      p.activity = activityForPresence(h.state) ?? p.activity;
+      if (was === "away") {
+        p.leaving = false;
+        p.motion = new ActorMotion(this.entrySpot());
+        p.setVisible(true);
+        p.motion.goTo(this.spotFor(p.desk, p.activity, -1), this.grid);
+      }
     }
   }
 
@@ -393,6 +445,12 @@ export class OfficeFloor implements Interior {
     this.lastT = t;
     for (const p of this.figures) {
       p.motion.step(dt);
+      if (p.leaving && p.motion.state === "still" && p.motion.spot.key === "entry") {
+        p.leaving = false;
+        p.setVisible(false);
+        // the dimmed name plate goes back to the (now empty) desk, where clicking still opens the profile
+        p.motion = new ActorMotion(this.spotFor(p.desk, p.activity, -1));
+      }
       this.place(p, t);
       p.char.update(dt, t);
     }

@@ -56,7 +56,12 @@ export interface FloorPlan {
   areas: Area[];
   /** extra solid obstacles not covered by props (rects already include clearance) */
   obstacles: Rect[];
+  /** where people enter/leave the floor (by the front lift lobby) */
+  entry: { x: number; z: number };
 }
+
+/** Lift lobby at the front of every floor (same core position in the building). */
+export const FLOOR_ENTRY = { x: -5, z: 6 };
 
 const DESK_W = 1.5;
 const DESK_D = 0.75;
@@ -170,6 +175,7 @@ function marketingPlan(): FloorPlan {
       { label: "Campaign displays", x: 1.8, z: 6.6 },
     ],
     obstacles: [],
+    entry: FLOOR_ENTRY,
   };
 }
 
@@ -283,7 +289,7 @@ export function zonePlan(floorId: string, deps: PlanDept[]): FloorPlan {
   areas.push({ label: "Meeting", x: mt.x, z: -6.2 });
   props.push({ kind: "coffeePoint", x: 16.6, z: 1.6, rot: -Math.PI / 2 });
 
-  return { floorId, bounds: BOUNDS, workstations, deskDept, pods, meetingSeats, props, areas, obstacles: [] };
+  return { floorId, bounds: BOUNDS, workstations, deskDept, pods, meetingSeats, props, areas, obstacles: [], entry: FLOOR_ENTRY };
 }
 
 export function planFor(floorId: string, deps?: PlanDept[]): FloorPlan | undefined {
