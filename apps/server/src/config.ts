@@ -24,6 +24,8 @@ export const config = {
     provider: (process.env.LLM_PROVIDER ?? "gemini").toLowerCase(),
     geminiApiKey: process.env.GEMINI_API_KEY || undefined,
     geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+    /** "" disables semantic search (full-text search keeps working) */
+    embeddingModel: process.env.EMBEDDING_MODEL ?? "gemini-embedding-001",
     /** spacing between requests; free tier allows roughly 10 requests per minute */
     minIntervalMs: int(process.env.LLM_MIN_INTERVAL_MS, 6500),
     /** USD per 1M tokens for the cost estimate; 0 on the free tier */

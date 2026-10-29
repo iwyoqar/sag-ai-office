@@ -143,15 +143,24 @@ export function searchKnowledge(ctx: Ctx, text: string, opts: { departmentId?: s
   }
 }
 
-export function knowledgeStatus({ db }: Ctx) {
+export function knowledgeStatus({ db }: Ctx, embeddingModel?: string | null, lastError?: string | null) {
   const n = db.get<{ docs: number; chunks: number }>(
     "SELECT COUNT(*) docs, (SELECT COUNT(*) FROM knowledge_fts) chunks FROM knowledge_documents WHERE is_active = 1",
   )!;
+  if (!embeddingModel)
+    return {
+      documents: n.docs, chunks: n.chunks, search: "fulltext" as const,
+      semantic: { available: false, reason: "Embedding modeli sozlanmagan — matnli (BM25) qidiruv ishlaydi" },
+    };
+  const cov = db.get<{ embedded: number }>(
+    `SELECT COUNT(e.chunk_id) embedded FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id AND d.is_active = 1
+     JOIN knowledge_embeddings e ON e.chunk_id = c.id AND e.model = ?`, embeddingModel,
+  )!;
   return {
-    documents: n.docs,
-    chunks: n.chunks,
-    search: "fulltext" as const,
-    // Honest status: no embedding provider is wired yet, so there is no semantic/vector search.
-    semantic: { available: false, reason: "Embedding provayderi hali sozlanmagan — matnli (BM25) qidiruv ishlaydi" },
+    documents: n.docs, chunks: n.chunks, search: "hybrid" as const,
+    semantic: {
+      available: true, model: embeddingModel, embedded: cov.embedded, pending: Math.max(0, n.chunks - cov.embedded),
+      ...(lastError ? { lastError } : {}),
+    },
   };
 }

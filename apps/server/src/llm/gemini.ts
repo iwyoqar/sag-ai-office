@@ -12,6 +12,9 @@ export interface GeminiOptions {
   model: string;
   /** minimum gap between requests (free tier ≈ 10–15 RPM) */
   minIntervalMs?: number;
+  /** embedding model for semantic search (e.g. gemini-embedding-001); empty disables embeddings */
+  embeddingModel?: string;
+  embeddingDims?: number;
   maxRetries?: number;
   fetchImpl?: FetchFn;
   sleep?: (ms: number) => Promise<void>;
@@ -33,6 +36,7 @@ export class GeminiClient implements LlmClient {
   readonly mode = "live" as const;
   model: string;
   private nextSlot = 0;
+  private nextEmbedSlot = 0;
   private readonly fetch: FetchFn;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -48,6 +52,14 @@ export class GeminiClient implements LlmClient {
     const now = Date.now();
     const at = Math.max(now, this.nextSlot);
     this.nextSlot = at + gap;
+    if (at > now) await this.sleep(at - now);
+  }
+
+  /** Embeddings have their own (much higher) rate limit, so they don't queue behind generation calls. */
+  private async waitEmbedTurn() {
+    const now = Date.now();
+    const at = Math.max(now, this.nextEmbedSlot);
+    this.nextEmbedSlot = at + 700;
     if (at > now) await this.sleep(at - now);
   }
 
@@ -124,6 +136,46 @@ export class GeminiClient implements LlmClient {
     };
   }
 
+  get embeddingModel() {
+    return this.o.embeddingModel || undefined;
+  }
+
+  /** Batch embeddings (≤100 texts per request), normalised to unit length for cosine similarity. */
+  async embed(texts: string[], kind: "document" | "query"): Promise<Float32Array[]> {
+    const model = this.o.embeddingModel;
+    if (!model) throw new LlmError("Embedding modeli sozlanmagan", "config", false);
+    const out: Float32Array[] = [];
+    for (let i = 0; i < texts.length; i += 100) {
+      const batch = texts.slice(i, i + 100);
+      let attempt = 0;
+      for (;;) {
+        await this.waitEmbedTurn();
+        const res = await this.fetch(`${BASE}/models/${encodeURIComponent(model)}:batchEmbedContents`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": this.o.apiKey },
+          body: JSON.stringify({
+            requests: batch.map((t) => ({
+              model: `models/${model}`, content: { parts: [{ text: t.slice(0, 8000) }] },
+              taskType: kind === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT",
+              outputDimensionality: this.o.embeddingDims ?? 768,
+            })),
+          }),
+        }).catch((e) => {
+          throw new LlmError(`Tarmoq xatosi: ${(e as Error).message}`, "server", true);
+        });
+        const data = (await res.json().catch(() => ({}))) as GeminiResponse & { embeddings?: { values: number[] }[] };
+        if (res.ok && data.embeddings) {
+          for (const e of data.embeddings) out.push(normalise(e.values));
+          break;
+        }
+        const err = toError(res.status, data);
+        if (!err.retryable || ++attempt > (this.o.maxRetries ?? 3)) throw err;
+        await this.sleep(err.retryAfterMs ?? 1500 * 2 ** attempt);
+      }
+    }
+    return out;
+  }
+
   async health() {
     try {
       const res = await this.fetch(`${BASE}/models/${encodeURIComponent(this.model)}`, {
@@ -136,6 +188,13 @@ export class GeminiClient implements LlmClient {
       return { ok: false, model: this.model, detail: `Tarmoq xatosi: ${(e as Error).message}` };
     }
   }
+}
+
+function normalise(v: number[]): Float32Array {
+  let n = 0;
+  for (const x of v) n += x * x;
+  n = Math.sqrt(n) || 1;
+  return Float32Array.from(v, (x) => x / n);
 }
 
 function toError(status: number, data: GeminiResponse): LlmError {

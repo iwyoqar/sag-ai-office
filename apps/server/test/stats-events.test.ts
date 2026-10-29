@@ -81,5 +81,5 @@ describe("realtime events (SSE)", () => {
     const anon = await fetch(`${base}/api/events`);
     expect(anon.status).toBe(401);
     await app.close();
-  });
+  }, 15_000); // real sockets + timers; slow under a parallel run
 });

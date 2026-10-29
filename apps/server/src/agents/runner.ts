@@ -11,7 +11,8 @@ import { SYSTEM, audit } from "../lib/audit.js";
 import { uid } from "../lib/ids.js";
 import { LlmError, estimateCost, type LlmClient, type LlmRequest, type LlmResult, type Pricing } from "../llm/types.js";
 import { buildSystemPrompt, buildTaskMessage, type Grounding, type PriorResult } from "./prompt.js";
-import { searchKnowledge, type KnowledgeHit } from "../knowledge/service.js";
+import type { KnowledgeHit } from "../knowledge/service.js";
+import { embedderOf, retrieve } from "../knowledge/semantic.js";
 import { addMemory, approvedMemory, requestApproval } from "../domain/brain.js";
 
 export interface RunnerOptions {
@@ -126,7 +127,7 @@ export class AgentRunner {
     this.setAgent(task.agentId!, "THINKING");
     this.stage(task, "Kontekst tayyorlanmoqda");
     const parent = task.parentId ? getTask(this.ctx, task.parentId) : null;
-    const g = this.ground(task, parent ? `${parent.title} ${task.title}` : undefined);
+    const g = await this.ground(task, parent ? `${parent.title} ${task.title}` : undefined);
     const message = buildTaskMessage(task, this.priorResults(task), parent, g.grounding);
     const system = buildSystemPrompt(this.ctx, task.agentId!);
     this.setAgent(task.agentId!, "WORKING");
@@ -214,7 +215,7 @@ export class AgentRunner {
       "Natijalar orasida ziddiyat bo'lsa, buni ko'rsat. Yangi faktlar qo'shma.",
     ]);
     this.setAgent(agentId, "WORKING");
-    const g = this.ground(task);
+    const g = await this.ground(task);
     const res = await this.call(task, { system, messages: [{ role: "user", text: buildTaskMessage(task, prior, null, g.grounding) }] }, signal);
     this.finish(task, withSources(res.text, g.hits), "Yakuniy natija");
   }
@@ -355,9 +356,11 @@ export class AgentRunner {
 
   // ---------------------------------------------------------------------------
   /** Company documents (only what the agent's department may see) + approved memory for this task. */
-  private ground(task: TaskDto, extraQuery?: string): { grounding: Grounding; hits: KnowledgeHit[] } {
+  private async ground(task: TaskDto, extraQuery?: string): Promise<{ grounding: Grounding; hits: KnowledgeHit[] }> {
     const dept = this.ctx.db.get<{ department_id: string }>("SELECT department_id FROM agents WHERE id = ?", task.agentId)?.department_id ?? null;
-    const hits = searchKnowledge(this.ctx, `${extraQuery ?? task.title} ${task.description}`, { departmentId: dept, limit: 5 });
+    const { hits } = await retrieve(this.ctx, embedderOf(this.llm), `${extraQuery ?? task.title} ${task.description}`, {
+      departmentId: dept, limit: 5, onError: (e) => this.o.log?.("semantic search fell back to full-text", { err: (e as Error).message }),
+    });
     return { hits, grounding: { docs: hits.map((h) => ({ title: h.title, content: h.content })), memory: approvedMemory(this.ctx, dept) } };
   }
 

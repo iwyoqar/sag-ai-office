@@ -40,6 +40,22 @@ export class MockLlm implements LlmClient {
     return { text: out, inputTokens: inTok, outputTokens: Math.ceil(out.length / 4), finishReason: "STOP", model: this.model };
   }
 
+  readonly embeddingModel = "mock-embedding";
+
+  /** Deterministic bag-of-words hashing embedding (tests only): shared words → similar vectors. */
+  async embed(texts: string[]): Promise<Float32Array[]> {
+    return texts.map((t) => {
+      const v = new Float32Array(64);
+      for (const w of t.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []) {
+        let h = 2166136261;
+        for (let i = 0; i < w.length; i++) h = Math.imul(h ^ w.charCodeAt(i), 16777619);
+        v[Math.abs(h) % 64] += 1;
+      }
+      const n = Math.hypot(...v) || 1;
+      return v.map((x) => x / n);
+    });
+  }
+
   async health() {
     return { ok: true, model: this.model, detail: "mock" };
   }

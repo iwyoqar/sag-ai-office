@@ -8,6 +8,8 @@ import { createTask, getTask } from "../src/domain/tasks.js";
 import { AgentRunner } from "../src/agents/runner.js";
 import { MockLlm } from "../src/llm/mock.js";
 import { SYSTEM } from "../src/lib/audit.js";
+import { embedPending, embedderOf, retrieve, type Embedder } from "../src/knowledge/semantic.js";
+import { knowledgeStatus } from "../src/knowledge/service.js";
 
 const admin = { type: "user" as const, id: null };
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -101,6 +103,32 @@ describe("knowledge base", () => {
     await ingestDocument(deps, { filename: "brand.txt", data: enc("Brend uslubi: byudjet tejamkor ohang"), departmentId: null }, admin);
     expect(searchKnowledge(deps, "byudjet", { departmentId: "marketing" }).map((h) => h.title)).toEqual(["brand"]);
     expect(searchKnowledge(deps, "byudjet", { departmentId: "finance" })).toHaveLength(2);
+  });
+
+  it("semantic search: embeds chunks, fuses with BM25, respects scope, falls back on failure", async () => {
+    const { deps } = await makeApp();
+    const embedder = embedderOf(new MockLlm())!;
+    await ingestDocument(deps, { filename: "maosh.txt", data: enc("Maosh jadvali: maxfiy byudjet hisoboti"), departmentId: "finance" }, admin);
+    await ingestDocument(deps, { filename: "brand.txt", data: enc("Brend uslubi: tejamkor samimiy ohang"), departmentId: null }, admin);
+    expect(knowledgeStatus(deps, embedder.model).semantic).toMatchObject({ available: true, embedded: 0, pending: 2 });
+    expect(await embedPending(deps, embedder)).toBe(2);
+    expect(await embedPending(deps, embedder)).toBe(0); // idempotent
+    expect(knowledgeStatus(deps, embedder.model).semantic).toMatchObject({ embedded: 2, pending: 0 });
+
+    // "uslubi ohang" has no exact FTS overlap with "samimiy" but shares words semantically (mock = bag of words)
+    const r = await retrieve(deps, embedder, "brend ohang uslubi", { departmentId: "marketing" });
+    expect(r.mode).toBe("hybrid");
+    expect(r.hits.map((h) => h.title)).toEqual(["brand"]); // finance doc never leaks to marketing
+    const fin = await retrieve(deps, embedder, "maxfiy byudjet", { departmentId: "finance" });
+    expect(fin.hits[0].title).toBe("maosh");
+
+    const broken: Embedder = { model: embedder.model, embed: async () => { throw new Error("429"); } };
+    const errors: unknown[] = [];
+    const fb = await retrieve(deps, broken, "tejamkor ohang", { departmentId: null, onError: (e) => errors.push(e) });
+    expect(fb.mode).toBe("fulltext");
+    expect(fb.hits.map((h) => h.title)).toEqual(["brand"]);
+    expect(errors).toHaveLength(1);
+    expect(knowledgeStatus(deps, null).semantic.available).toBe(false);
   });
 
   it("upload API: multipart, permissions, clear errors", async () => {

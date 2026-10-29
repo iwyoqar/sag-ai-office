@@ -33,6 +33,9 @@ export interface LlmClient {
   generate(req: LlmRequest): Promise<LlmResult>;
   /** verifies credentials / model availability; never throws */
   health(): Promise<{ ok: boolean; model: string; detail?: string }>;
+  /** text embeddings (unit length); absent when the provider has no embedding model configured */
+  embed?(texts: string[], kind: "document" | "query"): Promise<Float32Array[]>;
+  readonly embeddingModel?: string;
 }
 
 export class LlmError extends Error {

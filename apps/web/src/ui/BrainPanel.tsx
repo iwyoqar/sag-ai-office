@@ -197,7 +197,10 @@ function InstructionsTab() {
 
 // ---------------------------------------------------------------- knowledge base
 interface Doc { id: string; title: string; filename: string | null; sizeBytes: number | null; departmentId: string | null; status: string; error: string | null; version: number; chunks: number; textChars: number; updatedAt: string }
-interface KStatus { documents: number; chunks: number; semantic: { available: boolean; reason: string } }
+interface KStatus {
+  documents: number; chunks: number; search: "fulltext" | "hybrid";
+  semantic: { available: boolean; reason?: string; model?: string; embedded?: number; pending?: number; lastError?: string };
+}
 
 function KnowledgeTab() {
   const { office, can } = useOffice();
@@ -236,7 +239,7 @@ function KnowledgeTab() {
   };
   const search = async (e: FormEvent) => {
     e.preventDefault();
-    const r = await api.get<{ hits: { chunkId: string; title: string; content: string }[] }>(
+    const r = await api.get<{ hits: { chunkId: string; title: string; content: string }[]; mode: string }>(
       `/api/knowledge/search?q=${encodeURIComponent(q)}${qDep ? `&departmentId=${qDep}` : ""}`,
     );
     setHits(r.hits);
@@ -246,8 +249,16 @@ function KnowledgeTab() {
     <>
       {data && (
         <div className="notice">
-          {data.status.documents} hujjat · {data.status.chunks} bo'lak indekslangan · qidiruv: matnli (BM25).
-          {" "}Semantik qidiruv: <b>mavjud emas</b> — {data.status.semantic.reason}.
+          {data.status.documents} hujjat · {data.status.chunks} bo'lak indekslangan ·{" "}
+          {data.status.semantic.available ? (
+            <>
+              qidiruv: <b>gibrid</b> (BM25 + semantik, {data.status.semantic.model}) · vektorlangan {data.status.semantic.embedded}/{data.status.chunks}
+              {data.status.semantic.pending ? ` (${data.status.semantic.pending} navbatda)` : ""}
+              {data.status.semantic.lastError && <> · <span className="err">embedding xatosi: {data.status.semantic.lastError}</span> — matnli qidiruv ishlayapti</>}
+            </>
+          ) : (
+            <>qidiruv: matnli (BM25). Semantik qidiruv: <b>mavjud emas</b> — {data.status.semantic.reason}.</>
+          )}
         </div>
       )}
       {can("brain:manage") && (

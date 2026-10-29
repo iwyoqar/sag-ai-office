@@ -5,7 +5,8 @@ import {
   addMemory, decideApproval, decideMemory, listApprovals, listInstructions, listMemory, retireInstruction,
   saveInstruction, setSetting, type Scope,
 } from "../domain/brain.js";
-import { ingestDocument, knowledgeStatus, listDocuments, removeDocument, searchKnowledge } from "../knowledge/service.js";
+import { ingestDocument, knowledgeStatus, listDocuments, removeDocument } from "../knowledge/service.js";
+import { embedPending, embedderOf, retrieve } from "../knowledge/semantic.js";
 import { MAX_UPLOAD_BYTES } from "../knowledge/extract.js";
 import { audit } from "../lib/audit.js";
 import { badRequest, notFound } from "../lib/errors.js";
@@ -18,10 +19,21 @@ const ScopeQ = z.object({
 });
 
 export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
+  const embedder = embedderOf(d.llm.client);
+  let embedError: string | null = null;
+  const embedInBackground = () => {
+    if (!embedder) return;
+    embedPending(d, embedder).then(
+      () => { embedError = null; },
+      (e) => { embedError = (e as Error).message; app.log.warn({ err: embedError }, "embedding failed — full-text search still works"); },
+    );
+  };
+  embedInBackground(); // backfill chunks ingested before embeddings were enabled
+
   // ---------------------------------------------------------------- knowledge
   app.get("/api/knowledge", async (req) => {
     requirePerm(req, "agents:read");
-    return { status: knowledgeStatus(d), documents: listDocuments(d) };
+    return { status: knowledgeStatus(d, embedder?.model, embedError), documents: listDocuments(d) };
   });
 
   app.post("/api/knowledge", async (req, reply) => {
@@ -39,6 +51,7 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
     const departmentId = fields.departmentId?.trim() || null;
     if (departmentId && !d.db.get("SELECT 1 FROM departments WHERE id = ?", departmentId)) throw notFound("Bo'lim");
     const doc = await ingestDocument(d, { title: fields.title, filename: file.filename, mime: file.mimetype, data: file.data, departmentId }, actorOf(u));
+    if (!doc.duplicate) embedInBackground();
     reply.status(doc.duplicate ? 200 : 201);
     return { document: doc };
   });
@@ -53,7 +66,7 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
     requirePerm(req, "agents:read");
     const q = parse(z.object({ q: z.string().min(2).max(500), departmentId: z.string().optional() }), req.query);
     // departmentId given → exactly what an agent of that department would retrieve
-    return { hits: searchKnowledge(d, q.q, { departmentId: q.departmentId === undefined ? undefined : q.departmentId || null, limit: 10 }) };
+    return retrieve(d, embedder, q.q, { departmentId: q.departmentId === undefined ? undefined : q.departmentId || null, limit: 10 });
   });
 
   // ---------------------------------------------------------------- instructions

@@ -7,7 +7,7 @@ import { now } from "../db/db.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import { uid } from "../lib/ids.js";
 import { LlmError, estimateCost } from "../llm/types.js";
-import { searchKnowledge } from "../knowledge/service.js";
+import { embedderOf, retrieve } from "../knowledge/semantic.js";
 import { approvedMemory } from "../domain/brain.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
@@ -56,7 +56,7 @@ export const runtimeRoutes = (d: Deps) => async (app: FastifyInstance) => {
       "Katta hajmli ish so'ralsa, uni vazifa (task) sifatida yaratishni tavsiya qil.",
     ]);
     // Company documents (only this agent's department scope) and approved memory, passed as data.
-    const hits = searchKnowledge(d, message, { departmentId: agent.department_id, limit: 4 });
+    const { hits } = await retrieve(d, embedderOf(d.llm.client), message, { departmentId: agent.department_id, limit: 4 });
     const mem = approvedMemory(d, agent.department_id, 8);
     const grounding = [
       ...mem.map((m) => `<context type="kompaniya xotirasi">[${m.kind}] ${m.content.replace(/<\/?(context|document)>/gi, "")}</context>`),

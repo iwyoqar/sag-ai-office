@@ -18,7 +18,10 @@ export function createLlm(cfg: Config, log?: (msg: string, meta?: Record<string,
   if (cfg.llm.provider === "gemini") {
     if (!cfg.llm.geminiApiKey) return { client: null, pricing, reason: "GEMINI_API_KEY .env da yo'q" };
     return {
-      client: new GeminiClient({ apiKey: cfg.llm.geminiApiKey, model: cfg.llm.geminiModel, minIntervalMs: cfg.llm.minIntervalMs, log }),
+      client: new GeminiClient({
+        apiKey: cfg.llm.geminiApiKey, model: cfg.llm.geminiModel, minIntervalMs: cfg.llm.minIntervalMs, log,
+        embeddingModel: cfg.llm.embeddingModel, embeddingDims: 768,
+      }),
       pricing,
     };
   }
