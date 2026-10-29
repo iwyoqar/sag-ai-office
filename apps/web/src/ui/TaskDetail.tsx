@@ -77,6 +77,15 @@ export function TaskDetail({ taskId, onClose, onOpen }: { taskId: string; onClos
               {t.progress !== null && <span>{t.progress}%</span>}
               {t.stage && <span className="muted">{t.stage}</span>}
               <span className="muted">Tokenlar: {fmtTokens(t.tokensIn + t.tokensOut)} · {fmtUsd(t.costUsd)} (taxminiy)</span>
+              {Object.keys(t.limits).length > 0 && (
+                <span className="muted">Limit: {[
+                  t.limits.maxTokens && `${fmtTokens(t.limits.maxTokens)} token`,
+                  t.limits.maxCostUsd && `$${t.limits.maxCostUsd}`,
+                  t.limits.maxDurationMs && `${Math.round(t.limits.maxDurationMs / 60000)} daq`,
+                  t.limits.maxIterations && `${t.limits.maxIterations} chaqiruv`,
+                  t.limits.maxAgents && `${t.limits.maxAgents} bo'lim`,
+                ].filter(Boolean).join(" · ")}</span>
+              )}
             </div>
             {t.progress !== null && t.status !== "DONE" && <div className="bar"><i style={{ width: `${t.progress}%` }} /></div>}
             {t.error && <div className="login-error">Xato: {t.error}</div>}

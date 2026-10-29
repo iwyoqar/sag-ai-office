@@ -95,12 +95,23 @@ function NewTask() {
   const [priority, setPriority] = useState<TaskPriority>("MEDIUM");
   const [deadline, setDeadline] = useState("");
   const [approval, setApproval] = useState(false);
+  const [lim, setLim] = useState({ tokens: "", cost: "", minutes: "", agents: "" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [open, setOpen] = useState(false);
 
   const deps = useMemo(() => Object.values(office?.departments ?? {}), [office]);
   const agents = useMemo(() => office?.agents.filter((a) => a.departmentId === dep && a.lifecycle === "ACTIVE") ?? [], [office, dep]);
+
+  /** Only the ceilings the user filled in; empty → server defaults. */
+  const limits = () => {
+    const l: Record<string, number> = {};
+    if (+lim.tokens > 0) l.maxTokens = Math.round(+lim.tokens);
+    if (+lim.cost > 0) l.maxCostUsd = +lim.cost;
+    if (+lim.minutes > 0) l.maxDurationMs = Math.round(+lim.minutes * 60_000);
+    if (+lim.agents > 0) l.maxAgents = Math.round(+lim.agents);
+    return Object.keys(l).length ? l : undefined;
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -116,6 +127,7 @@ function NewTask() {
         priority,
         deadline: deadline ? new Date(`${deadline}T18:00:00+05:00`).toISOString() : undefined,
         requiresApproval: approval || undefined,
+        limits: limits(),
       });
       setMsg({ ok: true, text: r.task.kind === "orchestrate" ? "Qabul qilindi: Director bo'limlarga taqsimlaydi." : "Qabul qilindi." });
       setTitle("");
@@ -161,6 +173,17 @@ function NewTask() {
           <label className="toggle">
             <input type="checkbox" checked={approval} onChange={(e) => setApproval(e.target.checked)} /> Natija mening tasdig'imdan keyin "bajarildi" bo'lsin
           </label>
+          <details className="limits">
+            <summary>Limitlar (ixtiyoriy)</summary>
+            <div className="nt-row">
+              <input type="number" min={1000} step={1000} placeholder="Maks. token (masalan 30000)" value={lim.tokens} onChange={(e) => setLim({ ...lim, tokens: e.target.value })} />
+              <input type="number" min={0} step={0.01} placeholder="Maks. xarajat, $" value={lim.cost} onChange={(e) => setLim({ ...lim, cost: e.target.value })} />
+            </div>
+            <div className="nt-row">
+              <input type="number" min={1} placeholder="Maks. vaqt, daqiqa" value={lim.minutes} onChange={(e) => setLim({ ...lim, minutes: e.target.value })} />
+              <input type="number" min={1} max={6} placeholder="Maks. bo'limlar (avto)" value={lim.agents} onChange={(e) => setLim({ ...lim, agents: e.target.value })} disabled={!!dep} />
+            </div>
+          </details>
         </>
       )}
       <div className="nt-actions">

@@ -271,3 +271,29 @@ describe("chat and system status API", () => {
     expect((await api.get("/api/system")).body.llm.configured).toBe(false);
   });
 });
+
+describe("task limits", () => {
+  it("stops at the AI-call ceiling instead of retrying forever", async () => {
+    const { deps } = await makeApp();
+    const r = new AgentRunner(deps, new MockLlm(new LlmError("busy", "server", true)), pricing, opts);
+    const t = createTask(deps, { title: "x", agentId: "it-aziz", limits: { maxIterations: 2 }, maxAttempts: 5 }, SYSTEM);
+    await drain(r);
+    const done = getTask(deps, t.id);
+    expect(done.status).toBe("FAILED");
+    expect(done.error).toContain("AI chaqiruvlari limiti");
+    expect(deps.db.get<{ n: number }>("SELECT COUNT(*) n FROM agent_runs WHERE task_id = ?", t.id)!.n).toBe(2);
+    await r.stop();
+  });
+
+  it("stops when the token budget is used up and caps output to what is left", async () => {
+    const { deps } = await makeApp();
+    const llm = new MockLlm("ok");
+    const r = new AgentRunner(deps, llm, pricing, opts);
+    const t = createTask(deps, { title: "y", agentId: "it-aziz", limits: { maxTokens: 1000 } }, SYSTEM);
+    deps.db.run("UPDATE tasks SET tokens_in = 1200 WHERE id = ?", t.id);
+    await drain(r);
+    expect(getTask(deps, t.id).error).toContain("Token limiti");
+    expect(llm.calls).toHaveLength(0);
+    await r.stop();
+  });
+});

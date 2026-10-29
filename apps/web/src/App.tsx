@@ -34,7 +34,7 @@ function readLabelsPref() {
 }
 
 export function App() {
-  const { auth, office, error } = useOffice();
+  const { auth, office, error, lastEvent } = useOffice();
   const floorIds = useMemo(() => office?.floors.map((f) => f.id) ?? [], [office]);
   const reducer = useMemo(() => viewReducer(floorIds, BUILDING_IDS), [floorIds]);
   const [view, dispatch] = useReducer(reducer, initialView);
@@ -109,6 +109,21 @@ export function App() {
   }, [view.mode, view.floorId, view.buildingId]);
 
   useEffect(() => ctrl.current?.selectAgent(view.agentId), [view.agentId]);
+
+  // Agent→agent handoffs from the backend stay visible in 3D for a short while.
+  const links = useRef<{ from: string; to: string; at: number }[]>([]);
+  useEffect(() => {
+    const push = () => {
+      const cut = Date.now() - 20_000;
+      links.current = links.current.filter((l) => l.at > cut);
+      ctrl.current?.showLinks(links.current.map((l) => [l.from, l.to] as [string, string]));
+    };
+    if (lastEvent?.type === "agent.message" && typeof lastEvent.data.from === "string" && typeof lastEvent.data.to === "string")
+      links.current.push({ from: lastEvent.data.from, to: lastEvent.data.to, at: Date.now() });
+    push();
+    const t = window.setInterval(push, 5000);
+    return () => window.clearInterval(t);
+  }, [lastEvent]);
 
   useEffect(() => {
     ctrl.current?.setLabelsVisible(labels);

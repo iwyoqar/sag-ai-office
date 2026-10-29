@@ -45,6 +45,8 @@ const PlanSchema = z.object({
 export type Plan = z.infer<typeof PlanSchema>;
 
 class StaleTask extends Error {}
+/** A task ceiling was reached — the task fails with a clear reason, no retry. */
+class LimitError extends Error {}
 
 export class AgentRunner {
   private timer: NodeJS.Timeout | null = null;
@@ -177,7 +179,8 @@ export class AgentRunner {
         const t = createTask(this.ctx, {
           title: s.title, description: s.description, departmentId: s.department, parentId: task.id,
           dependsOn: s.dependsOn.map((k) => ids.get(k)!).filter(Boolean),
-          priority: task.priority, deadline: task.deadline, limits: { maxTokens: task.limits.maxTokens },
+          // subtasks inherit the job's limits (each piece gets the same ceilings; maxAgents only applies to planning)
+          priority: task.priority, deadline: task.deadline, limits: { ...task.limits, maxAgents: undefined },
         }, SYSTEM);
         ids.set(s.key, t.id);
         created.push(t);
@@ -221,6 +224,7 @@ export class AgentRunner {
   private async call(task: TaskDto, req: Omit<LlmRequest, "correlationId">, signal: AbortSignal): Promise<LlmResult> {
     const maxAttempts = Math.max(1, task.maxAttempts);
     for (let attempt = 1; ; attempt++) {
+      const budget = this.checkLimits(task);
       const runId = uid("run");
       const correlationId = randomUUID();
       const started = Date.now();
@@ -231,7 +235,7 @@ export class AgentRunner {
       try {
         const res = await this.llm.generate({
           ...req, correlationId, signal, timeoutMs: this.o.taskTimeoutMs,
-          maxOutputTokens: Math.min(req.maxOutputTokens ?? task.limits.maxTokens ?? 6000, 8192),
+          maxOutputTokens: Math.max(256, Math.min(req.maxOutputTokens ?? 6000, 8192, budget.tokensLeft)),
         });
         this.recordUsage(task, runId, res, Date.now() - started);
         return res;
@@ -249,6 +253,25 @@ export class AgentRunner {
         if (signal.aborted) throw new StaleTask();
       }
     }
+  }
+
+  /**
+   * Hard ceilings per task (set when the task is created): total tokens, estimated cost, wall time, number of
+   * AI calls. Checked before every call so a looping or verbose task stops instead of burning budget.
+   */
+  private checkLimits(task: TaskDto): { tokensLeft: number } {
+    const l = task.limits;
+    const u = this.ctx.db.get<{ tin: number; tout: number; cost: number; started_at: string | null }>(
+      "SELECT tokens_in tin, tokens_out tout, cost_usd cost, started_at FROM tasks WHERE id = ?", task.id,
+    )!;
+    const calls = this.ctx.db.get<{ n: number }>("SELECT COUNT(*) n FROM agent_runs WHERE task_id = ?", task.id)!.n;
+    const used = u.tin + u.tout;
+    if (l.maxIterations && calls >= l.maxIterations) throw new LimitError(`AI chaqiruvlari limiti tugadi (${calls}/${l.maxIterations})`);
+    if (l.maxTokens && used >= l.maxTokens) throw new LimitError(`Token limiti tugadi (${used}/${l.maxTokens})`);
+    if (l.maxCostUsd && u.cost >= l.maxCostUsd) throw new LimitError(`Xarajat limiti tugadi ($${u.cost.toFixed(4)} / $${l.maxCostUsd})`);
+    if (l.maxDurationMs && u.started_at && Date.now() - Date.parse(u.started_at) > l.maxDurationMs)
+      throw new LimitError(`Vaqt limiti tugadi (${Math.round(l.maxDurationMs / 60000)} daqiqa)`);
+    return { tokensLeft: l.maxTokens ? l.maxTokens - used : Infinity };
   }
 
   private recordUsage(task: TaskDto, runId: string, res: LlmResult, latency: number) {

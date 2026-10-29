@@ -90,6 +90,8 @@ export class SceneController {
   private hoveredBuilding: string | null = null;
   private hoveredAgent: string | null = null;
   private selectedAgent: string | null = null;
+  /** recent agent→agent handoffs (from backend agent.message events), drawn as arcs on the open floor */
+  private linkPairs: [string, string][] = [];
   private needsRender = 2;
   private raf = 0;
   private disposed = false;
@@ -643,6 +645,7 @@ export class SceneController {
     }
     const interior = this.interiorFor(floorId);
     interior.root.visible = true;
+    interior.setLinks(this.linkPairs);
     for (const z of interior.zones) z.label.visible = true;
     this.setBasementMode(floor.level === -1);
     if (this.ghost) this.ghost.visible = true;
@@ -681,6 +684,13 @@ export class SceneController {
     this.setBasementMode(false);
     if (this.ghost) this.ghost.visible = false;
     this.setZonesVisible(true);
+    this.invalidate();
+  }
+
+  /** Handoffs between agents; pairs whose sender is not on the open floor are ignored by the interior. */
+  showLinks(pairs: [string, string][]) {
+    this.linkPairs = pairs;
+    if (this.currentFloor) this.interiors.get(this.currentFloor)?.setLinks(pairs);
     this.invalidate();
   }
 
