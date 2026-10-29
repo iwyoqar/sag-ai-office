@@ -11,6 +11,9 @@ import { TaskDetail } from "./ui/TaskDetail";
 import { BrainPanel } from "./ui/BrainPanel";
 import { CalendarPanel } from "./ui/CalendarPanel";
 import { AccountDialog } from "./ui/AccountDialog";
+import { PeoplePanel } from "./ui/people/PeoplePanel";
+import { EmployeeProfile } from "./ui/people/Employees";
+import { NewWork, WorkDetail } from "./ui/people/Work";
 import { TopBar } from "./ui/TopBar";
 import { FloorRail } from "./ui/FloorRail";
 import { FloorPanel } from "./ui/FloorPanel";
@@ -56,6 +59,10 @@ export function App() {
   const [brainOpen, setBrainOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [employeeId, setEmployeeId] = useState<string | null>(null);
+  const [workId, setWorkId] = useState<string | null>(null);
+  const [newWork, setNewWork] = useState<{ assigneeId?: string } | null>(null);
 
   useEffect(() => {
     if (!has3d || !host.current) {
@@ -76,6 +83,7 @@ export function App() {
       },
       onSelectFloor: (floorId) => dispatch({ type: "selectFloor", floorId }),
       onSelectAgent: (agentId) => dispatch({ type: "selectAgent", agentId }),
+      onSelectEmployee: (id) => setEmployeeId(id),
       onHoverAgent: (id, x, y) => setAgentTip(id ? { id, x, y } : null),
       onHoverBuilding: (info, x, y) => setBuildingTip(info ? { info, x, y } : null),
       onSelectBuilding: (id) => dispatch({ type: "selectBuilding", buildingId: id }),
@@ -146,11 +154,17 @@ export function App() {
   brainRef.current = brainOpen;
   const calRef = useRef(false);
   calRef.current = calendarOpen;
+  const layers = useRef({ work: false, emp: false, people: false, newWork: false });
+  layers.current = { work: !!workId, emp: !!employeeId, people: peopleOpen, newWork: !!newWork };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       // close the topmost layer first
-      if (taskIdRef.current) setTaskId(null);
+      if (layers.current.newWork) setNewWork(null);
+      else if (layers.current.work) setWorkId(null);
+      else if (layers.current.emp) setEmployeeId(null);
+      else if (taskIdRef.current) setTaskId(null);
+      else if (layers.current.people) setPeopleOpen(false);
       else if (brainRef.current) setBrainOpen(false);
       else if (calRef.current) setCalendarOpen(false);
       else back();
@@ -186,6 +200,8 @@ export function App() {
         onBrain={ready ? () => setBrainOpen(true) : undefined}
         onCalendar={ready ? () => setCalendarOpen(true) : undefined}
         onAccount={() => setAccountOpen(true)}
+        onPeople={ready ? () => setPeopleOpen(true) : undefined}
+        onOpenWork={ready ? setWorkId : undefined}
         system={ready ? system : null}
       />
 
@@ -223,6 +239,16 @@ export function App() {
       {accountOpen && auth === "authenticated" && <AccountDialog onClose={() => setAccountOpen(false)} />}
       {ready && calendarOpen && <CalendarPanel onClose={() => setCalendarOpen(false)} onOpenTask={setTaskId} />}
       {ready && taskId && <TaskDetail taskId={taskId} onClose={() => setTaskId(null)} onOpen={setTaskId} />}
+      {ready && peopleOpen && (
+        <PeoplePanel onClose={() => setPeopleOpen(false)} onOpenEmployee={setEmployeeId} onOpenTask={setWorkId} onNewTask={() => setNewWork({})} />
+      )}
+      {ready && employeeId && (
+        <EmployeeProfile id={employeeId} onClose={() => setEmployeeId(null)} onOpenTask={setWorkId} onAssign={(id) => setNewWork({ assigneeId: id })} />
+      )}
+      {ready && workId && <WorkDetail id={workId} onClose={() => setWorkId(null)} onOpen={setWorkId} />}
+      {ready && newWork && (
+        <NewWork assigneeId={newWork.assigneeId} onClose={() => setNewWork(null)} onCreated={(id) => { setNewWork(null); setWorkId(id); }} />
+      )}
       {ready && view.agentId && <AgentProfile agentId={view.agentId} onClose={() => dispatch({ type: "selectAgent", agentId: null })} />}
     </div>
   );

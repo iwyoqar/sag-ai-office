@@ -101,3 +101,29 @@ data: {"id":42,"type":"task.status","at":"…","taskId":"tsk_…","agentId":"…
 ```
 
 Events are stored in `task_events` before they are sent. A client reconnecting with `Last-Event-ID` (EventSource does this automatically) receives everything it missed, including across server restarts.
+
+## People & human work (2026-10-30)
+
+All routes need a session; authorisation is enforced on the server (`apps/server/src/domain/access.ts`).
+A task or profile the caller may not see answers **404** (no existence leak); a forbidden action on a visible one answers **403**.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/employees` | directory cards for everyone; `workload` only where the caller may view the profile. `q, departmentId, status, role, sort` |
+| GET | `/employees/presence` | 3D presence (state derived from task data + activity) |
+| GET | `/employees/:id` | `{ full: false }` card, or full profile + activity |
+| POST | `/employees` | admin: any role; department head: role `employee` in a managed department |
+| PATCH | `/employees/:id` | managers in scope; self: name, working hours, timezone only |
+| POST | `/employees/:id/status` | `active / inactive / archived` (never deleted; sessions end) |
+| PUT | `/employees/:id/roles` | `users:manage` only, never self |
+| POST / DELETE | `/employees/:id/grants[/:grantId]` | scoped, delegable permission grants |
+| PUT / GET | `/employees/:id/avatar` | PNG/JPEG/WebP ≤ 1 MB |
+| PUT | `/departments/:id/head` | admin / director |
+| GET | `/org-chart` | company-wide readers, or own departments for heads |
+| GET / PUT | `/settings/workload` | PUT needs `workload:configure` |
+| GET | `/work?view=my\|team\|department\|company\|review\|overdue\|blocked\|person` | `includeDone, q, assigneeId, departmentId` |
+| POST | `/work` | personal task, assignment, or subtask (`parentId`) |
+| GET / PATCH | `/work/:id` | detail with subtasks, comments, reviews, attachments, history, `can` |
+| POST | `/work/:id/{assign,accept,decline,start,progress,submit,approve,request-changes,block,unblock,cancel,comments,attachments}` | workflow actions |
+| GET | `/work/:id/attachments/:attId` | always `application/octet-stream` download |
+| GET / POST | `/notifications`, `/notifications/read` | own notifications only |

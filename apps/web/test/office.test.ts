@@ -156,3 +156,16 @@ describe("agent movement (stand up → walk → sit down)", () => {
     expect(Math.hypot(m.x - desk.ax, m.z - desk.az)).toBeLessThan(0.01);
   });
 });
+
+import { activityForPresence } from "../src/scene/office/behaviour";
+
+describe("human employees in the office (presence from real data)", () => {
+  it("maps presence to desk activity and never invents a meeting", () => {
+    expect(activityForPresence("working")).toEqual({ place: "desk", pose: "sitType" });
+    expect(activityForPresence("reviewing")).toEqual({ place: "desk", pose: "sitThink" });
+    expect(activityForPresence("blocked")).toEqual({ place: "desk", pose: "sitBlocked" });
+    expect(activityForPresence("available")).toEqual({ place: "desk", pose: "sitRelax" });
+    expect(activityForPresence("away")).toBeNull(); // empty desk
+    for (const s of ["working", "reviewing", "blocked", "available"] as const) expect(activityForPresence(s)?.place).toBe("desk");
+  });
+});

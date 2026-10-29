@@ -20,6 +20,11 @@ Pilot qavat: **5 — Marketing**. Keyin qolgan qavatlarga (B, 1–4, 6) kengayti
 9. **Tekshiruv** — brauzerda 5, 4, B qavatlar ko'rildi; holat o'zgarishida majlisga yurib borish va o'tirish tekshirildi.
 10. **Phase 3** — 5-qavat qo'lda chizilgan reja; qolgan qavatlar (B, 1, 2, 3, 4, 6) bo'limlar zonasidan avtomatik reja (`zonePlan`): har bo'limga stol podlari, umumiy majlis stoli, bo'limlar orasida shisha, bo'limga xos jihozlar. Har qavat uchun test: mebel ichkarida, ustma-ust tushmaydi, har o'rindiqqa yo'l bor.
 
+## Inson xodimlar (2026-10-30)
+- Realistik qavatlarda xodimlar bo'limining bo'sh stollarida o'tiradi, nishon (lanyard) va 👤 yorlig'i bilan AI agentlardan ajraladi.
+- Holat faqat haqiqiy ma'lumotdan: ish bajaryapti / tekshiryapti / bloklangan / bo'sh; 30 daqiqa faolliksiz — joyida emas (stol bo'sh).
+- Cheklovlar: majlis/kalendar ma'lumoti yo'q (majlis ko'rsatilmaydi); stol saqlanmaydi (bo'limdagi tartib bo'yicha); `?simple` ko'rinishida xodimlar yo'q.
+
 ## Qolgan ishlar
 6. **Diorama ko'rinishi**: qavat ochilganda tuman/fon firuza (#13686b), GLB va kampus yashiriladi, plita ostida yumshoq soya.
 7. **AO**: GTAOPass faqat qavat ko'rinishida (`logarithmicDepthBuffer` ni o'chirib, kamera near/far ni dinamik qilish kerak).

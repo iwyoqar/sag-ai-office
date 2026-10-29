@@ -191,7 +191,7 @@ export const peopleRoutes = (d: Deps) => async (app: FastifyInstance) => {
   app.get("/api/work", async (req) => {
     const u = requireUser(req);
     const q = parse(z.object({
-      view: z.enum(["my", "team", "department", "company", "review", "overdue", "blocked"]).default("my"),
+      view: z.enum(["my", "team", "department", "company", "review", "overdue", "blocked", "person"]).default("my"),
       departmentId: z.string().optional(), includeDone: z.enum(["true", "false"]).optional(), q: z.string().max(80).optional(),
       assigneeId: z.string().optional(),
     }), req.query);

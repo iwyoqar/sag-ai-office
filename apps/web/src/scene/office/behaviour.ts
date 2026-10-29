@@ -28,3 +28,18 @@ export function activityFor(status: AgentStatus, lifecycle: AgentLifecycle): Act
 }
 
 export const isSeated = (p: PoseName) => p.startsWith("sit");
+
+/**
+ * Human employees: activity from real data only (task statuses + last activity). No meetings are invented -
+ * there is no calendar data for people yet. "away" = no activity for 30 min (the desk stays empty).
+ */
+export type HumanPresence = "available" | "working" | "reviewing" | "blocked" | "away";
+export function activityForPresence(state: HumanPresence): Activity | null {
+  switch (state) {
+    case "working": return { place: "desk", pose: "sitType" };
+    case "reviewing": return { place: "desk", pose: "sitThink" };
+    case "blocked": return { place: "desk", pose: "sitBlocked" };
+    case "available": return { place: "desk", pose: "sitRelax" };
+    case "away": return null;
+  }
+}

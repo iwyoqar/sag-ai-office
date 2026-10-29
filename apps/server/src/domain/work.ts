@@ -496,7 +496,7 @@ function items(ctx: Ctx, rows: TaskRow[]): WorkItem[] {
   });
 }
 
-export type WorkView = "my" | "team" | "department" | "company" | "review" | "overdue" | "blocked";
+export type WorkView = "my" | "team" | "department" | "company" | "review" | "overdue" | "blocked" | "person";
 
 export function listWork(
   ctx: Ctx, u: AuthUser, view: WorkView, f: { departmentId?: string; includeDone?: boolean; q?: string; assigneeId?: string } = {},
@@ -540,6 +540,9 @@ export function listWork(
       break;
     case "blocked":
       where.push("t.status = 'BLOCKED'");
+      break;
+    case "person": // one employee's tasks — still limited to what the viewer may see
+      if (!f.assigneeId) throw badRequest("assigneeId kerak");
       break;
   }
   if (!f.includeDone && view !== "review") where.push(open);

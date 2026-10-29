@@ -1,10 +1,12 @@
 import type { FloorDto } from "@sag/shared";
 import { useOffice } from "../api/office";
 import type { SystemStatus } from "../api/system";
+import { NotificationsBell } from "./people/PeoplePanel";
 
-export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks, tasksOpen, system, onBrain, onCalendar, onAccount }: {
+export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks, tasksOpen, system, onBrain, onCalendar, onAccount, onPeople, onOpenWork }: {
   floor?: FloorDto; building?: string; inOffice: boolean; onCampus?: () => void; onOffice?: () => void;
   onTasks?: () => void; tasksOpen?: boolean; system?: SystemStatus | null; onBrain?: () => void; onCalendar?: () => void; onAccount?: () => void;
+  onPeople?: () => void; onOpenWork?: (id: string) => void;
 }) {
   const { user, live, auth, logout } = useOffice();
   return (
@@ -39,13 +41,15 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
       {auth === "authenticated" && (
         <div className="top-status">
           {system && <AiChip s={system} />}
+          {onPeople && <button className="tasks-btn" onClick={onPeople}>Xodimlar</button>}
           {onBrain && <button className="tasks-btn" onClick={onBrain}>The Brain</button>}
           {onCalendar && <button className="tasks-btn" onClick={onCalendar}>Kalendar</button>}
           {onTasks && (
-            <button className={`tasks-btn${tasksOpen ? " on" : ""}`} onClick={onTasks}>
-              Vazifalar{system?.worker.active ? <b>{system.worker.active}</b> : null}
+            <button className={`tasks-btn${tasksOpen ? " on" : ""}`} onClick={onTasks} title="AI agentlar vazifalari">
+              AI vazifalar{system?.worker.active ? <b>{system.worker.active}</b> : null}
             </button>
           )}
+          {onOpenWork && <NotificationsBell onOpenTask={onOpenWork} />}
           <span
             className={`backend ${live ? "on" : "off"}`}
             title={live ? "Real vaqt oqimi ulangan (SSE)" : "Real vaqt oqimi uzildi — qayta ulanmoqda"}

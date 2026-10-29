@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AgentDto, ConnectorDto, DepartmentDto, FloorDto, OfficeEvent, Permission, UserDto } from "@sag/shared";
+import type { AgentDto, ConnectorDto, DepartmentDto, FloorDto, OfficeEvent, Permission, PresenceDto, UserDto } from "@sag/shared";
 import { api, ApiError } from "./client";
 
 export interface Office {
@@ -7,6 +7,8 @@ export interface Office {
   departments: Record<string, DepartmentDto>;
   agents: AgentDto[];
   connectors: ConnectorDto[];
+  /** human employees present in the office (activity from real task data only) */
+  people: PresenceDto[];
 }
 
 type AuthState = "checking" | "anonymous" | "authenticated";
@@ -38,6 +40,7 @@ export function useOffice(): OfficeCtx {
 const EVENT_TYPES = [
   "task.created", "task.updated", "task.status", "task.progress", "agent.updated", "agent.status",
   "agent.paused", "agent.resumed", "approval.requested", "connector.activity", "agent.message",
+  "work.updated", "employee.updated", "notification.created",
 ];
 
 export function OfficeProvider({ children }: { children: ReactNode }) {
@@ -51,16 +54,18 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
 
   const load = useCallback(async () => {
     try {
-      const [fl, ag, co] = await Promise.all([
+      const [fl, ag, co, pe] = await Promise.all([
         api.get<{ floors: FloorDto[]; departments: DepartmentDto[] }>("/api/floors"),
         api.get<{ agents: AgentDto[] }>("/api/agents"),
         api.get<{ connectors: ConnectorDto[] }>("/api/connectors"),
+        api.get<{ presence: PresenceDto[] }>("/api/employees/presence"),
       ]);
       setOffice({
         floors: fl.floors,
         departments: Object.fromEntries(fl.departments.map((d) => [d.id, d])),
         agents: ag.agents,
         connectors: co.connectors,
+        people: pe.presence,
       });
       setError(null);
     } catch (e) {
@@ -73,8 +78,11 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
 
   const refreshAgents = useCallback(async () => {
     try {
-      const ag = await api.get<{ agents: AgentDto[] }>("/api/agents");
-      setOffice((o) => (o ? { ...o, agents: ag.agents } : o));
+      const [ag, pe] = await Promise.all([
+        api.get<{ agents: AgentDto[] }>("/api/agents"),
+        api.get<{ presence: PresenceDto[] }>("/api/employees/presence"),
+      ]);
+      setOffice((o) => (o ? { ...o, agents: ag.agents, people: pe.presence } : o));
     } catch {
       /* next event or reconnect will retry */
     }
@@ -124,6 +132,8 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
       pending.current = window.setTimeout(() => {
         pending.current = null;
         void (ev.type === "agent.updated" ? load() : refreshAgents());
+        // my own record (department, roles) may have changed
+        if (ev.type === "employee.updated") void api.get<{ user: UserDto }>("/api/auth/me").then((r) => setUser(r.user)).catch(() => {});
       }, 250);
     };
     for (const t of EVENT_TYPES) es.addEventListener(t, onEvent);
@@ -147,8 +157,9 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
       auth, user, office, error, live, tick, lastEvent,
       can: (p) => !!user?.permissions.includes(p),
       login: async (username, password) => {
-        const r = await api.post<{ user: UserDto }>("/api/auth/login", { username, password });
-        setUser(r.user);
+        await api.post<{ user: UserDto }>("/api/auth/login", { username, password });
+        const me = await api.get<{ user: UserDto }>("/api/auth/me"); // includes managed departments
+        setUser(me.user);
         setAuth("authenticated");
       },
       logout: async () => {
@@ -167,6 +178,12 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
 
 export function floorOfDepartment(office: Office, depId: string): FloorDto | undefined {
   return office.floors.find((f) => f.departments.includes(depId));
+}
+
+export function peopleOfFloor(office: Office, floorId: string): PresenceDto[] {
+  const f = office.floors.find((x) => x.id === floorId);
+  // seated with their department (desks belong to departments)
+  return f ? office.people.filter((p) => f.departments.includes(p.departmentId)) : [];
 }
 
 export function agentsOfFloor(office: Office, floorId: string): AgentDto[] {

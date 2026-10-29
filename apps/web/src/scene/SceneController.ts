@@ -3,7 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import type { FloorDto } from "@sag/shared";
-import { agentsOfFloor, type Office } from "../api/office";
+import { agentsOfFloor, peopleOfFloor, type Office } from "../api/office";
 import { ATTIC, FL, PLINTH, PODIUM, X0, X1, Z0, Z1, floorRange, outline } from "./buildingGeometry";
 import { CloudBank } from "./clouds";
 import { FloorInterior, interiorKey, type Interior } from "./interior";
@@ -21,6 +21,8 @@ export interface SceneEvents {
   onHover(floorId: string | null, x: number, y: number): void;
   onSelectFloor(floorId: string): void;
   onSelectAgent(agentId: string | null): void;
+  /** a human employee was clicked in the 3D office */
+  onSelectEmployee(employeeId: string): void;
   onHoverAgent(agentId: string | null, x: number, y: number): void;
   onHoverBuilding(info: CampusBuildingInfo | null, x: number, y: number): void;
   onSelectBuilding(id: string): void;
@@ -582,10 +584,12 @@ export class SceneController {
     const o = this.office!;
     const deps = Object.values(o.departments);
     const agents = agentsOfFloor(o, floor.id);
+    const people = peopleOfFloor(o, floor.id);
     const own = floor.departments.map((id) => o.departments[id]).filter((d) => !!d);
     // Realistic office (furniture + walking people) when the floor has a plan; simple zones otherwise.
     const plan = this.realistic ? planFor(floor.id, own.map((d) => ({ id: d.id, name: d.name, color: d.color, weight: d.weight }))) : undefined;
-    const it: Interior = plan ? new OfficeFloor(floor, plan, deps, agents) : new FloorInterior(floor, deps, agents);
+    // (the lightweight zone view has no desks for people; they appear on realistic floors)
+    const it: Interior = plan ? new OfficeFloor(floor, plan, deps, agents, people) : new FloorInterior(floor, deps, agents);
     it.root.visible = false;
     this.scene.add(it.root);
     this.interiors.set(floor.id, it);
@@ -607,7 +611,8 @@ export class SceneController {
       const floor = this.floorById(id);
       if (!floor) continue;
       const agents = agentsOfFloor(office, id);
-      if (it.key !== interiorKey(floor, Object.values(office.departments), agents)) {
+      const people = it instanceof OfficeFloor ? peopleOfFloor(office, id) : [];
+      if (it.key !== interiorKey(floor, Object.values(office.departments), agents, people)) {
         const wasOpen = this.currentFloor === id;
         it.dispose();
         this.interiors.delete(id);
@@ -616,7 +621,10 @@ export class SceneController {
           fresh.root.visible = true;
           this.setAgentHighlight(this.selectedAgent);
         }
-      } else it.applyAgents(agents);
+      } else {
+        it.applyAgents(agents);
+        it.applyPeople?.(people);
+      }
     }
     this.invalidate();
   }
@@ -747,7 +755,8 @@ export class SceneController {
         this.setAgentHighlight(id);
         this.renderer.domElement.style.cursor = id ? "pointer" : "";
       }
-      this.ev.onHoverAgent(id, this.pointerClient.x, this.pointerClient.y);
+      // the agent tooltip is for AI agents; a person's name plate already shows who they are
+      this.ev.onHoverAgent(id?.startsWith("emp:") ? null : id, this.pointerClient.x, this.pointerClient.y);
     }
   }
 
@@ -778,6 +787,7 @@ export class SceneController {
       this.pick();
       if ((this.mode === "campus" || this.mode === "building") && this.hoveredBuilding) this.ev.onSelectBuilding(this.hoveredBuilding);
       else if (this.mode === "overview" && this.hovered) this.ev.onSelectFloor(this.hovered);
+      else if (this.mode === "floor" && this.hoveredAgent?.startsWith("emp:")) this.ev.onSelectEmployee(this.hoveredAgent.slice(4));
       else if (this.mode === "floor" && this.hoveredAgent) this.ev.onSelectAgent(this.hoveredAgent);
     });
     this.onResize = () => this.resize();

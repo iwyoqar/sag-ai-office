@@ -19,6 +19,7 @@ Status legend: ✅ done & verified · 🟡 partial · ⬜ not started
 | 6 — The Brain | knowledge + RAG, instructions, agent mgmt UI, connectors UI | ✅ (external connectors need credentials) | PDF/DOCX/XLSX/CSV/TXT/MD ingest, versioning, department-scoped hybrid search (BM25 + Gemini embeddings, RRF, full-text fallback), instructions, memory approval, users & roles, connectors registry |
 | 7 — Telegram | Bot API, group, commands, idempotency, notifications, approvals | ✅ | long polling (dev) or webhook with secret header (prod); commands, approvals, notifications, admin/allowed IDs in The Brain |
 | 8 — Calendar & analytics | routines scheduler, calendar views, usage | ✅ | RRULE routines (Asia/Tashkent), server-side scheduler, month/week/day calendar, stats |
+| 8b — Human employees & workflow | employee accounts, org hierarchy, scoped/delegable permissions, human task lifecycle with review, subtasks + parent aggregation, workload indicator, notifications, People UI, employees in 3D | ✅ | [plan](HUMAN_EMPLOYEES_PLAN.md) · [report](reports/2026-10-30-human-employees.md) · [workload](WORKLOAD.md) |
 | 9 — Integration & production | Postgres adapter, security review, perf, deploy docs | ⬜ | |
 
 ## Phase 2 — design decisions
@@ -64,6 +65,7 @@ seeded in roster order, next free index on hire/transfer, freed on archive.
 - Gmail / Drive / Sheets / Calendar / Slack / Notion / CRM / ERP connectors: registry and UI exist; each needs the company's OAuth app or API credentials before it can be wired.
 - Company profile text ("Kompaniya haqida") and Telegram admin user IDs: waiting for the owner.
 - Interior polish: diorama backdrop and GTAO (see INTERIOR_BACKLOG.md).
+- People: personal Telegram notices, calendar/availability, persisted human desks (see the 2026-10-30 report).
 
 ## Open items / risks
 - No reference image was attached to the prompt; the style follows the written description.

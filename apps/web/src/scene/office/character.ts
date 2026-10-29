@@ -37,7 +37,11 @@ const GEO = {
   shin: new THREE.CapsuleGeometry(0.05, 0.34, 4, 10),
   foot: new THREE.BoxGeometry(0.09, 0.06, 0.24),
   shadow: new THREE.CircleGeometry(0.3, 20),
+  badge: new THREE.BoxGeometry(0.07, 0.095, 0.01),
+  lanyard: new THREE.TorusGeometry(0.075, 0.006, 4, 16, Math.PI).rotateZ(Math.PI).rotateX(-0.35),
 };
+const BADGE = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, emissive: 0x334155, emissiveIntensity: 0.15 });
+const LANYARD = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.7 });
 const SHADOW_MAT = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.16, depthWrite: false });
 
 /** Joint angles (radians). Positive x bends a limb backward, negative forward (character faces +Z). */
@@ -95,7 +99,8 @@ export class Character {
   speed = 0;
   private walkT = 0;
 
-  constructor(readonly id: string) {
+  /** `human`: a real employee - wears an ID badge on a lanyard (AI agents never do), so the two read differently. */
+  constructor(readonly id: string, readonly human = false) {
     const h = hash(id);
     this.phase = (h % 1000) / 159;
     const skin = mat(SKIN[h % SKIN.length], 0.7);
@@ -147,6 +152,10 @@ export class Character {
       hip.add(knee);
       add(knee, GEO.shin, bottom, 0, -0.21, 0);
       add(knee, GEO.foot, SHOE, 0, -0.45, 0.05);
+    }
+    if (human) {
+      add(this.chest, GEO.badge, BADGE, 0, 0.3, 0.115).castShadow = false;
+      add(this.chest, GEO.lanyard, LANYARD, 0, 0.42, 0.1).castShadow = false;
     }
     const shadow = new THREE.Mesh(GEO.shadow, SHADOW_MAT);
     shadow.rotation.x = -Math.PI / 2;

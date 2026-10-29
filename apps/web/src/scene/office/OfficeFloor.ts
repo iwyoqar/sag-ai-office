@@ -3,12 +3,12 @@
 // Everything they do follows backend state (behaviour.ts); only breathing/typing/head motion is decorative.
 import * as THREE from "three";
 import { CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
-import type { AgentDto, AgentStatus, DepartmentDto, FloorDto } from "@sag/shared";
+import type { AgentDto, AgentStatus, DepartmentDto, FloorDto, PresenceDto } from "@sag/shared";
 import { STATUS_META } from "../../config/status";
 import { floorRange, outline, X0, X1, Z0 } from "../buildingGeometry";
 import { buildBasementShell, interiorKey, type Interior, type ZoneInfo } from "../interior";
 import { ActorMotion, seatSpot, type Spot } from "./actor";
-import { activityFor, isSeated, type Activity } from "./behaviour";
+import { activityFor, activityForPresence, isSeated, type Activity } from "./behaviour";
 import { Character } from "./character";
 import { buildProp, chairInstance, deskPod, MAT } from "./furniture";
 import { buildNavGrid, type NavGrid } from "./nav";
@@ -41,11 +41,28 @@ function tileTexture() {
 
 const RING = new THREE.RingGeometry(0.34, 0.44, 28);
 const ringMats = new Map<AgentStatus, THREE.MeshBasicMaterial>();
+const PRESENCE: Record<PresenceDto["state"], { label: string; color: string }> = {
+  available: { label: "Bo'sh", color: "#94a3b8" },
+  working: { label: "Ishlayapti", color: "#2563eb" },
+  reviewing: { label: "Ish tekshiryapti", color: "#d97706" },
+  blocked: { label: "Bloklangan vazifa", color: "#ea580c" },
+  away: { label: "Joyida emas", color: "#cbd5e1" },
+};
+const presenceRings = new Map<string, THREE.MeshBasicMaterial>();
+function presenceRing(state: PresenceDto["state"]) {
+  let m = presenceRings.get(state);
+  if (!m) presenceRings.set(state, (m = new THREE.MeshBasicMaterial({ color: PRESENCE[state].color, transparent: true, opacity: 0.5, depthWrite: false })));
+  return m;
+}
+
 function ringMat(s: AgentStatus) {
   let m = ringMats.get(s);
   if (!m) ringMats.set(s, (m = new THREE.MeshBasicMaterial({ color: STATUS_META[s].color, transparent: true, opacity: 0.6, depthWrite: false })));
   return m;
 }
+
+/** Pick id of a human employee in the 3D scene (agents use their plain id). */
+export const employeePickId = (id: string) => `emp:${id}`;
 
 class Person {
   readonly char: Character;
@@ -55,24 +72,46 @@ class Person {
   activity: Activity = { place: "desk", pose: "sitRelax" };
   status: AgentStatus = "IDLE";
   meetingSeat = -1;
+  /** human employees only */
+  presence: PresenceDto["state"] | null = null;
 
-  constructor(readonly agentId: string, readonly desk: number, public motion: ActorMotion, agent: AgentDto, color: string) {
-    this.char = new Character(agentId);
+  /** `agentId` is the pick id: the agent id, or `emp:<userId>` for a human employee. */
+  constructor(
+    readonly agentId: string, readonly desk: number, public motion: ActorMotion,
+    who: { name: string; status?: AgentStatus; title?: string }, color: string, readonly human = false,
+  ) {
+    this.char = new Character(agentId, human);
     for (const m of this.char.meshes) m.userData.agentId = agentId;
     this.ring = new THREE.Mesh(RING, ringMat("IDLE"));
     this.ring.rotation.x = -Math.PI / 2;
     this.ring.position.y = 0.015;
     this.char.root.add(this.ring);
     const el = document.createElement("div");
-    el.className = "person-tag";
+    el.className = `person-tag ${human ? "human" : "ai"}`;
     el.style.setProperty("--dep", color);
     this.dot = document.createElement("span");
     this.dot.className = "dot";
-    el.append(this.dot, document.createTextNode(agent.name));
+    const kind = document.createElement("span");
+    kind.className = "kind";
+    kind.textContent = human ? "\u{1F464}" : "AI";
+    el.append(this.dot, kind, document.createTextNode(who.name));
+    if (human && who.title) el.dataset.title = who.title;
     this.tag = new CSS2DObject(el);
     this.tag.position.y = 1.6;
     this.char.root.add(this.tag);
-    this.setStatus(agent.status);
+    if (!human) this.setStatus(who.status ?? "IDLE");
+  }
+
+  setPresence(state: PresenceDto["state"]) {
+    this.presence = state;
+    this.ring.material = presenceRing(state);
+    this.dot.style.background = PRESENCE[state].color;
+    const title = this.tag.element.dataset.title;
+    this.tag.element.title = `${title ? `${title} - ` : ""}${PRESENCE[state].label}`;
+    this.tag.element.classList.toggle("away", state === "away");
+    // away: the desk stays empty (only the name plate remains, dimmed)
+    for (const m of this.char.meshes) m.visible = state !== "away";
+    this.ring.visible = state !== "away";
   }
 
   setStatus(s: AgentStatus) {
@@ -103,8 +142,8 @@ export class OfficeFloor implements Interior {
   private linkKey = "";
   private lastT = -1;
 
-  constructor(readonly floor: FloorDto, private plan: FloorPlan, departments: DepartmentDto[], agents: AgentDto[]) {
-    this.key = interiorKey(floor, departments, agents);
+  constructor(readonly floor: FloorDto, private plan: FloorPlan, departments: DepartmentDto[], agents: AgentDto[], people: PresenceDto[] = []) {
+    this.key = interiorKey(floor, departments, agents, people);
     this.y0 = floorRange(floor.level).y0;
     const fy = (this.fy = this.y0 + 0.02);
     this.root.name = `office-${floor.id}`;
@@ -125,12 +164,13 @@ export class OfficeFloor implements Interior {
 
     // People: an agent takes the n-th desk of its department (agents.workstation = n, persisted by the backend).
     const deptColor = new Map(departments.map((d) => [d.id, d.color]));
+    const takenDesks = new Set<number>();
     const byDept = new Map<string, AgentDto[]>();
     for (const a of agents) byDept.set(a.departmentId, [...(byDept.get(a.departmentId) ?? []), a]);
     for (const [dep, list] of byDept) {
       const desks = plan.deskDept.flatMap((d, i) => (d === dep ? [i] : []));
       list.sort((a, b) => (a.workstation ?? 1e9) - (b.workstation ?? 1e9) || a.id.localeCompare(b.id));
-      const taken = new Set<number>();
+      const taken = takenDesks;
       // keep persisted desk numbers; agents without one (or beyond the plan) take the next free desk
       const want = list.map((a) => (a.workstation != null && a.workstation < desks.length ? desks[a.workstation] : -1));
       want.forEach((d) => d >= 0 && taken.add(d));
@@ -139,7 +179,7 @@ export class OfficeFloor implements Interior {
         if (desk < 0 || (want.indexOf(desk) !== i)) desk = desks.find((d) => !taken.has(d)) ?? -1;
         if (desk < 0) return; // more agents than desks: not drawn (the panel still lists them)
         taken.add(desk);
-        const p = new Person(a.id, desk, new ActorMotion(this.spotFor(desk, { place: "desk", pose: "sitRelax" }, -1)), a, deptColor.get(dep) ?? "#888");
+        const p = new Person(a.id, desk, new ActorMotion(this.spotFor(desk, { place: "desk", pose: "sitRelax" }, -1)), { name: a.name, status: a.status }, deptColor.get(dep) ?? "#888");
         p.activity = activityFor(a.status, a.lifecycle);
         if (p.activity.place === "meeting") this.claimMeeting(p);
         p.motion = new ActorMotion(this.spotFor(desk, p.activity, p.meetingSeat));
@@ -149,6 +189,21 @@ export class OfficeFloor implements Interior {
         this.place(p, 0);
         this.paintScreen(desk, p.status);
       });
+    }
+    // Human employees take the department's free desks (in hiring order), after the agents' persisted desks.
+    for (const h of people) {
+      const desk = plan.deskDept.findIndex((d, i) => d === h.departmentId && !takenDesks.has(i));
+      if (desk < 0) continue; // no free desk on the plan: listed in the directory, not drawn
+      takenDesks.add(desk);
+      const act: Activity = activityForPresence(h.state) ?? { place: "desk", pose: "sitRelax" };
+      const p = new Person(employeePickId(h.id), desk, new ActorMotion(this.spotFor(desk, act, -1)), { name: h.displayName, title: h.jobTitle }, deptColor.get(h.departmentId) ?? "#888", true);
+      p.activity = act;
+      p.setPresence(h.state);
+      this.figures.push(p);
+      this.root.add(p.char.root);
+      this.zones.push({ label: p.tag });
+      this.place(p, 0);
+      this.paintHumanScreen(p);
     }
     for (const p of this.figures) this.screens[p.desk].userData.agentId = p.agentId; // clicking a desk selects its owner
     this.root.updateMatrixWorld(true);
@@ -247,6 +302,7 @@ export class OfficeFloor implements Interior {
   applyAgents(agents: AgentDto[]) {
     const byId = new Map(agents.map((a) => [a.id, a]));
     for (const p of this.figures) {
+      if (p.human) continue;
       const a = byId.get(p.agentId);
       if (!a) continue;
       p.setStatus(a.status);
@@ -255,6 +311,23 @@ export class OfficeFloor implements Interior {
       if (p.activity.place === "meeting") this.claimMeeting(p);
       else p.meetingSeat = -1;
       p.motion.goTo(this.spotFor(p.desk, p.activity, p.meetingSeat), this.grid);
+    }
+  }
+
+  private paintHumanScreen(p: Person) {
+    this.screenMats[p.desk]?.color.setHex(p.presence === "working" ? SCREEN.WORKING : p.presence === "away" ? 0x111827 : SCREEN.IDLE);
+  }
+
+  /** Presence changes of human employees: they stay at their desk; only pose and visibility follow the data. */
+  applyPeople(people: PresenceDto[]) {
+    const byId = new Map(people.map((h) => [employeePickId(h.id), h]));
+    for (const p of this.figures) {
+      if (!p.human) continue;
+      const h = byId.get(p.agentId);
+      if (!h || h.state === p.presence) continue;
+      p.setPresence(h.state);
+      p.activity = activityForPresence(h.state) ?? p.activity;
+      this.paintHumanScreen(p);
     }
   }
 
@@ -325,7 +398,7 @@ export class OfficeFloor implements Interior {
     }
     for (const a of this.animated) a(t);
     // working screens flicker gently
-    for (const p of this.figures) if (p.status === "WORKING") this.screenMats[p.desk]?.color.setHex(SCREEN.WORKING).multiplyScalar(0.88 + 0.12 * Math.sin(t * 9 + p.desk));
+    for (const p of this.figures) if (!p.human && p.status === "WORKING") this.screenMats[p.desk]?.color.setHex(SCREEN.WORKING).multiplyScalar(0.88 + 0.12 * Math.sin(t * 9 + p.desk));
     this.updateLinks(t);
   }
 

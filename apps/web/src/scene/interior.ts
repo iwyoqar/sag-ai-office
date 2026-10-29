@@ -1,7 +1,7 @@
 // Procedural floor interiors: slab, department zones, desks, props and agent figures.
 import * as THREE from "three";
 import { CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
-import type { AgentDto, AgentStatus, DepartmentDto, FloorDto } from "@sag/shared";
+import type { AgentDto, AgentStatus, DepartmentDto, FloorDto, PresenceDto } from "@sag/shared";
 import { STATUS_META } from "../config/status";
 import { X0, X1, Z0, Z1, floorRange, outline } from "./buildingGeometry";
 import { layoutDesks, layoutZones, type Zone } from "./layout";
@@ -240,17 +240,23 @@ export interface Interior {
   readonly pickables: THREE.Object3D[];
   readonly baseY: number;
   applyAgents(agents: AgentDto[]): void;
+  /** human presence (realistic floors only) */
+  applyPeople?(people: PresenceDto[]): void;
   setLinks(pairs: [string, string][]): void;
   update(t: number): void;
   dispose(): void;
 }
 
 /** Signature of what an interior was built from; a change means rebuild, otherwise statuses update in place. */
-export function interiorKey(floor: FloorDto, departments: DepartmentDto[], agents: AgentDto[]): string {
+export function interiorKey(
+  floor: FloorDto, departments: DepartmentDto[], agents: AgentDto[], people: { id: string; departmentId: string }[] = [],
+): string {
   return [
     floor.departments.join(","),
     departments.map((d) => `${d.id}:${d.weight}:${d.color}`).join(","),
     agents.map((a) => `${a.id}@${a.departmentId}`).sort().join(","),
+    // a hire, transfer or departure of a person rebuilds the floor (their desk changes)
+    people.map((p) => `${p.id}@${p.departmentId}`).sort().join(","),
   ].join("|");
 }
 
