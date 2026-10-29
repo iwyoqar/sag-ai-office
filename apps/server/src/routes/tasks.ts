@@ -42,6 +42,7 @@ const CreateBody = z.object({
   maxAttempts: z.number().int().min(1).max(10).optional(),
   backlog: z.boolean().optional(),
   requiresApproval: z.boolean().optional(),
+  scheduledFor: isoDate.nullish(),
 });
 
 const PatchBody = z.object({

@@ -16,6 +16,7 @@ import { taskRoutes } from "./routes/tasks.js";
 import { eventRoutes } from "./routes/events.js";
 import { runtimeRoutes } from "./routes/runtime.js";
 import { brainRoutes } from "./routes/brain.js";
+import { scheduleRoutes } from "./routes/schedule.js";
 import type { TelegramBot } from "./telegram/bot.js";
 import type { LlmSetup } from "./llm/index.js";
 import type { AgentRunner } from "./agents/runner.js";
@@ -110,6 +111,7 @@ export async function buildApp(opts: AppOptions) {
   await app.register(eventRoutes(deps));
   await app.register(runtimeRoutes(deps));
   await app.register(brainRoutes(deps));
+  await app.register(scheduleRoutes(deps));
 
   return { app, deps };
 }

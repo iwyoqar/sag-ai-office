@@ -35,7 +35,7 @@ export async function loginCookie(app: App, username: string, password: string):
 
 /** Small request helper bound to a session cookie. */
 export function client(app: App, cookie: string) {
-  const call = async (method: "GET" | "POST" | "PATCH" | "PUT", url: string, payload?: unknown) => {
+  const call = async (method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", url: string, payload?: unknown) => {
     const r = await app.inject({ method, url, payload: payload as object, headers: { cookie } });
     return { status: r.statusCode, body: r.body ? JSON.parse(r.body) : null };
   };
@@ -44,6 +44,7 @@ export function client(app: App, cookie: string) {
     post: (u: string, p?: unknown) => call("POST", u, p ?? {}),
     patch: (u: string, p: unknown) => call("PATCH", u, p),
     put: (u: string, p: unknown) => call("PUT", u, p),
+    delete: (u: string) => call("DELETE", u),
   };
 }
 

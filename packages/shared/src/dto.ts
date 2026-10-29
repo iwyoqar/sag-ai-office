@@ -44,7 +44,7 @@ export interface TaskLimits {
 export interface TaskDto {
   id: string; kind: "single" | "orchestrate";
   /** a person must approve the result before the task counts as done */
-  requiresApproval: boolean; title: string; description: string; createdBy: string | null; parentId: string | null;
+  requiresApproval: boolean; scheduledFor: string | null; title: string; description: string; createdBy: string | null; parentId: string | null;
   departmentId: string | null; agentId: string | null; priority: TaskPriority; deadline: string | null;
   status: TaskStatus; progress: number | null; stage: string | null; result: string | null; error: string | null;
   attempts: number; maxAttempts: number; limits: TaskLimits; dependsOn: string[];

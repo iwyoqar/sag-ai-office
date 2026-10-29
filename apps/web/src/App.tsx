@@ -9,6 +9,7 @@ import { useSystem } from "./api/system";
 import { TaskPanel } from "./ui/TaskPanel";
 import { TaskDetail } from "./ui/TaskDetail";
 import { BrainPanel } from "./ui/BrainPanel";
+import { CalendarPanel } from "./ui/CalendarPanel";
 import { TopBar } from "./ui/TopBar";
 import { FloorRail } from "./ui/FloorRail";
 import { FloorPanel } from "./ui/FloorPanel";
@@ -52,6 +53,7 @@ export function App() {
   const [tasksOpen, setTasksOpen] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [brainOpen, setBrainOpen] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
 
   useEffect(() => {
     if (!has3d || !host.current) {
@@ -125,12 +127,15 @@ export function App() {
   taskIdRef.current = taskId;
   const brainRef = useRef(false);
   brainRef.current = brainOpen;
+  const calRef = useRef(false);
+  calRef.current = calendarOpen;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       // close the topmost layer first
       if (taskIdRef.current) setTaskId(null);
       else if (brainRef.current) setBrainOpen(false);
+      else if (calRef.current) setCalendarOpen(false);
       else back();
     };
     window.addEventListener("keydown", onKey);
@@ -162,6 +167,7 @@ export function App() {
         onTasks={ready ? () => setTasksOpen((o) => !o) : undefined}
         tasksOpen={tasksOpen}
         onBrain={ready ? () => setBrainOpen(true) : undefined}
+        onCalendar={ready ? () => setCalendarOpen(true) : undefined}
         system={ready ? system : null}
       />
 
@@ -196,6 +202,7 @@ export function App() {
       {ready && agentTip && view.mode === "floor" && !view.agentId && <AgentTip agentId={agentTip.id} x={agentTip.x} y={agentTip.y} />}
       {ready && tasksOpen && <TaskPanel onClose={() => setTasksOpen(false)} onOpen={setTaskId} system={system} />}
       {ready && brainOpen && <BrainPanel onClose={() => setBrainOpen(false)} />}
+      {ready && calendarOpen && <CalendarPanel onClose={() => setCalendarOpen(false)} onOpenTask={setTaskId} />}
       {ready && taskId && <TaskDetail taskId={taskId} onClose={() => setTaskId(null)} onOpen={setTaskId} />}
       {ready && view.agentId && <AgentProfile agentId={view.agentId} onClose={() => dispatch({ type: "selectAgent", agentId: null })} />}
     </div>

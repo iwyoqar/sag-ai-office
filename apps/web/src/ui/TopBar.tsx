@@ -2,9 +2,9 @@ import type { FloorDto } from "@sag/shared";
 import { useOffice } from "../api/office";
 import type { SystemStatus } from "../api/system";
 
-export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks, tasksOpen, system, onBrain }: {
+export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks, tasksOpen, system, onBrain, onCalendar }: {
   floor?: FloorDto; building?: string; inOffice: boolean; onCampus?: () => void; onOffice?: () => void;
-  onTasks?: () => void; tasksOpen?: boolean; system?: SystemStatus | null; onBrain?: () => void;
+  onTasks?: () => void; tasksOpen?: boolean; system?: SystemStatus | null; onBrain?: () => void; onCalendar?: () => void;
 }) {
   const { user, live, auth, logout } = useOffice();
   return (
@@ -40,6 +40,7 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
         <div className="top-status">
           {system && <AiChip s={system} />}
           {onBrain && <button className="tasks-btn" onClick={onBrain}>The Brain</button>}
+          {onCalendar && <button className="tasks-btn" onClick={onCalendar}>Kalendar</button>}
           {onTasks && (
             <button className={`tasks-btn${tasksOpen ? " on" : ""}`} onClick={onTasks}>
               Vazifalar{system?.worker.active ? <b>{system.worker.active}</b> : null}

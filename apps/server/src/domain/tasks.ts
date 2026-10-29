@@ -16,7 +16,7 @@ interface TaskRow {
   status: TaskStatus; progress: number | null; stage: string | null; result: string | null; error: string | null;
   attempts: number; max_attempts: number; lease_owner: string | null; lease_until: string | null; limits: string;
   started_at: string | null; completed_at: string | null; tokens_in: number; tokens_out: number; cost_usd: number;
-  created_at: string; updated_at: string; kind: "single" | "orchestrate"; requires_approval: number;
+  created_at: string; updated_at: string; kind: "single" | "orchestrate"; requires_approval: number; scheduled_for: string | null;
 }
 
 const OPEN = OPEN_TASK_STATUSES.map((s) => `'${s}'`).join(",");
@@ -25,7 +25,7 @@ const PRIORITY_RANK = "CASE priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHE
 function toDto(ctx: Ctx, r: TaskRow): TaskDto {
   const deps = ctx.db.all<{ depends_on_id: string }>("SELECT depends_on_id FROM task_dependencies WHERE task_id = ?", r.id);
   return {
-    id: r.id, kind: r.kind, requiresApproval: !!r.requires_approval, title: r.title, description: r.description, createdBy: r.created_by, parentId: r.parent_id,
+    id: r.id, kind: r.kind, requiresApproval: !!r.requires_approval, scheduledFor: r.scheduled_for, title: r.title, description: r.description, createdBy: r.created_by, parentId: r.parent_id,
     departmentId: r.department_id, agentId: r.agent_id, priority: r.priority, deadline: r.deadline, status: r.status,
     progress: r.progress, stage: r.stage, result: r.result, error: r.error, attempts: r.attempts, maxAttempts: r.max_attempts,
     limits: json(r.limits, {}), dependsOn: deps.map((d) => d.depends_on_id),
@@ -136,6 +136,8 @@ export interface CreateTaskInput {
   title: string; description?: string; departmentId?: string | null; agentId?: string | null;
   priority?: TaskPriority; deadline?: string | null; parentId?: string | null; dependsOn?: string[];
   limits?: TaskLimits; maxAttempts?: number; backlog?: boolean; requiresApproval?: boolean;
+  /** ISO time; in the future → the task waits in BACKLOG and the scheduler queues it then */
+  scheduledFor?: string | null;
 }
 
 /** Department whose agent plans and combines multi-department work. */
@@ -182,7 +184,10 @@ export function createTask(ctx: Ctx, input: CreateTaskInput, actor: Actor): Task
       assertNoCycle(ctx, id, deps);
       for (const d of deps) ctx.db.run("INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)", id, d);
     }
-    if (agentId) {
+    const later = input.scheduledFor && Date.parse(input.scheduledFor) > Date.now();
+    if (later) {
+      ctx.db.run("UPDATE tasks SET scheduled_for = ?, stage = 'Rejalashtirilgan' WHERE id = ?", new Date(input.scheduledFor!).toISOString(), id);
+    } else if (agentId) {
       const to: TaskStatus = depsSatisfied(ctx, id) ? "QUEUED" : "WAITING_FOR_DEPENDENCY";
       ctx.db.run("UPDATE tasks SET status = ? WHERE id = ?", to, id);
     }

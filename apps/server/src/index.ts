@@ -6,6 +6,7 @@ import { recoverExpiredLeases } from "./domain/tasks.js";
 import { createLlm } from "./llm/index.js";
 import { AgentRunner } from "./agents/runner.js";
 import { TelegramBot } from "./telegram/bot.js";
+import { Scheduler } from "./schedule/service.js";
 
 const db = new Db(config.databasePath);
 const applied = db.migrate();
@@ -65,6 +66,10 @@ if (llm.client) {
   app.log.warn({ reason: llm.reason }, "LLM not configured — tasks stay queued until an API key is set");
 }
 
+// ---- routines & scheduled tasks (server-side; survives browser closing and restarts)
+const scheduler = new Scheduler(deps, 20_000, (msg, meta) => app.log.info(meta ?? {}, msg));
+scheduler.start();
+
 // ---- Telegram (long polling; one consumer per bot token)
 if (config.telegram.token && config.telegram.groupId && config.telegram.enabled) {
   const bot = new TelegramBot(deps, {
@@ -84,6 +89,7 @@ if (config.telegram.token && config.telegram.groupId && config.telegram.enabled)
 const shutdown = async () => {
   clearInterval(leaseTimer);
   if (healthTimer) clearInterval(healthTimer);
+  scheduler.stop();
   await deps.runner?.stop();
   await deps.telegram?.stop();
   await app.close();
