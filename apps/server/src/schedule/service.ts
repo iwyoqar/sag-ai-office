@@ -215,6 +215,8 @@ export function syncRunStatus(ctx: Ctx, taskId: string, to: string) {
   );
 }
 
+import { deadlineSweep } from "../domain/notifications.js";
+
 export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -230,6 +232,8 @@ export class Scheduler {
       try {
         const r = schedulerTick(this.ctx);
         if (r.routines || r.tasks) this.log?.("scheduler", r);
+        // people: deadline-soon / overdue notices (idempotent per task + deadline)
+        deadlineSweep(this.ctx);
       } catch (e) {
         this.log?.("scheduler error", { error: (e as Error).message });
       }

@@ -6,6 +6,7 @@ import { changeOwnPassword, createUser, listUsers, resetPassword, updateUser } f
 import { actorOf } from "../app.js";
 import { audit } from "../lib/audit.js";
 import { HttpError } from "../lib/errors.js";
+import { managedDepartments } from "../domain/access.js";
 
 const LoginBody = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(256) });
 
@@ -38,7 +39,10 @@ export const authRoutes = (d: Deps) => async (app: FastifyInstance) => {
     return { ok: true };
   });
 
-  app.get("/api/auth/me", async (req) => ({ user: requireUser(req) }));
+  app.get("/api/auth/me", async (req) => {
+    const user = requireUser(req);
+    return { user: { ...user, managedDepartments: managedDepartments(user) } };
+  });
 
   app.post("/api/auth/password", async (req) => {
     const u = requireUser(req);

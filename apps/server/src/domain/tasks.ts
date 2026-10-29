@@ -16,13 +16,18 @@ interface TaskRow {
   status: TaskStatus; progress: number | null; stage: string | null; result: string | null; error: string | null;
   attempts: number; max_attempts: number; lease_owner: string | null; lease_until: string | null; limits: string;
   started_at: string | null; completed_at: string | null; tokens_in: number; tokens_out: number; cost_usd: number;
-  created_at: string; updated_at: string; kind: "single" | "orchestrate"; requires_approval: number; scheduled_for: string | null;
+  created_at: string; updated_at: string; kind: "single" | "orchestrate" | "human"; requires_approval: number; scheduled_for: string | null;
+  assignee_user_id: string | null; assigned_by: string | null; reviewer_user_id: string | null; estimate_hours: number | null;
+  actual_hours: number | null; is_optional: number; weight: number; decline_reason: string | null; accepted_at: string | null;
+  submitted_at: string | null;
 }
 
 const OPEN = OPEN_TASK_STATUSES.map((s) => `'${s}'`).join(",");
 const PRIORITY_RANK = "CASE priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END";
 
-function toDto(ctx: Ctx, r: TaskRow): TaskDto {
+export type { TaskRow };
+
+export function toDto(ctx: Ctx, r: TaskRow): TaskDto {
   const deps = ctx.db.all<{ depends_on_id: string }>("SELECT depends_on_id FROM task_dependencies WHERE task_id = ?", r.id);
   return {
     id: r.id, kind: r.kind, requiresApproval: !!r.requires_approval, scheduledFor: r.scheduled_for, title: r.title, description: r.description, createdBy: r.created_by, parentId: r.parent_id,
@@ -31,6 +36,13 @@ function toDto(ctx: Ctx, r: TaskRow): TaskDto {
     limits: json(r.limits, {}), dependsOn: deps.map((d) => d.depends_on_id),
     startedAt: r.started_at, completedAt: r.completed_at, tokensIn: r.tokens_in, tokensOut: r.tokens_out, costUsd: r.cost_usd,
     createdAt: r.created_at, updatedAt: r.updated_at,
+    ...(r.kind === "human"
+      ? {
+          assigneeUserId: r.assignee_user_id, assignedBy: r.assigned_by, reviewerUserId: r.reviewer_user_id,
+          estimateHours: r.estimate_hours, actualHours: r.actual_hours, isOptional: !!r.is_optional, weight: r.weight,
+          declineReason: r.decline_reason, acceptedAt: r.accepted_at, submittedAt: r.submitted_at,
+        }
+      : {}),
   };
 }
 

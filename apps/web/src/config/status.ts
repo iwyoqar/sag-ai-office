@@ -22,4 +22,15 @@ export const TASK_STATUS_META: Record<TaskStatus, { label: string; color: string
   FAILED: { label: "Xato", color: "#dc2626" },
   DONE: { label: "Bajarildi", color: "#16a34a" },
   CANCELLED: { label: "Bekor qilindi", color: "#6b7280" },
+  ASSIGNED: { label: "Biriktirildi", color: "#0ea5e9" },
+  ACCEPTED: { label: "Qabul qilindi", color: "#6366f1" },
+  IN_REVIEW: { label: "Ko'rib chiqilmoqda", color: "#d97706" },
+  CHANGES_REQUESTED: { label: "O'zgartirish so'raldi", color: "#db2777" },
+};
+
+export const WORKLOAD_META: Record<"GREEN" | "YELLOW" | "ORANGE" | "RED", { label: string; color: string }> = {
+  GREEN: { label: "Past", color: "#16a34a" },
+  YELLOW: { label: "O'sib bormoqda", color: "#ca8a04" },
+  ORANGE: { label: "Yuqori", color: "#ea580c" },
+  RED: { label: "OVERLOADED", color: "#dc2626" },
 };

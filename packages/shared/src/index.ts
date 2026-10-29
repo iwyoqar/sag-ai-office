@@ -15,6 +15,8 @@ export const ACTIVE_AGENT_STATUSES: readonly AgentStatus[] = ["WORKING", "THINKI
 export const TASK_STATUSES = [
   "BACKLOG", "QUEUED", "IN_PROGRESS", "WAITING_FOR_DEPENDENCY",
   "WAITING_APPROVAL", "BLOCKED", "FAILED", "DONE", "CANCELLED",
+  // human workflow (DONE doubles as "COMPLETED")
+  "ASSIGNED", "ACCEPTED", "IN_REVIEW", "CHANGES_REQUESTED",
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
@@ -22,6 +24,7 @@ export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = ["DONE", "FAILED", 
 /** Tasks that still belong to an agent's workload. */
 export const OPEN_TASK_STATUSES: readonly TaskStatus[] = [
   "BACKLOG", "QUEUED", "IN_PROGRESS", "WAITING_FOR_DEPENDENCY", "WAITING_APPROVAL", "BLOCKED",
+  "ASSIGNED", "ACCEPTED", "IN_REVIEW", "CHANGES_REQUESTED",
 ];
 
 const TASK_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
@@ -36,7 +39,37 @@ const TASK_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   FAILED: ["QUEUED"],
   DONE: [],
   CANCELLED: [],
+  // human-only statuses never occur on agent tasks
+  ASSIGNED: [],
+  ACCEPTED: [],
+  IN_REVIEW: [],
+  CHANGES_REQUESTED: [],
 };
+
+/** Workflow for tasks done by people (kind = "human"). DONE = completed. */
+const HUMAN_TASK_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
+  BACKLOG: ["ASSIGNED", "ACCEPTED", "CANCELLED"],
+  ASSIGNED: ["ACCEPTED", "BACKLOG", "CANCELLED"], // BACKLOG = declined, back to the manager
+  ACCEPTED: ["IN_PROGRESS", "BLOCKED", "CANCELLED", "ASSIGNED"],
+  IN_PROGRESS: ["IN_REVIEW", "DONE", "BLOCKED", "CANCELLED", "ASSIGNED"],
+  IN_REVIEW: ["DONE", "CHANGES_REQUESTED", "CANCELLED"],
+  CHANGES_REQUESTED: ["IN_PROGRESS", "BLOCKED", "CANCELLED", "ASSIGNED"],
+  BLOCKED: ["IN_PROGRESS", "ACCEPTED", "CANCELLED", "ASSIGNED"],
+  DONE: [],
+  CANCELLED: [],
+  QUEUED: [], WAITING_FOR_DEPENDENCY: [], WAITING_APPROVAL: [], FAILED: [],
+};
+
+export function canTransitionHumanTask(from: TaskStatus, to: TaskStatus): boolean {
+  return HUMAN_TASK_TRANSITIONS[from].includes(to);
+}
+
+export function allowedHumanTransitions(from: TaskStatus): readonly TaskStatus[] {
+  return HUMAN_TASK_TRANSITIONS[from];
+}
+
+/** Statuses of a person's task that still count as their work in progress. */
+export const HUMAN_ACTIVE_STATUSES: readonly TaskStatus[] = ["ASSIGNED", "ACCEPTED", "IN_PROGRESS", "CHANGES_REQUESTED", "BLOCKED"];
 
 export function canTransitionTask(from: TaskStatus, to: TaskStatus): boolean {
   return TASK_TRANSITIONS[from].includes(to);
@@ -49,20 +82,32 @@ export function allowedTaskTransitions(from: TaskStatus): readonly TaskStatus[] 
 export const TASK_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 
-export const ROLES = ["admin", "director", "hr", "member", "viewer"] as const;
+export const ROLES = ["admin", "director", "department_head", "employee", "hr", "member", "viewer"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const PERMISSIONS = [
   "tasks:read", "tasks:create", "tasks:manage",
   "agents:read", "agents:manage", "agents:control",
   "departments:manage", "audit:read", "users:manage", "brain:manage",
+  // people & human workflow
+  "employees:read_all", "employees:manage_all", "employees:manage_dept",
+  "tasks:assign_any", "tasks:assign_dept", "tasks:read_all", "tasks:read_team",
+  "permissions:delegate", "workload:configure",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
+
+/** Permissions a grant may be limited to one department for. */
+export const SCOPABLE_PERMISSIONS: readonly Permission[] = ["employees:manage_dept", "tasks:assign_dept", "tasks:read_team"];
 
 /** Default role → permission map. Stored in the DB on seed so it can be edited later. */
 export const DEFAULT_ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   admin: PERMISSIONS,
-  director: ["tasks:read", "tasks:create", "tasks:manage", "agents:read", "agents:control", "audit:read", "brain:manage"],
+  director: [
+    "tasks:read", "tasks:create", "tasks:manage", "agents:read", "agents:control", "audit:read", "brain:manage",
+    "employees:read_all", "tasks:assign_any", "tasks:read_all", "permissions:delegate", "workload:configure",
+  ],
+  department_head: ["tasks:read", "tasks:create", "agents:read", "employees:manage_dept", "tasks:assign_dept"],
+  employee: ["tasks:read", "tasks:create", "agents:read"],
   hr: ["tasks:read", "tasks:create", "agents:read", "agents:manage", "agents:control"],
   member: ["tasks:read", "tasks:create", "agents:read"],
   viewer: ["tasks:read", "agents:read"],
@@ -89,7 +134,9 @@ export interface DeptStats {
 export type OfficeEventType =
   | "task.created" | "task.updated" | "task.status" | "task.progress"
   | "agent.updated" | "agent.status" | "agent.paused" | "agent.resumed"
-  | "approval.requested" | "connector.activity" | "agent.message";
+  | "approval.requested" | "connector.activity" | "agent.message"
+  // people: content-free signals delivered only to their audience (clients refetch through authorised APIs)
+  | "work.updated" | "employee.updated" | "notification.created";
 
 export interface OfficeEvent {
   id: number;

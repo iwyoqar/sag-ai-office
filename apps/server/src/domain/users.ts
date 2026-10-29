@@ -15,7 +15,7 @@ export interface UserAdminDto {
 
 export const MIN_PASSWORD = 10;
 
-function checkPassword(pw: string) {
+export function checkPassword(pw: string) {
   if (pw.length < MIN_PASSWORD) throw badRequest(`Parol kamida ${MIN_PASSWORD} belgidan iborat bo'lsin`);
   if (/^(.)\1+$/.test(pw) || /^(0123456789|1234567890|password|parol)/i.test(pw)) throw badRequest("Parol juda oddiy");
 }
@@ -94,7 +94,7 @@ export function updateUser(
       for (const r of roles) ctx.db.run("INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)", id, r);
     }
     if (patch.isActive !== undefined) {
-      ctx.db.run("UPDATE users SET is_active = ? WHERE id = ?", active ? 1 : 0, id);
+      ctx.db.run("UPDATE users SET is_active = ?, status = ? WHERE id = ?", active ? 1 : 0, active ? "active" : "inactive", id);
       if (!active) ctx.db.run("DELETE FROM sessions WHERE user_id = ?", id);
     }
     audit(ctx.db, actor, "user.update", { type: "user", id }, { roles: patch.roles, isActive: patch.isActive, displayName: patch.displayName });

@@ -3,6 +3,56 @@ import type { AgentLifecycle, AgentStatus, Permission, Role, TaskPriority, TaskS
 
 export interface UserDto {
   id: string; username: string; displayName: string; roles: Role[]; permissions: Permission[];
+  /** employee context (null for technical accounts) */
+  departmentId?: string | null;
+  /** departments this user manages (head or delegated grant) */
+  managedDepartments?: string[];
+}
+
+export type EmployeeStatus = "active" | "inactive" | "archived";
+export type WorkloadLevel = "GREEN" | "YELLOW" | "ORANGE" | "RED";
+
+export interface WorkloadDto {
+  level: WorkloadLevel;
+  /** demand / capacity over the planning horizon, % */
+  percent: number;
+  demandHours: number;
+  capacityHours: number;
+  activeTasks: number;
+  overdue: number;
+  dueSoon: number;
+  blocked: number;
+  /** "low" when some estimates were missing and defaults were used */
+  confidence: "high" | "low";
+  summary: string;
+  reasons: string[];
+}
+
+/** Basic directory card: visible to every signed-in user. */
+export interface EmployeeCardDto {
+  id: string; displayName: string; jobTitle: string; departmentId: string | null; floorId: string | null;
+  status: EmployeeStatus; hasAvatar: boolean; roles: Role[]; managerId: string | null;
+}
+
+/** Full profile: self, managers in scope, and company-wide readers only. */
+export interface EmployeeDto extends EmployeeCardDto {
+  username: string; email: string | null; startDate: string | null;
+  capacityHoursWeek: number; workStart: string; workEnd: string; timezone: string;
+  lastActivityAt: string | null; lastLoginAt: string | null; createdAt: string;
+  grants: { id: string; permission: Permission; departmentId: string | null; canDelegate: boolean; grantedBy: string | null }[];
+  workload: WorkloadDto;
+  /** what the viewer may do with this record */
+  can: { edit: boolean; editOrg: boolean; changeStatus: boolean; changeRoles: boolean; grant: boolean; assignTasks: boolean };
+}
+
+/** Presence for the 3D office: derived only from real task data and activity timestamps. */
+export type PresenceState = "available" | "working" | "reviewing" | "blocked" | "away";
+export interface PresenceDto {
+  id: string; displayName: string; jobTitle: string; departmentId: string; floorId: string | null; state: PresenceState;
+}
+
+export interface NotificationDto {
+  id: string; kind: string; taskId: string | null; title: string; body: string; readAt: string | null; createdAt: string;
 }
 
 export interface FloorDto { id: string; level: number; title: string; departments: string[] }
@@ -42,7 +92,7 @@ export interface TaskLimits {
 }
 
 export interface TaskDto {
-  id: string; kind: "single" | "orchestrate";
+  id: string; kind: "single" | "orchestrate" | "human";
   /** a person must approve the result before the task counts as done */
   requiresApproval: boolean; scheduledFor: string | null; title: string; description: string; createdBy: string | null; parentId: string | null;
   departmentId: string | null; agentId: string | null; priority: TaskPriority; deadline: string | null;
@@ -50,4 +100,8 @@ export interface TaskDto {
   attempts: number; maxAttempts: number; limits: TaskLimits; dependsOn: string[];
   startedAt: string | null; completedAt: string | null; tokensIn: number; tokensOut: number; costUsd: number;
   createdAt: string; updatedAt: string;
+  /** human workflow (kind = "human") */
+  assigneeUserId?: string | null; assignedBy?: string | null; reviewerUserId?: string | null;
+  estimateHours?: number | null; actualHours?: number | null; isOptional?: boolean; weight?: number;
+  declineReason?: string | null; acceptedAt?: string | null; submittedAt?: string | null;
 }

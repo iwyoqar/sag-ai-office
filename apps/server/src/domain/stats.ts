@@ -35,10 +35,10 @@ export function departmentStats(ctx: Ctx, range: { from: string; to: string }): 
     "SELECT department_id, status, lifecycle FROM agents WHERE lifecycle <> 'ARCHIVED'",
   );
   const live = db.all<{ department_id: string; status: string; n: number }>(
-    "SELECT department_id, status, COUNT(*) n FROM tasks WHERE status IN ('IN_PROGRESS','QUEUED','WAITING_APPROVAL') GROUP BY department_id, status",
+    "SELECT department_id, status, COUNT(*) n FROM tasks WHERE kind <> 'human' AND status IN ('IN_PROGRESS','QUEUED','WAITING_APPROVAL') GROUP BY department_id, status",
   );
   const closed = db.all<{ department_id: string; status: string; started_at: string | null; completed_at: string }>(
-    "SELECT department_id, status, started_at, completed_at FROM tasks WHERE status IN ('DONE','FAILED') AND completed_at >= ? AND completed_at < ?",
+    "SELECT department_id, status, started_at, completed_at FROM tasks WHERE kind <> 'human' AND status IN ('DONE','FAILED') AND completed_at >= ? AND completed_at < ?",
     range.from, range.to,
   );
   const usage = db.all<{ department_id: string; tokens: number; cost: number }>(

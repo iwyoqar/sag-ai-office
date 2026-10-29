@@ -17,7 +17,15 @@ export const eventRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   app.get("/api/events", async (req, reply) => {
-    requirePerm(req, "tasks:read");
+    const u = requirePerm(req, "tasks:read");
+    const companyWide = u.permissions.includes("tasks:read_all") || u.permissions.includes("tasks:assign_any");
+    // People's work and personal notices reach only their audience (events carry ids, never content).
+    const allowed = (e: OfficeEvent) => {
+      const aud = e.data?.audience as string[] | undefined;
+      if (e.type === "notification.created") return !!aud?.includes(u.id);
+      if (e.data?.human) return companyWide || !!aud?.includes(u.id);
+      return true;
+    };
     const header = req.headers["last-event-id"];
     const q = req.query as { since?: string };
     const since = Number((Array.isArray(header) ? header[0] : header) ?? q.since ?? 0) || 0;
@@ -30,7 +38,8 @@ export const eventRoutes = (d: Deps) => async (app: FastifyInstance) => {
       connection: "keep-alive",
       "x-accel-buffering": "no",
     });
-    const send = (e: OfficeEvent) => res.write(`id: ${e.id}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
+    // filtered events still advance the client's Last-Event-ID (an id-only frame dispatches nothing)
+    const send = (e: OfficeEvent) => !allowed(e) ? res.write(`id: ${e.id}\n\n`) : res.write(`id: ${e.id}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
     res.write("retry: 3000\n\n");
 
     // Subscribe before replaying so nothing emitted in between is lost; skip duplicates by id.

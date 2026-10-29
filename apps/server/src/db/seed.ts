@@ -18,10 +18,11 @@ export async function seed(db: Db, opts: { adminPassword?: string } = {}): Promi
   const adminHash = await hashPassword(password);
 
   db.tx(() => {
-    for (const r of ROLES) db.run("INSERT INTO roles (id) VALUES (?)", r);
-    for (const p of PERMISSIONS) db.run("INSERT INTO permissions (id) VALUES (?)", p);
+    // OR IGNORE: later migrations may already have inserted newer roles/permissions
+    for (const r of ROLES) db.run("INSERT OR IGNORE INTO roles (id) VALUES (?)", r);
+    for (const p of PERMISSIONS) db.run("INSERT OR IGNORE INTO permissions (id) VALUES (?)", p);
     for (const r of ROLES)
-      for (const p of DEFAULT_ROLE_PERMISSIONS[r]) db.run("INSERT INTO role_permissions VALUES (?, ?)", r, p);
+      for (const p of DEFAULT_ROLE_PERMISSIONS[r]) db.run("INSERT OR IGNORE INTO role_permissions VALUES (?, ?)", r, p);
 
     for (const f of FLOORS) db.run("INSERT INTO floors (id, level, title) VALUES (?, ?, ?)", f.id, f.level, f.title);
     for (const c of CONNECTORS)

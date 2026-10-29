@@ -71,10 +71,22 @@ export class Db {
     for (const f of files) {
       if (done.has(f)) continue;
       const sql = readFileSync(join(MIGRATIONS_DIR, f), "utf8");
-      this.tx(() => {
-        this.raw.exec(sql);
-        this.run("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)", f, now());
-      });
+      // Table rebuilds (SQLite's 12-step ALTER) must run with foreign keys off, or DROP TABLE would cascade.
+      // The pragma only works outside a transaction; integrity is verified before the migration commits.
+      const fkOff = sql.startsWith("-- migrate: foreign_keys=off");
+      if (fkOff) this.raw.exec("PRAGMA foreign_keys = OFF");
+      try {
+        this.tx(() => {
+          this.raw.exec(sql);
+          if (fkOff) {
+            const bad = this.all("PRAGMA foreign_key_check");
+            if (bad.length) throw new Error(`${f}: foreign key check failed (${bad.length} rows)`);
+          }
+          this.run("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)", f, now());
+        });
+      } finally {
+        if (fkOff) this.raw.exec("PRAGMA foreign_keys = ON");
+      }
       applied.push(f);
     }
     return applied;

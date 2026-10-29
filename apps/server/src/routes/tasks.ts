@@ -5,7 +5,8 @@ import { type Deps, actorOf, parse, requirePerm } from "../app.js";
 import {
   cancelTask, createTask, getTask, getTaskDetail, listTasks, reassignTask, retryTask, transitionTask, updateTask,
 } from "../domain/tasks.js";
-import { forbidden } from "../lib/errors.js";
+import { conflict, forbidden, notFound } from "../lib/errors.js";
+import { canSeeTask, taskRef } from "../domain/access.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 
@@ -54,6 +55,13 @@ const PatchBody = z.object({
 }).strict();
 
 export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
+  // People's tasks share the table but are read and changed only through /api/work (own workflow + access rules).
+  const agentTaskOnly = (id: string) => {
+    const r = taskRef(d, id);
+    if (!r) throw notFound("Vazifa");
+    if (r.kind === "human") throw conflict("human_task", "Bu xodim vazifasi — /api/work orqali boshqariladi");
+  };
+
   app.get("/api/tasks", async (req) => {
     requirePerm(req, "tasks:read");
     const q = parse(
@@ -75,24 +83,30 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
       tasks: listTasks(d, {
         status, departmentId: q.departmentId, agentId: q.agentId, limit: q.limit,
         parentId: q.topLevel === "true" ? null : q.parentId,
-      }),
+      }).filter((t) => t.kind !== "human"),
     };
   });
 
   app.get("/api/tasks/:id", async (req) => {
-    requirePerm(req, "tasks:read");
-    return getTaskDetail(d, parse(Id, req.params).id);
+    const u = requirePerm(req, "tasks:read");
+    const { id } = parse(Id, req.params);
+    const r = taskRef(d, id);
+    if (!r || !canSeeTask(d, u, r)) throw notFound("Vazifa");
+    return getTaskDetail(d, id);
   });
 
   app.post("/api/tasks", async (req, reply) => {
     const u = requirePerm(req, "tasks:create");
+    const body = parse(CreateBody, req.body);
+    if (body.parentId) agentTaskOnly(body.parentId);
     reply.status(201);
-    return { task: createTask(d, parse(CreateBody, req.body), actorOf(u)) };
+    return { task: createTask(d, body, actorOf(u)) };
   });
 
   /** Creator may edit / cancel their own task; anything else needs tasks:manage. */
   const ownerOrManager = (req: Parameters<typeof requirePerm>[0], id: string) => {
     const u = requirePerm(req, "tasks:read");
+    agentTaskOnly(id);
     if (u.permissions.includes("tasks:manage")) return u;
     if (getTask(d, id).createdBy === u.id && u.permissions.includes("tasks:create")) return u;
     throw forbidden();
@@ -113,18 +127,21 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
 
   app.post("/api/tasks/:id/retry", async (req) => {
     const u = requirePerm(req, "tasks:manage");
+    agentTaskOnly(parse(Id, req.params).id);
     return { task: retryTask(d, parse(Id, req.params).id, actorOf(u)) };
   });
 
   app.post("/api/tasks/:id/reassign", async (req) => {
     const u = requirePerm(req, "tasks:manage");
     const body = parse(z.object({ agentId: z.string().min(1) }), req.body);
+    agentTaskOnly(parse(Id, req.params).id);
     return { task: reassignTask(d, parse(Id, req.params).id, body.agentId, actorOf(u)) };
   });
 
   app.post("/api/tasks/:id/transition", async (req) => {
     const u = requirePerm(req, "tasks:manage");
     const body = parse(z.object({ to: z.enum(TASK_STATUSES), reason: z.string().max(500).optional() }), req.body);
+    agentTaskOnly(parse(Id, req.params).id);
     return { task: transitionTask(d, parse(Id, req.params).id, body.to, actorOf(u), { reason: body.reason }) };
   });
 };

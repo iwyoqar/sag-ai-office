@@ -448,7 +448,8 @@ export class TelegramBot {
   }
 
   onEvent(e: OfficeEvent) {
-    if (!this.running || !e.taskId) return;
+    // People's work is never posted to the group (it may be confidential); employees get personal notices instead.
+    if (!this.running || !e.taskId || e.data?.human) return;
     const chat = this.targetFor(e.taskId);
     if (!chat) return;
     const t = getTask(this.ctx, e.taskId);

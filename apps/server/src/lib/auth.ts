@@ -5,39 +5,64 @@ import { now } from "../db/db.js";
 import { token } from "./ids.js";
 import { verifyPassword } from "./passwords.js";
 
+export interface Grant {
+  permission: Permission;
+  /** null = not limited to one department */
+  departmentId: string | null;
+  canDelegate: boolean;
+}
+
 export interface AuthUser {
   id: string;
   username: string;
   displayName: string;
   roles: Role[];
+  /** role permissions + department-unscoped grants */
   permissions: Permission[];
+  /** employee's own department (null for technical accounts) */
+  departmentId: string | null;
+  managerId: string | null;
+  /** departments where this user is the head */
+  headOf: string[];
+  grants: Grant[];
 }
 
 export const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** Loads an active user with everything authorisation needs. Inactive/archived accounts load as null. */
 export function loadUser(db: Db, userId: string): AuthUser | null {
-  const u = db.get<{ id: string; username: string; display_name: string; is_active: number }>(
-    "SELECT id, username, display_name, is_active FROM users WHERE id = ?", userId,
+  const u = db.get<{ id: string; username: string; display_name: string; is_active: number; status: string; department_id: string | null; manager_id: string | null }>(
+    "SELECT id, username, display_name, is_active, status, department_id, manager_id FROM users WHERE id = ?", userId,
   );
-  if (!u || !u.is_active) return null;
+  if (!u || !u.is_active || u.status !== "active") return null;
   const roles = db.all<{ role_id: Role }>("SELECT role_id FROM user_roles WHERE user_id = ?", u.id).map((r) => r.role_id);
-  const permissions = db
+  const rolePerms = db
     .all<{ permission_id: Permission }>(
       `SELECT DISTINCT rp.permission_id FROM role_permissions rp
        JOIN user_roles ur ON ur.role_id = rp.role_id WHERE ur.user_id = ?`,
       u.id,
     )
     .map((r) => r.permission_id);
-  return { id: u.id, username: u.username, displayName: u.display_name, roles, permissions };
+  const grants = db
+    .all<{ permission_id: Permission; department_id: string | null; can_delegate: number }>(
+      "SELECT permission_id, department_id, can_delegate FROM user_permissions WHERE user_id = ?", u.id,
+    )
+    .map((g) => ({ permission: g.permission_id, departmentId: g.department_id, canDelegate: !!g.can_delegate }));
+  const permissions = [...new Set([...rolePerms, ...grants.filter((g) => !g.departmentId).map((g) => g.permission)])];
+  const headOf = db.all<{ id: string }>("SELECT id FROM departments WHERE head_user_id = ?", u.id).map((r) => r.id);
+  return {
+    id: u.id, username: u.username, displayName: u.display_name, roles, permissions,
+    departmentId: u.department_id, managerId: u.manager_id, headOf, grants,
+  };
 }
 
 export async function login(db: Db, username: string, password: string): Promise<AuthUser | null> {
-  const row = db.get<{ id: string; password_hash: string; is_active: number }>(
-    "SELECT id, password_hash, is_active FROM users WHERE username = ?", username,
+  const row = db.get<{ id: string; password_hash: string; is_active: number; status: string }>(
+    "SELECT id, password_hash, is_active, status FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)", username, username.toLowerCase(),
   );
   // Verify against a dummy hash when the user is missing, so timing does not reveal valid usernames.
   const ok = await verifyPassword(password, row?.password_hash ?? DUMMY_HASH);
-  if (!row || !row.is_active || !ok) return null;
+  if (!row || !row.is_active || row.status !== "active" || !ok) return null;
   return loadUser(db, row.id);
 }
 

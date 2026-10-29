@@ -17,6 +17,8 @@ import { eventRoutes } from "./routes/events.js";
 import { runtimeRoutes } from "./routes/runtime.js";
 import { brainRoutes } from "./routes/brain.js";
 import { scheduleRoutes } from "./routes/schedule.js";
+import { peopleRoutes } from "./routes/people.js";
+import { touchActivity } from "./domain/employees.js";
 import type { TelegramBot } from "./telegram/bot.js";
 import type { LlmSetup } from "./llm/index.js";
 import type { AgentRunner } from "./agents/runner.js";
@@ -88,6 +90,7 @@ export async function buildApp(opts: AppOptions) {
   app.addHook("onRequest", async (req, reply) => {
     reply.header("x-request-id", req.id);
     req.user = userForSession(opts.db, req.cookies[SESSION_COOKIE]);
+    if (req.user) touchActivity(deps, req.user.id);
   });
 
   app.setErrorHandler((err, req, reply: FastifyReply) => {
@@ -108,6 +111,7 @@ export async function buildApp(opts: AppOptions) {
   await app.register(orgRoutes(deps));
   await app.register(agentRoutes(deps));
   await app.register(taskRoutes(deps));
+  await app.register(peopleRoutes(deps));
   await app.register(eventRoutes(deps));
   await app.register(runtimeRoutes(deps));
   await app.register(brainRoutes(deps));
