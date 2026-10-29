@@ -41,9 +41,8 @@ MATERIALS = {
     "glass_dark":  dict(color=(0.08, 0.16, 0.28), rough=0.1, metal=0.6),
     "metal":       dict(color=(0.24, 0.26, 0.29), rough=0.4, metal=0.8),
     "steel":       dict(color=(0.78, 0.79, 0.81), rough=0.3, metal=1.0),
-    "logo_navy":   dict(color=(0.03, 0.1, 0.3), rough=0.5, metal=0.0),
-    "logo_blue":   dict(color=(0.05, 0.18, 0.45), rough=0.5, metal=0.0),
-    "logo_light":  dict(color=(0.2, 0.5, 0.72), rough=0.5, metal=0.0),
+    # SAG brand blue, sRGB #0A43C6 (from 3d/sag-logo.png) in linear space
+    "logo_blue":   dict(color=(0.003, 0.056, 0.565), rough=0.45, metal=0.0),
     "paving":      dict(color=(1.0, 1.0, 1.0), rough=0.9, metal=0.0, tex="paving", uv=6.0),
     "asphalt":     dict(color=(0.16, 0.16, 0.17), rough=0.95, metal=0.0),
     "paint_white": dict(color=(0.92, 0.92, 0.9), rough=0.6, metal=0.0),
@@ -319,26 +318,20 @@ for k in range(5):
 
 # --- tom: logotip, antenna, texnik qurilmalar --------------------------------
 def logo():
-    tile, pitch = 0.74, 0.8
-    ex, ey, ez = -6.0, 26.9, 9.15
-    shade = ["logo_light", "logo_light", "logo_blue", "logo_navy", "logo_navy"]
-    for i in range(3):
-        for j in range(3):
-            u, v = (i - 1) * pitch, (j - 1) * pitch
-            x = ex + (u - v) / math.sqrt(2)
-            y = ey + (u + v) / math.sqrt(2)
-            M.box(shade[(2 - j) + i], (x, y, ez), (tile, tile, 0.3), rot_z(math.pi / 4))
-
-    font = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", 400)
-    img = Image.new("L", (1400, 520), 0)
-    ImageDraw.Draw(img).text((20, 20), "SAG", font=font, fill=255)
+    """Rooftop sign: the official SAG wordmark (3d/sag-logo.png) extruded as 0.3 m thick letters on a steel frame."""
+    ez = 9.15
+    src = Image.open(os.path.join(OUT_DIR, "sag-logo.png")).convert("RGBA")
+    rgba = np.array(src).astype(int)
+    ink = (rgba[..., 2] > 150) & (rgba[..., 0] < 120) & (rgba[..., 3] > 128)  # blue letter pixels
+    img = Image.fromarray((ink * 255).astype(np.uint8))
     img = img.crop(img.getbbox())
-    rows = 120
+    rows = 300  # fine enough that the curves read smooth from the street
     img = img.resize((round(img.width * rows / img.height), rows), Image.LANCZOS)
     a = np.array(img) > 127
-    height = 2.7
+    height = 3.0
     px = height / rows
-    left, top = -4.0, 26.9 + height / 2
+    width = a.shape[1] * px
+    left, top = -2.25 - width / 2, 26.9 + height / 2
     active, rects = {}, []
     for r in range(rows + 1):
         runs = set()
@@ -359,10 +352,11 @@ def logo():
             active.setdefault(key, r)
     for c0, c1, r0, r1 in rects:
         M.box("logo_blue", (left + (c0 + c1) / 2 * px, top - (r0 + r1) / 2 * px, ez), ((c1 - c0) * px, (r1 - r0) * px, 0.3))
-    right = left + a.shape[1] * px
+    right = left + width
+    f0, f1 = left - 0.3, right + 0.3
     for y in (25.6, 28.0):
-        M.box("metal", ((-7.5 + right) / 2, y, 8.85), (right + 7.5, 0.14, 0.14))
-    for x in np.linspace(-7.2, right - 0.3, 6):
+        M.box("metal", ((f0 + f1) / 2, y, 8.85), (f1 - f0, 0.14, 0.14))
+    for x in np.linspace(f0 + 0.3, f1 - 0.3, 6):
         M.box("metal", (x, (ATTIC + 28.2) / 2, 8.85), (0.12, 28.2 - ATTIC, 0.12))
 
 logo()
