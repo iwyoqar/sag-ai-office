@@ -16,6 +16,7 @@ export const config = {
   databasePath: resolve(root, process.env.DATABASE_PATH ?? "data/sag.db"),
   sessionTtlHours: int(process.env.SESSION_TTL_HOURS, 24 * 7),
   cookieSecure: process.env.COOKIE_SECURE === "true",
+  trustProxy: process.env.TRUST_PROXY === "true",
   adminPassword: process.env.ADMIN_PASSWORD || undefined,
   logLevel: process.env.LOG_LEVEL ?? "info",
   llm: {

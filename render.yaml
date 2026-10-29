@@ -1,0 +1,48 @@
+# Render Blueprint — SAG AI Office backend (API + agent runner + Telegram bot).
+# Needs a persistent disk (SQLite database), so the plan must be a paid one (starter or higher):
+# on the free plan the disk is not available and the service sleeps, which would stop agents and the bot.
+services:
+  - type: web
+    name: sag-ai-office-api
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start -w apps/server
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: sag-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATABASE_PATH
+        value: /var/data/sag.db
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: LOG_LEVEL
+        value: info
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: WORKER_CONCURRENCY
+        value: "2"
+      - key: TELEGRAM_GROUP_ID
+        value: "-1004352159538"
+      # Secrets: entered in the Render dashboard, never stored in the repo.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: TELEGRAM_ADMIN_USER_IDS
+        sync: false

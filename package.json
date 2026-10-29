@@ -11,5 +11,8 @@
     "build": "npm run build -w apps/web",
     "test": "npm test -w apps/web && npm test -w apps/server",
     "typecheck": "npm run typecheck -w apps/server"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

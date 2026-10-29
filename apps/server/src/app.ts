@@ -35,6 +35,8 @@ export interface AppOptions {
   cookieSecure?: boolean;
   logger?: boolean | object;
   llm?: LlmSetup;
+  /** behind Render / Vercel: take the client IP from X-Forwarded-For (login rate limit) */
+  trustProxy?: boolean;
 }
 
 export interface Deps extends Ctx {
@@ -67,6 +69,7 @@ export const actorOf = (u: AuthUser): Actor => ({ type: "user", id: u.id });
 export async function buildApp(opts: AppOptions) {
   const app = Fastify({
     logger: opts.logger ?? false,
+    trustProxy: opts.trustProxy ?? false,
     genReqId: (req) => (req.headers["x-request-id"] as string) || randomUUID(),
     bodyLimit: 1_000_000,
   });

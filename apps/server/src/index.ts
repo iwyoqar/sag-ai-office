@@ -19,6 +19,7 @@ const { app, deps } = await buildApp({
   llm,
   sessionTtlHours: config.sessionTtlHours,
   cookieSecure: config.cookieSecure,
+  trustProxy: config.trustProxy,
   logger: { level: config.logLevel, redact: ["req.headers.cookie", "req.headers.authorization", "req.headers[\"x-goog-api-key\"]"] },
 });
 
