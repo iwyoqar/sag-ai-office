@@ -191,6 +191,20 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
   app.post("/api/telegram/verify", async (req) => {
     requirePerm(req, "brain:manage");
     if (!d.telegram) throw badRequest("Telegram sozlanmagan");
-    return { status: await d.telegram.verify() };
+    const status = await d.telegram.verify();
+    if (status.mode === "webhook") await d.telegram.webhookInfo().catch(() => undefined);
+    return { status };
+  });
+
+  // Public endpoint for Telegram's webhook calls: no session; authenticated by the secret header only.
+  // Unknown/forged callers get a bare 404 so the endpoint does not reveal whether webhook mode is on.
+  app.post("/api/telegram/webhook", { bodyLimit: 256 * 1024 }, async (req, reply) => {
+    const bot = d.telegram;
+    const secret = req.headers["x-telegram-bot-api-secret-token"];
+    if (!bot || !bot.acceptsWebhook(typeof secret === "string" ? secret : undefined)) return reply.status(404).send();
+    const body = parse(z.object({ update_id: z.number().int().nonnegative() }).passthrough(), req.body);
+    // handleUpdate never throws (errors are recorded per update); 200 tells Telegram not to redeliver.
+    await bot.receive(body as Parameters<typeof bot.receive>[0]);
+    return { ok: true };
   });
 };

@@ -35,6 +35,9 @@ function fakeApi(opts: { memberStatus?: string; failSendOnce429?: boolean } = {}
         return ok({ message_id: calls.length });
       // behaves like a long poll: answers after a while, not instantly
       case "getUpdates": return new Promise<Response>((r) => setTimeout(() => r(ok([])), 20));
+      case "deleteWebhook":
+      case "setWebhook": return ok(true);
+      case "getWebhookInfo": return ok({ url: "https://api.example.test/api/telegram/webhook", pending_update_count: 0 });
     }
     return new Response(JSON.stringify({ ok: false, error_code: 404, description: "Not Found" }), { status: 404 });
   }) as typeof fetch;
@@ -175,5 +178,63 @@ describe("telegram: notifications", () => {
     broken.send(GROUP, "x");
     await new Promise((r) => setTimeout(r, 10));
     expect(logs.join("\n")).not.toContain("SECRET");
+  });
+});
+
+describe("telegram: webhook mode", () => {
+  const SECRET = "webhook-secret-0123456789";
+  async function webhookApp(secret: string | undefined = SECRET) {
+    const { app, deps } = await makeApp();
+    const fake = fakeApi();
+    const bot = new TelegramBot(deps, {
+      token: TOKEN, groupId: GROUP, adminUserIds: [ADMIN], fetchImpl: fake.fetchImpl, sendGapMs: 0, sleep: async () => {},
+      mode: "webhook", webhookUrl: "https://api.example.test/", webhookSecret: secret,
+    });
+    deps.telegram = bot;
+    await bot.start();
+    return { app, deps, bot, ...fake };
+  }
+  const post = (app: Awaited<ReturnType<typeof makeApp>>["app"], body: unknown, secret?: string) =>
+    app.inject({ method: "POST", url: "/api/telegram/webhook", payload: body as object, headers: secret ? { "x-telegram-bot-api-secret-token": secret } : {} });
+
+  it("registers the webhook with the secret and does not long-poll", async () => {
+    const { bot, calls } = await webhookApp();
+    const set = calls.find((c) => c.method === "setWebhook")!.body as Record<string, unknown>;
+    expect(set).toMatchObject({ url: "https://api.example.test/api/telegram/webhook", secret_token: SECRET, allowed_updates: ["message"] });
+    expect(calls.some((c) => c.method === "getUpdates")).toBe(false);
+    expect(bot.status).toMatchObject({ mode: "webhook", webhook: { pendingUpdates: 0, lastError: null } });
+    expect(JSON.stringify(bot.status)).not.toContain(SECRET);
+    await bot.stop();
+  });
+
+  it("accepts updates only with the right secret, exactly once", async () => {
+    const { app, deps, bot, calls } = await webhookApp();
+    const u = msg(ADMIN, "/office");
+    expect((await post(app, u)).statusCode).toBe(404);
+    expect((await post(app, u, "wrong-secret-0123456789")).statusCode).toBe(404);
+    expect((await post(app, u, SECRET)).statusCode).toBe(200);
+    expect((await post(app, u, SECRET)).statusCode).toBe(200); // redelivery is a no-op
+    expect(deps.db.get<{ n: number }>("SELECT COUNT(*) n FROM telegram_updates WHERE update_id = ?", u.update_id)!.n).toBe(1);
+    await flush();
+    expect(sent(calls)).toHaveLength(1);
+    expect((await post(app, { nope: 1 }, SECRET)).statusCode).toBe(400);
+    await bot.stop();
+    expect((await post(app, msg(ADMIN, "/office"), SECRET)).statusCode).toBe(404); // stopped bot takes nothing
+  });
+
+  it("refuses to run a webhook without a strong secret", async () => {
+    const { bot, calls } = await webhookApp("short");
+    expect(calls.some((c) => c.method === "setWebhook")).toBe(false);
+    expect(bot.status.lastError).toContain("TELEGRAM_WEBHOOK_SECRET");
+    expect(bot.acceptsWebhook("short")).toBe(false);
+    await bot.stop();
+  });
+
+  it("polling mode clears a leftover webhook before polling", async () => {
+    const { bot, calls } = await setup();
+    await bot.start();
+    await flush();
+    expect(calls.findIndex((c) => c.method === "deleteWebhook")).toBeLessThan(calls.findIndex((c) => c.method === "getUpdates"));
+    await bot.stop();
   });
 });

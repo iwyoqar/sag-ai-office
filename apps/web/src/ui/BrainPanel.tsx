@@ -504,7 +504,7 @@ function AgentsTab() {
 
 // ---------------------------------------------------------------- connectors + Telegram
 interface TgInfo {
-  status: { configured: boolean; running?: boolean; reason?: string; bot?: { username: string; name: string } | null; group?: { id: string; title: string | null; memberStatus: string | null; canSend: boolean } | null; lastPollAt?: string | null; lastError?: string | null; tokenMasked?: string };
+  status: { configured: boolean; running?: boolean; reason?: string; bot?: { username: string; name: string } | null; group?: { id: string; title: string | null; memberStatus: string | null; canSend: boolean } | null; lastPollAt?: string | null; lastError?: string | null; tokenMasked?: string; mode?: "polling" | "webhook"; webhook?: { url: string; pendingUpdates: number; lastError: string | null } | null };
   settings: { adminUserIds: number[]; allowedUserIds: number[]; notify: "linked" | "all"; verbosity: "minimal" | "normal" } | null;
   recent: { updateId: number; userId: number; username: string | null; command: string | null; outcome: string | null; taskId: string | null; receivedAt: string }[];
 }
@@ -572,6 +572,11 @@ function TelegramCard({ info, onChange }: { info: TgInfo | null; onChange: () =>
         <dl className="kv">
           <dt>Bot</dt><dd>{s.bot ? `@${s.bot.username} (${s.bot.name})` : "—"} <span className="muted mono">token: {s.tokenMasked}</span></dd>
           <dt>Guruh</dt><dd>{s.group?.title ?? s.group?.id ?? "—"} {s.group && <span className="muted">· bot holati: {s.group.memberStatus ?? "?"}{s.group.canSend ? "" : " · yozolmaydi"}</span>}</dd>
+          <dt>Rejim</dt>
+          <dd>
+            {s.mode === "webhook" ? "webhook" : "long polling"}
+            {s.webhook && <span className="muted"> · {s.webhook.url} · navbatda {s.webhook.pendingUpdates}{s.webhook.lastError ? ` · xato: ${s.webhook.lastError}` : ""}</span>}
+          </dd>
           <dt>Oxirgi so'rov</dt><dd>{s.lastPollAt ? new Date(s.lastPollAt).toLocaleTimeString("uz-UZ", { timeZone: "Asia/Tashkent" }) : "—"}</dd>
           {s.lastError && <><dt>Xato</dt><dd className="err">{s.lastError}</dd></>}
         </dl>

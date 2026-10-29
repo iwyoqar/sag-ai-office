@@ -1,7 +1,8 @@
-// Telegram group integration via the official Bot API (long polling).
+// Telegram group integration via the official Bot API (long polling or webhook).
 // Telegram is a user/notification channel only: agents coordinate inside the backend; the bot reports
 // important steps to the group under labels like [MARKETING AGENT] — it never pretends to be several bots.
 import type { OfficeEvent } from "@sag/shared";
+import { timingSafeEqual } from "node:crypto";
 import { now } from "../db/db.js";
 import type { Ctx } from "../domain/context.js";
 import { cancelTask, createTask, getTask, listTasks, type TaskDto } from "../domain/tasks.js";
@@ -18,6 +19,12 @@ export interface TelegramOptions {
   fetchImpl?: FetchFn;
   log?: (msg: string, meta?: Record<string, unknown>) => void;
   pollTimeoutSec?: number;
+  /** "webhook": Telegram pushes updates to POST /api/telegram/webhook (needs a public HTTPS URL); default long polling */
+  mode?: "polling" | "webhook";
+  /** public base URL of this API, e.g. https://api.example.com */
+  webhookUrl?: string;
+  /** echoed by Telegram in X-Telegram-Bot-Api-Secret-Token; required in webhook mode */
+  webhookSecret?: string;
   sendGapMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -34,6 +41,8 @@ export interface TelegramSettings {
 export interface TelegramStatus {
   configured: boolean;
   running: boolean;
+  mode: "polling" | "webhook";
+  webhook: { url: string; pendingUpdates: number; lastError: string | null } | null;
   bot: { id: number; username: string; name: string } | null;
   group: { id: string; title: string | null; memberStatus: string | null; canSend: boolean } | null;
   lastPollAt: string | null;
@@ -41,7 +50,7 @@ export interface TelegramStatus {
   tokenMasked: string;
 }
 
-interface TgUpdate {
+export interface TgUpdate {
   update_id: number;
   message?: {
     message_id: number;
@@ -79,7 +88,7 @@ export class TelegramBot {
     this.fetch = o.fetchImpl ?? fetch;
     this.sleep = o.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.status = {
-      configured: true, running: false, bot: null, group: null, lastPollAt: null, lastError: null,
+      configured: true, running: false, mode: o.mode ?? "polling", webhook: null, bot: null, group: null, lastPollAt: null, lastError: null,
       tokenMasked: `${o.token.slice(0, 4)}…${o.token.slice(-4)}`,
     };
   }
@@ -140,13 +149,60 @@ export class TelegramBot {
     return this.status;
   }
 
+  get webhookPath() {
+    return "/api/telegram/webhook";
+  }
+
   async start() {
     if (this.running) return;
     await this.verify();
     this.running = true;
     this.status.running = true;
     this.unsubscribe = this.ctx.bus.subscribe((e) => this.onEvent(e));
-    void this.pollLoop();
+    if (this.status.mode === "webhook") await this.registerWebhook();
+    else {
+      // a webhook left over from an earlier webhook deployment makes getUpdates fail with 409
+      await this.api("deleteWebhook", { drop_pending_updates: false }).catch(() => undefined);
+      void this.pollLoop();
+    }
+  }
+
+  /** Points Telegram at this server. Idempotent; the secret makes forged POSTs to the webhook useless. */
+  async registerWebhook() {
+    const { webhookUrl, webhookSecret } = this.o;
+    if (!webhookUrl || !webhookSecret || webhookSecret.length < 16) {
+      this.status.lastError = "Webhook rejimi uchun TELEGRAM_WEBHOOK_URL va kamida 16 belgili TELEGRAM_WEBHOOK_SECRET kerak";
+      return;
+    }
+    const url = `${webhookUrl.replace(/\/+$/, "")}${this.webhookPath}`;
+    try {
+      await this.api("setWebhook", { url, secret_token: webhookSecret, allowed_updates: ["message"], max_connections: 10 });
+      await this.webhookInfo();
+    } catch (e) {
+      this.status.lastError = (e as Error).message;
+      this.o.log?.("telegram setWebhook failed", { error: this.status.lastError });
+    }
+  }
+
+  async webhookInfo() {
+    const info = await this.api<{ url: string; pending_update_count: number; last_error_message?: string }>("getWebhookInfo");
+    this.status.webhook = { url: info.url, pendingUpdates: info.pending_update_count, lastError: info.last_error_message ?? null };
+    return this.status.webhook;
+  }
+
+  /** Constant-time check of the secret header Telegram sends with every webhook call. */
+  acceptsWebhook(secretHeader: string | undefined): boolean {
+    const want = this.o.webhookSecret;
+    if (this.status.mode !== "webhook" || !this.running || !want || want.length < 16 || !secretHeader) return false;
+    const a = Buffer.from(secretHeader);
+    const b = Buffer.from(want);
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  /** Webhook delivery: same exactly-once path as polling. */
+  async receive(u: TgUpdate): Promise<string> {
+    this.status.lastPollAt = now();
+    return this.handleUpdate(u);
   }
 
   async stop() {

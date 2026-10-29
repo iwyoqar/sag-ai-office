@@ -70,18 +70,21 @@ if (llm.client) {
 const scheduler = new Scheduler(deps, 20_000, (msg, meta) => app.log.info(meta ?? {}, msg));
 scheduler.start();
 
-// ---- Telegram (long polling; one consumer per bot token)
+// ---- Telegram (long polling or webhook; one consumer per bot token)
 if (config.telegram.token && config.telegram.groupId && config.telegram.enabled) {
   const bot = new TelegramBot(deps, {
     token: config.telegram.token,
     groupId: config.telegram.groupId,
     adminUserIds: config.telegram.adminUserIds,
+    mode: config.telegram.mode,
+    webhookUrl: config.telegram.webhookUrl,
+    webhookSecret: config.telegram.webhookSecret,
     log: (msg, meta) => app.log.warn(meta ?? {}, msg),
   });
   deps.telegram = bot;
   await bot.start();
   if (bot.status.lastError) app.log.error({ error: bot.status.lastError }, "Telegram check failed (bot keeps polling)");
-  else app.log.info({ bot: bot.status.bot?.username, group: bot.status.group?.title }, "Telegram bot connected");
+  else app.log.info({ bot: bot.status.bot?.username, group: bot.status.group?.title, mode: bot.status.mode }, "Telegram bot connected");
 } else {
   app.log.warn("Telegram not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_GROUP_ID)");
 }

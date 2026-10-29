@@ -37,6 +37,10 @@ export const config = {
     groupId: process.env.TELEGRAM_GROUP_ID || undefined,
     adminUserIds: (process.env.TELEGRAM_ADMIN_USER_IDS ?? "").split(",").map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0),
     enabled: process.env.TELEGRAM_ENABLED !== "false",
+    /** polling (default; works anywhere) | webhook (needs a public HTTPS URL, e.g. on Render) */
+    mode: (process.env.TELEGRAM_MODE === "webhook" ? "webhook" : "polling") as "polling" | "webhook",
+    webhookUrl: process.env.TELEGRAM_WEBHOOK_URL || undefined,
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || undefined,
   },
   worker: {
     enabled: process.env.WORKER_ENABLED !== "false",
