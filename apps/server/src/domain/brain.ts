@@ -34,8 +34,8 @@ export function listInstructions(ctx: Ctx, scope: Scope, scopeId: string | null,
 export function saveInstruction(ctx: Ctx, input: { scope: Scope; scopeId: string | null; title: string; content: string }, actor: Actor): InstructionDto {
   if (input.scope === "GLOBAL" && input.scopeId) throw badRequest("Global ko'rsatma bo'lim/agentga bog'lanmaydi");
   if (input.scope !== "GLOBAL" && !input.scopeId) throw badRequest("Bo'lim yoki agent tanlanmagan");
-  if (input.scope === "DEPARTMENT" && !ctx.db.get("SELECT 1 FROM departments WHERE id = ?", input.scopeId)) throw notFound("Bo'lim");
-  if (input.scope === "AGENT" && !ctx.db.get("SELECT 1 FROM agents WHERE id = ?", input.scopeId)) throw notFound("Agent");
+  if (input.scope === "DEPARTMENT" && !ctx.db.get("SELECT 1 FROM departments WHERE id = ? AND business_unit_id = 'hq'", input.scopeId)) throw notFound("Bo'lim");
+  if (input.scope === "AGENT" && !ctx.db.get("SELECT 1 FROM agents WHERE id = ? AND business_unit_id = 'hq'", input.scopeId)) throw notFound("Agent");
   const id = uid("ins");
   ctx.db.tx(() => {
     const prev = ctx.db.get<{ v: number | null }>(
@@ -126,7 +126,8 @@ export interface ApprovalDto {
 export function listApprovals(ctx: Ctx, status = "PENDING"): ApprovalDto[] {
   return ctx.db
     .all<Record<string, unknown>>(
-      `SELECT a.*, t.title task_title FROM approvals a LEFT JOIN tasks t ON t.id = a.task_id WHERE a.status = ? ORDER BY a.requested_at DESC LIMIT 100`,
+      `SELECT a.*, t.title task_title FROM approvals a LEFT JOIN tasks t ON t.id = a.task_id LEFT JOIN agents ag ON ag.id = a.agent_id
+       WHERE a.status = ? AND COALESCE(t.business_unit_id, ag.business_unit_id, 'hq') = 'hq' ORDER BY a.requested_at DESC LIMIT 100`,
       status,
     )
     .map((r) => ({

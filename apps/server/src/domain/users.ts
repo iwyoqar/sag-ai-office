@@ -27,7 +27,7 @@ function rolesOf(ctx: Ctx, userId: string): Role[] {
 export function listUsers(ctx: Ctx): UserAdminDto[] {
   return ctx.db
     .all<{ id: string; username: string; display_name: string; is_active: number; created_at: string; last_login_at: string | null }>(
-      "SELECT id, username, display_name, is_active, created_at, last_login_at FROM users ORDER BY created_at",
+      "SELECT id, username, display_name, is_active, created_at, last_login_at FROM users WHERE home_unit_id = 'hq' ORDER BY created_at",
     )
     .map((u) => ({
       id: u.id, username: u.username, displayName: u.display_name, roles: rolesOf(ctx, u.id), isActive: !!u.is_active,

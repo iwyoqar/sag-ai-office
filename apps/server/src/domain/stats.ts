@@ -30,20 +30,21 @@ export function resolveRange(range: StatsRange, from?: string, to?: string, at =
 /** Per-department stats. Snapshot values (agents, in progress, queued…) are "now"; volumes are for the range. */
 export function departmentStats(ctx: Ctx, range: { from: string; to: string }): DeptStats[] {
   const { db } = ctx;
-  const deps = db.all<{ id: string }>("SELECT id FROM departments ORDER BY sort");
+  const deps = db.all<{ id: string }>("SELECT id FROM departments WHERE business_unit_id = 'hq' ORDER BY sort");
   const agents = db.all<{ department_id: string; status: string; lifecycle: string }>(
-    "SELECT department_id, status, lifecycle FROM agents WHERE lifecycle <> 'ARCHIVED'",
+    "SELECT department_id, status, lifecycle FROM agents WHERE lifecycle <> 'ARCHIVED' AND business_unit_id = 'hq'",
   );
   const live = db.all<{ department_id: string; status: string; n: number }>(
-    "SELECT department_id, status, COUNT(*) n FROM tasks WHERE kind <> 'human' AND status IN ('IN_PROGRESS','QUEUED','WAITING_APPROVAL') GROUP BY department_id, status",
+    "SELECT department_id, status, COUNT(*) n FROM tasks WHERE business_unit_id = 'hq' AND kind <> 'human' AND status IN ('IN_PROGRESS','QUEUED','WAITING_APPROVAL') GROUP BY department_id, status",
   );
   const closed = db.all<{ department_id: string; status: string; started_at: string | null; completed_at: string }>(
-    "SELECT department_id, status, started_at, completed_at FROM tasks WHERE kind <> 'human' AND status IN ('DONE','FAILED') AND completed_at >= ? AND completed_at < ?",
+    "SELECT department_id, status, started_at, completed_at FROM tasks WHERE business_unit_id = 'hq' AND kind <> 'human' AND status IN ('DONE','FAILED') AND completed_at >= ? AND completed_at < ?",
     range.from, range.to,
   );
   const usage = db.all<{ department_id: string; tokens: number; cost: number }>(
     `SELECT department_id, COALESCE(SUM(input_tokens + output_tokens),0) tokens, COALESCE(SUM(cost_usd),0) cost
-     FROM usage_records WHERE created_at >= ? AND created_at < ? GROUP BY department_id`,
+     FROM usage_records WHERE created_at >= ? AND created_at < ?
+       AND department_id IN (SELECT id FROM departments WHERE business_unit_id = 'hq') GROUP BY department_id`,
     range.from, range.to,
   );
   const liveCount = (d: string, s: string) => live.find((x) => x.department_id === d && x.status === s)?.n ?? 0;

@@ -346,7 +346,8 @@ export class AgentRunner {
         transitionTask(this.ctx, task.id, "DONE", SYSTEM, { result: summarize(text) });
       }
       // Proposed, not trusted: a person reviews it in The Brain before agents use it.
-      if (!task.parentId)
+      // HQ memory only learns from HQ work; other units' results never enter it
+      if (!task.parentId && task.businessUnitId === "hq")
         addMemory(this.ctx, { kind: "result", content: `${task.title}: ${summarize(text)}`, departmentId: task.departmentId, taskId: task.id },
           { type: "agent", id: task.agentId });
     });
@@ -396,6 +397,8 @@ export class AgentRunner {
   // ---------------------------------------------------------------------------
   /** Company documents (only what the agent's department may see) + approved memory for this task. */
   private async ground(task: TaskDto, extraQuery?: string): Promise<{ grounding: Grounding; hits: KnowledgeHit[] }> {
+    // Company documents and memory are HQ's; agents of other business units work without them (no unit knowledge base yet).
+    if (task.businessUnitId !== "hq") return { hits: [], grounding: {} };
     const dept = this.ctx.db.get<{ department_id: string }>("SELECT department_id FROM agents WHERE id = ?", task.agentId)?.department_id ?? null;
     const { hits } = await retrieve(this.ctx, embedderOf(this.llm), `${extraQuery ?? task.title} ${task.description}`, {
       departmentId: dept, limit: 5, onError: (e) => this.o.log?.("semantic search fell back to full-text", { err: (e as Error).message }),

@@ -82,7 +82,9 @@ export const authRoutes = (d: Deps) => async (app: FastifyInstance) => {
   app.get("/api/audit", async (req) => {
     requirePerm(req, "audit:read");
     const q = parse(z.object({ limit: z.coerce.number().int().min(1).max(500).default(100), targetId: z.string().optional() }), req.query);
-    const where = q.targetId ? "WHERE target_id = ?" : "";
+    // HQ audit: platform and HQ entries plus SAG-owned units; franchise activity stays with the franchise
+    const scope = `(business_unit_id IS NULL OR business_unit_id IN (SELECT id FROM org_nodes WHERE business_type = 'SAG_BRANCH'))`;
+    const where = q.targetId ? `WHERE ${scope} AND target_id = ?` : `WHERE ${scope}`;
     const params = q.targetId ? [q.targetId, q.limit] : [q.limit];
     return {
       items: d.db.all(

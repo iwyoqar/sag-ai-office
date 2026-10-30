@@ -82,7 +82,7 @@ export function directory(ctx: Ctx, u: AuthUser, f: DirectoryFilter = {}): (Empl
   }
   if (f.role) { where.push("id IN (SELECT user_id FROM user_roles WHERE role_id = ?)"); p.push(f.role); }
   // archived / inactive people are history: visible to those who may manage or read everyone
-  const rows = ctx.db.all<UserRow>(`SELECT * FROM users WHERE ${where.join(" AND ")} ORDER BY display_name`, ...p).filter((r) => {
+  const rows = ctx.db.all<UserRow>(`SELECT * FROM users WHERE home_unit_id = 'hq' AND ${where.join(" AND ")} ORDER BY display_name`, ...p).filter((r) => {
     if (r.status === "active") return true;
     return canViewPerson(ctx, u, { id: r.id, department_id: r.department_id, manager_id: r.manager_id, status: r.status });
   });
@@ -133,7 +133,7 @@ function validRoles(roles: string[]): Role[] {
 }
 
 function checkRefs(ctx: Ctx, i: { departmentId?: string | null; floorId?: string | null; managerId?: string | null; email?: string | null }, selfId?: string) {
-  if (i.departmentId && !ctx.db.get("SELECT 1 FROM departments WHERE id = ?", i.departmentId)) throw notFound("Bo'lim");
+  if (i.departmentId && !ctx.db.get("SELECT 1 FROM departments WHERE id = ? AND business_unit_id = 'hq'", i.departmentId)) throw notFound("Bo'lim");
   if (i.floorId && !ctx.db.get("SELECT 1 FROM floors WHERE id = ?", i.floorId)) throw notFound("Qavat");
   if (i.managerId) {
     const m = personRef(ctx, i.managerId);
@@ -299,7 +299,7 @@ export function grantPermission(ctx: Ctx, u: AuthUser, id: string, g: { permissi
   const perm = g.permission as Permission;
   const dept = g.departmentId ?? null;
   if (dept && !SCOPABLE_PERMISSIONS.includes(perm)) throw badRequest("Bu ruxsatni bo'limga cheklab bo'lmaydi");
-  if (dept && !ctx.db.get("SELECT 1 FROM departments WHERE id = ?", dept)) throw notFound("Bo'lim");
+  if (dept && !ctx.db.get("SELECT 1 FROM departments WHERE id = ? AND business_unit_id = 'hq'", dept)) throw notFound("Bo'lim");
   const ADMIN_ONLY: Permission[] = ["users:manage", "employees:manage_all", "permissions:delegate"];
   const admin = has(u, "users:manage");
   if (!admin) {
@@ -337,7 +337,7 @@ export function revokePermission(ctx: Ctx, u: AuthUser, id: string, grantId: str
 /** Department head: admins and the director (permissions:delegate). The head gets the department_head role. */
 export function setDepartmentHead(ctx: Ctx, u: AuthUser, departmentId: string, userId: string | null) {
   if (!has(u, "users:manage") && !has(u, "permissions:delegate")) throw forbidden();
-  if (!ctx.db.get("SELECT 1 FROM departments WHERE id = ?", departmentId)) throw notFound("Bo'lim");
+  if (!ctx.db.get("SELECT 1 FROM departments WHERE id = ? AND business_unit_id = 'hq'", departmentId)) throw notFound("Bo'lim");
   if (userId) {
     const p = personRef(ctx, userId);
     if (!p) throw notFound("Xodim");
@@ -365,10 +365,10 @@ export function orgChart(ctx: Ctx, u: AuthUser) {
   if (!has(u, "employees:read_all") && !has(u, "employees:manage_all") && !deptsFor(u, "employees:manage_dept").size) throw forbidden();
   const all = has(u, "employees:read_all") || has(u, "employees:manage_all");
   const scope = deptsFor(u, "employees:manage_dept");
-  const people = ctx.db.all<UserRow>("SELECT * FROM users WHERE status = 'active' ORDER BY display_name")
+  const people = ctx.db.all<UserRow>("SELECT * FROM users WHERE status = 'active' AND home_unit_id = 'hq' ORDER BY display_name")
     .filter((r) => all || (r.department_id && scope.has(r.department_id)) || r.id === u.id);
   const departments = ctx.db.all<{ id: string; name: string; color: string; head_user_id: string | null; floor_id: string }>(
-    "SELECT id, name, color, head_user_id, floor_id FROM departments WHERE is_active = 1 ORDER BY sort",
+    "SELECT id, name, color, head_user_id, floor_id FROM departments WHERE is_active = 1 AND business_unit_id = 'hq' ORDER BY sort",
   ).filter((d) => all || scope.has(d.id));
   const directors = people.filter((p) => rolesOf(ctx, p.id).includes("director")).map((p) => p.id);
   return {
@@ -398,7 +398,7 @@ const AWAY_MS = 30 * 60_000;
 
 /** What each active employee is doing, from real data only: tasks in progress, reviews waiting, blocks, activity. */
 export function presence(ctx: Ctx): PresenceDto[] {
-  const rows = ctx.db.all<UserRow>("SELECT * FROM users WHERE status = 'active' AND department_id IS NOT NULL ORDER BY created_at");
+  const rows = ctx.db.all<UserRow>("SELECT * FROM users WHERE status = 'active' AND department_id IS NOT NULL AND home_unit_id = 'hq' ORDER BY created_at");
   const t = Date.now();
   return rows.map((r) => {
     const desk = (r as UserRow & { desk: number | null }).desk ?? null;

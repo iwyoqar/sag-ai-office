@@ -16,7 +16,7 @@ export interface SystemStatus {
 
 /** What powers the agents (Gemini live / mock / not configured). Polled slowly; also refreshed on events. */
 export function useSystem() {
-  const { auth, tick } = useOffice();
+  const { auth, tick, unitAccount } = useOffice();
   const [s, setS] = useState<SystemStatus | null>(null);
   const [bucket, setBucket] = useState(0);
   useEffect(() => {
@@ -24,7 +24,7 @@ export function useSystem() {
     return () => window.clearTimeout(t);
   }, [tick]);
   useEffect(() => {
-    if (auth !== "authenticated") return;
+    if (auth !== "authenticated" || unitAccount) return; // HQ system status; not for store accounts
     let alive = true;
     const load = () => api.get<SystemStatus>("/api/system").then((r) => alive && setS(r)).catch(() => {});
     void load();
@@ -33,6 +33,6 @@ export function useSystem() {
       alive = false;
       window.clearInterval(iv);
     };
-  }, [auth, bucket]);
+  }, [auth, bucket, unitAccount]);
   return s;
 }

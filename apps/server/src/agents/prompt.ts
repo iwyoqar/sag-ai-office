@@ -4,7 +4,7 @@ import { json } from "../db/db.js";
 import type { Ctx } from "../domain/context.js";
 
 interface AgentInfo {
-  id: string; name: string; role: string; department_id: string; responsibilities: string; skills: string;
+  id: string; name: string; role: string; department_id: string; responsibilities: string; skills: string; business_unit_id: string;
 }
 
 const MAX_CONTEXT_CHARS = 7000;
@@ -20,7 +20,7 @@ const BASE_RULES = [
 ];
 
 function agentRow(ctx: Ctx, agentId: string): AgentInfo {
-  return ctx.db.get<AgentInfo>("SELECT id, name, role, department_id, responsibilities, skills FROM agents WHERE id = ?", agentId)!;
+  return ctx.db.get<AgentInfo>("SELECT id, name, role, department_id, responsibilities, skills, business_unit_id FROM agents WHERE id = ?", agentId)!;
 }
 
 /** Global → department → agent instructions (later scopes add detail; global safety rules always win). */
@@ -35,8 +35,12 @@ export function buildSystemPrompt(ctx: Ctx, agentId: string, extra: string[] = [
   );
   const skills = json<string[]>(a.skills, []);
   const label = { GLOBAL: "Kompaniya qoidalari", DEPARTMENT: "Bo'lim ko'rsatmalari", AGENT: "Shaxsiy ko'rsatmalar" } as Record<string, string>;
+  const unit = a.business_unit_id === "hq" ? null
+    : ctx.db.get<{ name: string; ownership_model: string | null }>("SELECT name, ownership_model FROM org_nodes WHERE id = ?", a.business_unit_id);
   return [
-    `Sen SAG kompaniyasining AI xodimisan. Isming: ${a.name}. Lavozim: ${a.role}. Bo'lim: ${dep.name}.`,
+    unit
+      ? `Sen "${unit.name}" do'konining AI xodimisan${unit.ownership_model === "FRANCHISE" ? " (Home Design franshiza do'koni, mustaqil biznes)" : " (SAG Home Design do'koni)"}. Isming: ${a.name}. Lavozim: ${a.role}. Faqat shu do'kon ma'lumotlari bilan ishla; boshqa do'konlar yoki SAG bosh ofisi ichki ma'lumotlariga kirish huquqing yo'q.`
+      : `Sen SAG kompaniyasining AI xodimisan. Isming: ${a.name}. Lavozim: ${a.role}. Bo'lim: ${dep.name}.`,
     `Bo'lim yo'nalishlari: ${json<string[]>(dep.focus, []).join(", ")}.`,
     a.responsibilities ? `Mas'uliyatlaring: ${a.responsibilities}` : "",
     skills.length ? `Ko'nikmalar: ${skills.join(", ")}.` : "",

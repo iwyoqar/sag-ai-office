@@ -19,7 +19,7 @@ interface TaskRow {
   created_at: string; updated_at: string; kind: "single" | "orchestrate" | "human"; requires_approval: number; scheduled_for: string | null;
   assignee_user_id: string | null; assigned_by: string | null; reviewer_user_id: string | null; estimate_hours: number | null;
   actual_hours: number | null; is_optional: number; weight: number; decline_reason: string | null; accepted_at: string | null;
-  submitted_at: string | null;
+  submitted_at: string | null; business_unit_id: string;
 }
 
 const OPEN = OPEN_TASK_STATUSES.map((s) => `'${s}'`).join(",");
@@ -35,7 +35,7 @@ export function toDto(ctx: Ctx, r: TaskRow): TaskDto {
     progress: r.progress, stage: r.stage, result: r.result, error: r.error, attempts: r.attempts, maxAttempts: r.max_attempts,
     limits: json(r.limits, {}), dependsOn: deps.map((d) => d.depends_on_id),
     startedAt: r.started_at, completedAt: r.completed_at, tokensIn: r.tokens_in, tokensOut: r.tokens_out, costUsd: r.cost_usd,
-    createdAt: r.created_at, updatedAt: r.updated_at,
+    createdAt: r.created_at, updatedAt: r.updated_at, businessUnitId: r.business_unit_id,
     ...(r.kind === "human"
       ? {
           assigneeUserId: r.assignee_user_id, assignedBy: r.assigned_by, reviewerUserId: r.reviewer_user_id,
@@ -56,6 +56,8 @@ export const getTask = (ctx: Ctx, id: string) => toDto(ctx, row(ctx, id));
 
 export interface TaskFilter {
   status?: TaskStatus[]; departmentId?: string; agentId?: string; parentId?: string | null; limit?: number;
+  /** owning unit; HQ routes pass 'hq', internal callers (runner) may omit it */
+  unitId?: string;
 }
 
 export function listTasks(ctx: Ctx, f: TaskFilter = {}): TaskDto[] {
@@ -67,6 +69,7 @@ export function listTasks(ctx: Ctx, f: TaskFilter = {}): TaskDto[] {
   }
   if (f.departmentId) { where.push("department_id = ?"); p.push(f.departmentId); }
   if (f.agentId) { where.push("agent_id = ?"); p.push(f.agentId); }
+  if (f.unitId) { where.push("business_unit_id = ?"); p.push(f.unitId); }
   if (f.parentId === null) where.push("parent_id IS NULL");
   else if (f.parentId) { where.push("parent_id = ?"); p.push(f.parentId); }
   p.push(Math.min(f.limit ?? 200, 500));
@@ -150,6 +153,8 @@ export interface CreateTaskInput {
   limits?: TaskLimits; maxAttempts?: number; backlog?: boolean; requiresApproval?: boolean;
   /** ISO time; in the future → the task waits in BACKLOG and the scheduler queues it then */
   scheduledFor?: string | null;
+  /** owning unit (default 'hq'); the database refuses departments, agents or parents of another unit */
+  unitId?: string;
 }
 
 /** Department whose agent plans and combines multi-department work. */
@@ -186,9 +191,9 @@ export function createTask(ctx: Ctx, input: CreateTaskInput, actor: Actor): Task
 
   ctx.db.tx(() => {
     ctx.db.run(
-      `INSERT INTO tasks (id, kind, title, description, created_by, parent_id, department_id, agent_id, priority, deadline, status, stage, limits, max_attempts, created_at, updated_at, requires_approval)
-       VALUES (?,?,?,?,?,?,?,?,?,?, 'BACKLOG', ?,?,?,?,?,?)`,
-      id, kind, input.title, input.description ?? "", actor.type === "user" ? actor.id : null, input.parentId ?? null,
+      `INSERT INTO tasks (business_unit_id, id, kind, title, description, created_by, parent_id, department_id, agent_id, priority, deadline, status, stage, limits, max_attempts, created_at, updated_at, requires_approval)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'BACKLOG', ?,?,?,?,?,?)`,
+      input.unitId ?? (input.parentId ? row(ctx, input.parentId).business_unit_id : "hq"), id, kind, input.title, input.description ?? "", actor.type === "user" ? actor.id : null, input.parentId ?? null,
       departmentId, agentId, input.priority ?? "MEDIUM", input.deadline ?? null, stage,
       JSON.stringify(input.limits ?? {}), input.maxAttempts ?? 3, t, t, input.requiresApproval ? 1 : 0,
     );

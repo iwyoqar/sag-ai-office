@@ -113,7 +113,9 @@ export function canSeeTask(ctx: Ctx, u: AuthUser, t: TaskRef): boolean {
 
 /** SQL fragment + params limiting a task query to human tasks `u` may see (for list endpoints). */
 export function visibleTaskSql(u: AuthUser, alias = "t"): { sql: string; params: string[] } {
-  if (has(u, "tasks:read_all") || has(u, "tasks:assign_any")) return { sql: "1=1", params: [] };
+  // company-wide (HQ) task lists never include other business units' work
+  const hq = `${alias}.business_unit_id = 'hq'`;
+  if (has(u, "tasks:read_all") || has(u, "tasks:assign_any")) return { sql: hq, params: [] };
   const depts = [...new Set([...deptsFor(u, "tasks:read_team"), ...deptsFor(u, "employees:manage_dept"), ...deptsFor(u, "tasks:assign_dept")])];
   const me = u.id;
   const own = `(${alias}.created_by = ? OR ${alias}.assigned_by = ? OR ${alias}.assignee_user_id = ? OR ${alias}.reviewer_user_id = ?)`;
@@ -127,5 +129,5 @@ export function visibleTaskSql(u: AuthUser, alias = "t"): { sql: string; params:
     parts.push(`${alias}.department_id IN (${depts.map(() => "?").join(",")})`);
     params.push(...depts);
   }
-  return { sql: `(${parts.join(" OR ")})`, params };
+  return { sql: `(${hq} AND (${parts.join(" OR ")}))`, params };
 }

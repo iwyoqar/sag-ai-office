@@ -7,6 +7,8 @@ export interface UserDto {
   departmentId?: string | null;
   /** departments this user manages (head or delegated grant) */
   managedDepartments?: string[];
+  /** business unit of the account ('hq' = SAG Head Office); store accounts only use the unit routes */
+  homeUnitId?: string;
 }
 
 export type EmployeeStatus = "active" | "inactive" | "archived";
@@ -102,8 +104,73 @@ export interface TaskDto {
   attempts: number; maxAttempts: number; limits: TaskLimits; dependsOn: string[];
   startedAt: string | null; completedAt: string | null; tokensIn: number; tokensOut: number; costUsd: number;
   createdAt: string; updatedAt: string;
+  /** owning business unit ('hq' = SAG Head Office) */
+  businessUnitId: string;
   /** human workflow (kind = "human") */
   assigneeUserId?: string | null; assignedBy?: string | null; reviewerUserId?: string | null;
   estimateHours?: number | null; actualHours?: number | null; isOptional?: boolean; weight?: number;
   declineReason?: string | null; acceptedAt?: string | null; submittedAt?: string | null;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// SAG World: organisation tree, business units (stores), data sharing
+
+export type BusinessType = "SAG_BRANCH" | "INDEPENDENT_DEALER" | "SUBSIDIARY";
+export type OwnershipModel = "SAG_OWNED" | "FRANCHISE" | "INDEPENDENT" | "GROUP_OWNED";
+export type UnitRole = "unit_director" | "unit_manager" | "unit_staff";
+export type DataClass = "people_counts" | "employees" | "tasks" | "kpi" | "ai_usage";
+export type ShareLevel = "AGGREGATE" | "DETAIL";
+
+/** Network-level classification of a unit: never contains confidential unit data. */
+export interface UnitCardDto {
+  id: string; name: string; code: string; regionId: string; regionName: string;
+  businessType: BusinessType; ownershipModel: OwnershipModel | null;
+  sourceBrand: string | null; sourceMarker: "HD" | "F" | null; status: string;
+  /** real coordinates only; null = unknown (the world view then uses a labelled placeholder layout) */
+  geo: { lat: number; lng: number } | null;
+  address: string | null;
+  isHeadOffice: boolean;
+}
+
+export interface NetworkDto {
+  group: { id: string; name: string };
+  regions: { id: string; name: string; sourceLabel: string | null; units: UnitCardDto[] }[];
+}
+
+export interface UnitAccessDto {
+  memberRole: UnitRole | null;
+  classes: Partial<Record<DataClass, ShareLevel>>;
+  manageStructure: boolean;
+  canManageEmployees: boolean;
+  canAssignTasks: boolean;
+}
+
+export interface UnitPersonDto {
+  id: string; displayName: string; username: string; jobTitle: string; role: UnitRole | null;
+  status: string; activation: "ACTIVE" | "PENDING_ACTIVATION";
+}
+
+export interface UnitTaskDto {
+  id: string; kind: "single" | "orchestrate" | "human"; title: string; status: string; priority: string;
+  assigneeUserId: string | null; agentId: string | null; createdAt: string; updatedAt: string; result: string | null;
+}
+
+export interface UnitOverviewDto {
+  unit: UnitCardDto;
+  access: UnitAccessDto;
+  director: { assigned: boolean; activation: "ACTIVE" | "PENDING_ACTIVATION" | null; displayName?: string; username?: string };
+  aiDirector: { id: string; name: string; status: string; lifecycle: string } | null;
+  employeeCount?: number;
+  employees?: UnitPersonDto[];
+  taskCounts?: Record<string, number>;
+  tasks?: UnitTaskDto[];
+  kpis?: { employees: number; openTasks: number; doneTasks30d: number; aiCostUsd30d?: number };
+  /** sections hidden from this viewer (franchise confidentiality, missing agreement) */
+  restricted: string[];
+}
+
+export interface AgreementDto {
+  id: string; unitId: string; granteeNodeId: string; dataClasses: DataClass[]; level: ShareLevel;
+  validFrom: string; validTo: string | null; contractRef: string; active: boolean;
+  approvedAt: string | null; revokedAt: string | null; createdAt: string;
 }

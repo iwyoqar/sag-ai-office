@@ -10,7 +10,7 @@ export interface StatsResponse {
 
 /** Department stats from /api/stats; refetched (throttled) when realtime events arrive. */
 export function useStats(range: StatsRange, from?: string, to?: string) {
-  const { tick, auth } = useOffice();
+  const { tick, auth, unitAccount } = useOffice();
   const [data, setData] = useState<StatsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bucket, setBucket] = useState(0);
@@ -22,7 +22,7 @@ export function useStats(range: StatsRange, from?: string, to?: string) {
   }, [tick]);
 
   useEffect(() => {
-    if (auth !== "authenticated") return;
+    if (auth !== "authenticated" || unitAccount) return; // HQ statistics; store accounts have none here
     if (range === "custom" && (!from || !to)) return;
     let alive = true;
     const qs = new URLSearchParams({ range, ...(range === "custom" ? { from: from!, to: to! } : {}) });
@@ -33,7 +33,7 @@ export function useStats(range: StatsRange, from?: string, to?: string) {
     return () => {
       alive = false;
     };
-  }, [range, from, to, bucket, auth]);
+  }, [range, from, to, bucket, auth, unitAccount]);
 
   return { data, error };
 }

@@ -112,8 +112,11 @@ export class ConnectorHub {
 
   /** Tools this agent may use right now: always-on internal reads + granted connectors that are connected. */
   toolsFor(agentId: string): ToolDef[] {
-    const a = this.ctx.db.get<{ department_id: string; lifecycle: string }>("SELECT department_id, lifecycle FROM agents WHERE id = ?", agentId);
+    const a = this.ctx.db.get<{ department_id: string; lifecycle: string; business_unit_id: string }>("SELECT department_id, lifecycle, business_unit_id FROM agents WHERE id = ?", agentId);
     if (!a || a.lifecycle !== "ACTIVE") return [];
+    // Connectors and the internal tools (company documents, people, memory) belong to HQ. Agents of other units get
+    // none until per-unit connector installations exist (SAG World W2).
+    if (a.business_unit_id !== "hq") return [];
     const grants = new Map(
       this.ctx.db.all<{ connector_id: string; allowed_actions: string }>(
         `SELECT p.connector_id, p.allowed_actions FROM agent_connector_permissions p
@@ -259,7 +262,7 @@ export class ConnectorHub {
       `SELECT e.id, e.tool, e.connector_id connectorId, e.status, e.error, e.started_at startedAt, e.finished_at finishedAt, e.approval_id approvalId,
               e.agent_id agentId, a.name agentName, e.task_id taskId, t.title taskTitle, e.input, e.output
        FROM tool_executions e LEFT JOIN agents a ON a.id = e.agent_id LEFT JOIN tasks t ON t.id = e.task_id
-       WHERE e.agent_id IS NOT NULL ORDER BY e.started_at DESC LIMIT ?`, limit,
+       WHERE e.agent_id IS NOT NULL AND a.business_unit_id = 'hq' ORDER BY e.started_at DESC LIMIT ?`, limit,
     ).map((r) => ({ ...r, input: safeJson(r.input), output: safeJson(r.output) }));
   }
 

@@ -24,6 +24,7 @@ import { BuildingPanel, BuildingTip, CampusBuildings } from "./ui/CampusPanels";
 import { Loader } from "./ui/Loader";
 import { Login } from "./ui/Login";
 import { FallbackBuilding } from "./ui/FallbackBuilding";
+import { NetworkView } from "./ui/NetworkView";
 
 const BUILDING_IDS = BUILDINGS.map((b) => b.id);
 const LABELS_KEY = "sag.campusLabels";
@@ -37,7 +38,7 @@ function readLabelsPref() {
 }
 
 export function App() {
-  const { auth, office, error, lastEvent } = useOffice();
+  const { auth, office, error, lastEvent, unitAccount } = useOffice();
   const floorIds = useMemo(() => office?.floors.map((f) => f.id) ?? [], [office]);
   const reducer = useMemo(() => viewReducer(floorIds, BUILDING_IDS), [floorIds]);
   const [view, dispatch] = useReducer(reducer, initialView);
@@ -63,6 +64,7 @@ export function App() {
   const [employeeId, setEmployeeId] = useState<string | null>(null);
   const [workId, setWorkId] = useState<string | null>(null);
   const [newWork, setNewWork] = useState<{ assigneeId?: string } | null>(null);
+  const [networkOpen, setNetworkOpen] = useState(false);
 
   useEffect(() => {
     if (!has3d || !host.current) {
@@ -201,12 +203,15 @@ export function App() {
         onCalendar={ready ? () => setCalendarOpen(true) : undefined}
         onAccount={() => setAccountOpen(true)}
         onPeople={ready ? () => setPeopleOpen(true) : undefined}
+        onNetwork={ready ? () => setNetworkOpen(true) : undefined}
         onOpenWork={ready ? setWorkId : undefined}
         system={ready ? system : null}
       />
 
       {view.mode !== "intro" && auth === "anonymous" && <Login />}
-      {view.mode !== "intro" && auth === "authenticated" && !office && (
+      {view.mode !== "intro" && auth === "authenticated" && unitAccount && <NetworkView unitAccount />}
+      {ready && networkOpen && <NetworkView unitAccount={false} onClose={() => setNetworkOpen(false)} />}
+      {view.mode !== "intro" && auth === "authenticated" && !office && !unitAccount && (
         <div className="center-note">{error ? `Ma'lumot yuklanmadi: ${error}` : "Ofis ma'lumotlari yuklanmoqda…"}</div>
       )}
 

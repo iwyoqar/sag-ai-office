@@ -11,7 +11,7 @@ interface DeptRow {
 
 export function listDepartments({ db }: Ctx): DepartmentDto[] {
   const links = db.all<{ department_id: string; connector_id: string }>("SELECT * FROM department_connectors");
-  return db.all<DeptRow>("SELECT * FROM departments ORDER BY sort").map((d) => ({
+  return db.all<DeptRow>("SELECT * FROM departments WHERE business_unit_id = 'hq' ORDER BY sort").map((d) => ({
     id: d.id, floorId: d.floor_id, name: d.name, short: d.short, color: d.color, weight: d.weight,
     focus: json(d.focus, []), isActive: !!d.is_active,
     connectors: links.filter((l) => l.department_id === d.id).map((l) => l.connector_id),
@@ -25,14 +25,14 @@ export function getDepartment(ctx: Ctx, id: string): DepartmentDto {
 }
 
 export function listFloors({ db }: Ctx): FloorDto[] {
-  const deps = db.all<{ id: string; floor_id: string }>("SELECT id, floor_id FROM departments WHERE is_active = 1 ORDER BY sort");
+  const deps = db.all<{ id: string; floor_id: string }>("SELECT id, floor_id FROM departments WHERE is_active = 1 AND business_unit_id = 'hq' ORDER BY sort");
   return db.all<{ id: string; level: number; title: string }>("SELECT * FROM floors ORDER BY level DESC").map((f) => ({
     ...f, departments: deps.filter((d) => d.floor_id === f.id).map((d) => d.id),
   }));
 }
 
 export function listConnectors({ db }: Ctx): ConnectorDto[] {
-  const links = db.all<{ department_id: string; connector_id: string }>("SELECT * FROM department_connectors");
+  const links = db.all<{ department_id: string; connector_id: string }>("SELECT dc.* FROM department_connectors dc JOIN departments d ON d.id = dc.department_id WHERE d.business_unit_id = 'hq'");
   return db
     .all<{
       id: string; name: string; kind: string; auth_status: string; status: string; allowed_actions: string;

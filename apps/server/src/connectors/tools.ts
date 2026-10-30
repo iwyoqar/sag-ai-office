@@ -68,9 +68,9 @@ const listPeopleTool = tool({
   schema: z.object({ department_id: z.string().max(40).optional() }),
   summary: (a) => `Xodimlar ro'yxati${a.department_id ? `: ${a.department_id}` : ""}`,
   async run(env, a) {
-    const deps = env.ctx.db.all<{ id: string; name: string }>("SELECT id, name FROM departments WHERE is_active = 1 ORDER BY sort");
+    const deps = env.ctx.db.all<{ id: string; name: string }>("SELECT id, name FROM departments WHERE is_active = 1 AND business_unit_id = 'hq' ORDER BY sort");
     const people = env.ctx.db.all<{ display_name: string; job_title: string; department_id: string | null }>(
-      `SELECT display_name, job_title, department_id FROM users WHERE status = 'active' AND department_id IS NOT NULL ${a.department_id ? "AND department_id = ?" : ""} ORDER BY display_name LIMIT 200`,
+      `SELECT display_name, job_title, department_id FROM users WHERE status = 'active' AND home_unit_id = 'hq' AND department_id IS NOT NULL ${a.department_id ? "AND department_id = ?" : ""} ORDER BY display_name LIMIT 200`,
       ...(a.department_id ? [a.department_id] : []),
     );
     return { departments: deps, people: people.map((p) => ({ name: p.display_name, title: p.job_title, department: p.department_id })) };
@@ -113,7 +113,7 @@ const createEmployeeTaskTool = tool({
   summary: (a) => `Xodimga vazifa: “${a.title}” → ${a.assignee_name}`,
   async run(env, a) {
     if (!env.approver) throw new ConnectorError("Tasdiqlovchi aniqlanmadi");
-    const p = env.ctx.db.get<{ id: string }>("SELECT id FROM users WHERE status = 'active' AND lower(display_name) = lower(?)", a.assignee_name);
+    const p = env.ctx.db.get<{ id: string }>("SELECT id FROM users WHERE status = 'active' AND home_unit_id = 'hq' AND lower(display_name) = lower(?)", a.assignee_name);
     if (!p) throw new ConnectorError(`Xodim topilmadi: ${a.assignee_name}`);
     const t = createWork(env.ctx, env.approver, {
       title: a.title, description: `${a.description}\n\n(AI agent taklifi, ${env.approver.displayName} tasdiqlagan)`.trim(),

@@ -6,7 +6,9 @@ import type { Permission } from "@sag/shared";
 import type { Db } from "./db/db.js";
 import { EventBus } from "./lib/events.js";
 import { type AuthUser, userForSession } from "./lib/auth.js";
-import { HttpError, forbidden, unauthorized } from "./lib/errors.js";
+import { HttpError, forbidden, notFound, unauthorized } from "./lib/errors.js";
+import { HQ_UNIT } from "./domain/units.js";
+import { unitRoutes } from "./routes/units.js";
 import type { Actor } from "./lib/audit.js";
 import type { Ctx } from "./domain/context.js";
 import { authRoutes } from "./routes/auth.js";
@@ -27,6 +29,21 @@ import { connectorRoutes } from "./routes/connectors.js";
 import { randomUUID } from "node:crypto";
 
 export const SESSION_COOKIE = "sag_session";
+
+/** The only routes accounts of non-HQ units (stores) may call. */
+const UNIT_ACCOUNT_ROUTES = ["/api/auth/", "/api/units", "/api/agreements/", "/api/notifications", "/api/health"];
+
+/** HQ routes addressing one row by `:id`, and how to find that row's unit. */
+const HQ_OWNED_BY_ID: [string, string][] = [
+  ["/api/agents/:id", "SELECT business_unit_id u FROM agents WHERE id = ?"],
+  ["/api/tasks/:id", "SELECT business_unit_id u FROM tasks WHERE id = ?"],
+  ["/api/work/:id", "SELECT business_unit_id u FROM tasks WHERE id = ?"],
+  ["/api/employees/:id", "SELECT home_unit_id u FROM users WHERE id = ?"],
+  ["/api/users/:id", "SELECT home_unit_id u FROM users WHERE id = ?"],
+  ["/api/departments/:id", "SELECT business_unit_id u FROM departments WHERE id = ?"],
+  ["/api/approvals/:id", "SELECT COALESCE(t.business_unit_id, ag.business_unit_id) u FROM approvals a LEFT JOIN tasks t ON t.id = a.task_id LEFT JOIN agents ag ON ag.id = a.agent_id WHERE a.id = ?"],
+  ["/api/routines/:id", "SELECT COALESCE(ag.business_unit_id, d.business_unit_id) u FROM routines r LEFT JOIN agents ag ON ag.id = r.agent_id LEFT JOIN departments d ON d.id = r.department_id WHERE r.id = ?"],
+];
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -100,6 +117,18 @@ export async function buildApp(opts: AppOptions) {
     reply.header("x-request-id", req.id);
     req.user = userForSession(opts.db, req.cookies[SESSION_COOKIE]);
     if (req.user) touchActivity(deps, req.user.id);
+    // Company-wide routes are HQ's. Accounts of other units (stores) work only through their unit routes.
+    if (req.user && req.user.homeUnitId !== HQ_UNIT && !UNIT_ACCOUNT_ROUTES.some((p) => req.url.startsWith(p))) throw forbidden();
+  });
+  // On HQ routes an id that belongs to another unit does not exist (no cross-unit reads or writes by id).
+  app.addHook("preHandler", async (req) => {
+    const route = req.routeOptions.url ?? "";
+    const id = (req.params as { id?: string } | undefined)?.id;
+    if (!id) return;
+    const owner = HQ_OWNED_BY_ID.find(([prefix]) => route.startsWith(prefix));
+    if (!owner) return;
+    const row = opts.db.get<{ u: string }>(owner[1], id);
+    if (row && row.u !== HQ_UNIT) throw notFound("Ma'lumot");
   });
 
   app.setErrorHandler((err, req, reply: FastifyReply) => {
@@ -107,6 +136,9 @@ export async function buildApp(opts: AppOptions) {
       return reply.status(err.status).send({ error: { code: err.code, message: err.message, details: err.details }, requestId: req.id });
     if (err instanceof ZodError)
       return reply.status(400).send({ error: { code: "validation", message: "Noto'g'ri ma'lumot", details: err.issues }, requestId: req.id });
+    // database refused a reference to another business unit (triggers in 010_org_tree.sql)
+    if (err instanceof Error && /cross_unit|org_tree_shape/.test(err.message))
+      return reply.status(400).send({ error: { code: "cross_unit", message: "Boshqa biznes bo'limga tegishli ma'lumotga bog'lab bo'lmaydi" }, requestId: req.id });
     const status = (err as { statusCode?: number }).statusCode;
     if (status && status < 500)
       return reply.status(status).send({ error: { code: "bad_request", message: err.message }, requestId: req.id });
@@ -126,6 +158,7 @@ export async function buildApp(opts: AppOptions) {
   await app.register(runtimeRoutes(deps));
   await app.register(brainRoutes(deps));
   await app.register(scheduleRoutes(deps));
+  await app.register(unitRoutes(deps));
 
   return { app, deps };
 }

@@ -49,7 +49,7 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
     }
     if (!file) throw badRequest("Fayl tanlanmagan");
     const departmentId = fields.departmentId?.trim() || null;
-    if (departmentId && !d.db.get("SELECT 1 FROM departments WHERE id = ?", departmentId)) throw notFound("Bo'lim");
+    if (departmentId && !d.db.get("SELECT 1 FROM departments WHERE id = ? AND business_unit_id = 'hq'", departmentId)) throw notFound("Bo'lim");
     const doc = await ingestDocument(d, { title: fields.title, filename: file.filename, mime: file.mimetype, data: file.data, departmentId }, actorOf(u));
     if (!doc.duplicate) embedInBackground();
     reply.status(doc.duplicate ? 200 : 201);
@@ -153,7 +153,7 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
     d.db.tx(() => {
       d.db.run("DELETE FROM department_connectors WHERE connector_id = ?", id);
       for (const dep of departmentIds) {
-        if (!d.db.get("SELECT 1 FROM departments WHERE id = ?", dep)) throw notFound(`Bo'lim ${dep}`);
+        if (!d.db.get("SELECT 1 FROM departments WHERE id = ? AND business_unit_id = 'hq'", dep)) throw notFound(`Bo'lim ${dep}`);
         d.db.run("INSERT INTO department_connectors (department_id, connector_id) VALUES (?, ?)", dep, id);
       }
       // agent grants outside the new mapping are revoked

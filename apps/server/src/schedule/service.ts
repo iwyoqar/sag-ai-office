@@ -75,9 +75,9 @@ function validate(ctx: Ctx, i: Partial<RoutineInput>) {
       throw badRequest(`Vaqt zonasi noto'g'ri: ${i.timezone}`);
     }
   }
-  if (i.departmentId && !ctx.db.get("SELECT 1 FROM departments WHERE id = ?", i.departmentId)) throw notFound("Bo'lim");
+  if (i.departmentId && !ctx.db.get("SELECT 1 FROM departments WHERE id = ? AND business_unit_id = 'hq'", i.departmentId)) throw notFound("Bo'lim");
   if (i.agentId) {
-    const a = ctx.db.get<{ department_id: string; lifecycle: string }>("SELECT department_id, lifecycle FROM agents WHERE id = ?", i.agentId);
+    const a = ctx.db.get<{ department_id: string; lifecycle: string }>("SELECT department_id, lifecycle FROM agents WHERE id = ? AND business_unit_id = 'hq'", i.agentId);
     if (!a) throw notFound("Agent");
     if (a.lifecycle === "ARCHIVED") throw badRequest("Agent arxivlangan");
     if (i.departmentId && i.departmentId !== a.department_id) throw badRequest("Agent tanlangan bo'limga tegishli emas");
@@ -283,7 +283,7 @@ export function calendar(ctx: Ctx, from: Date, to: Date, f: { departmentId?: str
   const items: CalendarItem[] = [];
   const tasks = ctx.db.all<{ id: string; title: string; status: string; department_id: string | null; agent_id: string | null; scheduled_for: string | null; created_at: string; completed_at: string | null }>(
     `SELECT id, title, status, department_id, agent_id, scheduled_for, created_at, completed_at FROM tasks
-     WHERE parent_id IS NULL AND (
+     WHERE parent_id IS NULL AND business_unit_id = 'hq' AND (
        (scheduled_for >= ? AND scheduled_for < ?) OR (completed_at >= ? AND completed_at < ?) OR (scheduled_for IS NULL AND created_at >= ? AND created_at < ?)
      ) AND id NOT IN (SELECT task_id FROM routine_runs WHERE task_id IS NOT NULL)`,
     F, T, F, T, F, T,

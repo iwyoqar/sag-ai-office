@@ -25,16 +25,21 @@ export interface AuthUser {
   /** departments where this user is the head */
   headOf: string[];
   grants: Grant[];
+  /** business unit the account belongs to ('hq' = SAG Head Office); company-wide routes serve HQ accounts only */
+  homeUnitId: string;
 }
 
 export const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /** Loads an active user with everything authorisation needs. Inactive/archived accounts load as null. */
 export function loadUser(db: Db, userId: string): AuthUser | null {
-  const u = db.get<{ id: string; username: string; display_name: string; is_active: number; status: string; department_id: string | null; manager_id: string | null }>(
-    "SELECT id, username, display_name, is_active, status, department_id, manager_id FROM users WHERE id = ?", userId,
+  const u = db.get<{
+    id: string; username: string; display_name: string; is_active: number; status: string; department_id: string | null;
+    manager_id: string | null; home_unit_id: string; activation_status: string;
+  }>(
+    "SELECT id, username, display_name, is_active, status, department_id, manager_id, home_unit_id, activation_status FROM users WHERE id = ?", userId,
   );
-  if (!u || !u.is_active || u.status !== "active") return null;
+  if (!u || !u.is_active || u.status !== "active" || u.activation_status !== "ACTIVE") return null;
   const roles = db.all<{ role_id: Role }>("SELECT role_id FROM user_roles WHERE user_id = ?", u.id).map((r) => r.role_id);
   const rolePerms = db
     .all<{ permission_id: Permission }>(
@@ -52,17 +57,19 @@ export function loadUser(db: Db, userId: string): AuthUser | null {
   const headOf = db.all<{ id: string }>("SELECT id FROM departments WHERE head_user_id = ?", u.id).map((r) => r.id);
   return {
     id: u.id, username: u.username, displayName: u.display_name, roles, permissions,
-    departmentId: u.department_id, managerId: u.manager_id, headOf, grants,
+    departmentId: u.department_id, managerId: u.manager_id, headOf, grants, homeUnitId: u.home_unit_id,
   };
 }
 
 export async function login(db: Db, username: string, password: string): Promise<AuthUser | null> {
-  const row = db.get<{ id: string; password_hash: string; is_active: number; status: string }>(
-    "SELECT id, password_hash, is_active, status FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)", username, username.toLowerCase(),
+  const row = db.get<{ id: string; password_hash: string; is_active: number; status: string; activation_status: string }>(
+    "SELECT id, password_hash, is_active, status, activation_status FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)", username, username.toLowerCase(),
   );
-  // Verify against a dummy hash when the user is missing, so timing does not reveal valid usernames.
-  const ok = await verifyPassword(password, row?.password_hash ?? DUMMY_HASH);
-  if (!row || !row.is_active || row.status !== "active" || !ok) return null;
+  // Verify against a dummy hash when the user is missing (or has no password yet: pending activation), so timing
+  // does not reveal valid usernames.
+  const hash = row?.password_hash.startsWith("scrypt$") ? row.password_hash : DUMMY_HASH;
+  const ok = await verifyPassword(password, hash);
+  if (!row || !row.is_active || row.status !== "active" || row.activation_status !== "ACTIVE" || hash === DUMMY_HASH || !ok) return null;
   return loadUser(db, row.id);
 }
 

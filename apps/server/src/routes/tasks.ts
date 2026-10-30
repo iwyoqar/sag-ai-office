@@ -7,6 +7,7 @@ import {
 } from "../domain/tasks.js";
 import { conflict, forbidden, notFound } from "../lib/errors.js";
 import { canSeeTask, taskRef } from "../domain/access.js";
+import { HQ_UNIT } from "../domain/units.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 
@@ -81,7 +82,7 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
       : GROUPS[q.group];
     return {
       tasks: listTasks(d, {
-        status, departmentId: q.departmentId, agentId: q.agentId, limit: q.limit,
+        status, departmentId: q.departmentId, agentId: q.agentId, limit: q.limit, unitId: HQ_UNIT,
         parentId: q.topLevel === "true" ? null : q.parentId,
       }).filter((t) => t.kind !== "human"),
     };

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { OfficeEvent } from "@sag/shared";
 import { type Deps, requirePerm } from "../app.js";
+import { HQ_UNIT } from "../domain/units.js";
 
 // A real named event (not an SSE comment), so clients can detect a silently dead stream behind proxies.
 const HEARTBEAT_MS = 20_000;
@@ -21,6 +22,8 @@ export const eventRoutes = (d: Deps) => async (app: FastifyInstance) => {
     const companyWide = u.permissions.includes("tasks:read_all") || u.permissions.includes("tasks:assign_any");
     // People's work and personal notices reach only their audience (events carry ids, never content).
     const allowed = (e: OfficeEvent) => {
+      // the company-wide stream is HQ's; other units' activity never reaches it
+      if (e.unitId && e.unitId !== HQ_UNIT) return false;
       const aud = e.data?.audience as string[] | undefined;
       if (e.type === "notification.created") return !!aud?.includes(u.id);
       if (e.data?.human) return companyWide || !!aud?.includes(u.id);

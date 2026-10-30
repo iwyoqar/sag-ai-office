@@ -145,6 +145,8 @@ export interface OfficeEvent {
   taskId?: string | null;
   agentId?: string | null;
   departmentId?: string | null;
+  /** owning business unit (server-side filtering; HQ streams only carry HQ events) */
+  unitId?: string | null;
   data: Record<string, unknown>;
 }
 export * from "./dto.js";

@@ -24,6 +24,8 @@ interface OfficeCtx {
   tick: number;
   lastEvent: OfficeEvent | null;
   can: (p: Permission) => boolean;
+  /** signed in with a store (business unit) account: no HQ office data */
+  unitAccount: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -101,9 +103,11 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
+  // Store (business unit) accounts have no access to the HQ office: they work in the store network view only.
+  const unitAccount = !!user?.homeUnitId && user.homeUnitId !== "hq";
   useEffect(() => {
-    if (auth === "authenticated") void load();
-  }, [auth, load]);
+    if (auth === "authenticated" && !unitAccount) void load();
+  }, [auth, load, unitAccount]);
 
   // Realtime: EventSource reconnects by itself and sends Last-Event-ID, so missed events are replayed.
   // A proxy can keep a dead stream open without erroring, so a watchdog reopens it when even the
@@ -111,7 +115,7 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
   const pending = useRef<number | null>(null);
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
-    if (auth !== "authenticated") return;
+    if (auth !== "authenticated" || unitAccount) return;
     const es = new EventSource("/api/events");
     let lastSeen = Date.now();
     const seen = () => (lastSeen = Date.now());
@@ -150,11 +154,11 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
       es.close();
       setLive(false);
     };
-  }, [auth, load, refreshAgents, generation]);
+  }, [auth, load, refreshAgents, generation, unitAccount]);
 
   const value = useMemo<OfficeCtx>(
     () => ({
-      auth, user, office, error, live, tick, lastEvent,
+      auth, user, office, error, live, tick, lastEvent, unitAccount,
       can: (p) => !!user?.permissions.includes(p),
       login: async (username, password) => {
         await api.post<{ user: UserDto }>("/api/auth/login", { username, password });
@@ -170,7 +174,7 @@ export function OfficeProvider({ children }: { children: ReactNode }) {
       },
       refresh: load,
     }),
-    [auth, user, office, error, live, tick, lastEvent, load],
+    [auth, user, office, error, live, tick, lastEvent, load, unitAccount],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

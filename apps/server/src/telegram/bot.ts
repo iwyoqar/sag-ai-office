@@ -385,7 +385,7 @@ export class TelegramBot {
     const a = arg.trim().replace(/^#/, "");
     if (!/^[a-z0-9_]{4,40}$/i.test(a)) return null;
     const rows = this.ctx.db.all<{ id: string }>(
-      "SELECT id FROM tasks WHERE id = ? OR id LIKE ? ORDER BY created_at DESC LIMIT 2", a, `tsk_${a.toLowerCase()}%`,
+      "SELECT id FROM tasks WHERE business_unit_id = 'hq' AND (id = ? OR id LIKE ?) ORDER BY created_at DESC LIMIT 2", a, `tsk_${a.toLowerCase()}%`,
     );
     return rows.length === 1 || rows[0]?.id === a ? getTask(this.ctx, rows[0].id) : null;
   }
@@ -402,24 +402,24 @@ export class TelegramBot {
     const n = (sql: string) => this.ctx.db.get<{ n: number }>(sql)!.n;
     return [
       "🏢 <b>SAG AI Office</b>",
-      `Agentlar: ${n("SELECT COUNT(*) n FROM agents WHERE lifecycle = 'ACTIVE'")} faol, ishlayotgan: ${n("SELECT COUNT(*) n FROM agents WHERE status IN ('WORKING','THINKING','COMMUNICATING')")}`,
-      `Vazifalar: jarayonda ${n("SELECT COUNT(*) n FROM tasks WHERE status = 'IN_PROGRESS'")}, navbatda ${n("SELECT COUNT(*) n FROM tasks WHERE status = 'QUEUED'")}, tasdiq kutmoqda ${n("SELECT COUNT(*) n FROM tasks WHERE status = 'WAITING_APPROVAL'")}`,
-      `Bugun bajarildi: ${n(`SELECT COUNT(*) n FROM tasks WHERE status = 'DONE' AND completed_at >= '${new Date(Date.now() - 86_400_000).toISOString()}'`)}`,
+      `Agentlar: ${n("SELECT COUNT(*) n FROM agents WHERE business_unit_id = 'hq' AND lifecycle = 'ACTIVE'")} faol, ishlayotgan: ${n("SELECT COUNT(*) n FROM agents WHERE business_unit_id = 'hq' AND status IN ('WORKING','THINKING','COMMUNICATING')")}`,
+      `Vazifalar: jarayonda ${n("SELECT COUNT(*) n FROM tasks WHERE business_unit_id = 'hq' AND status = 'IN_PROGRESS'")}, navbatda ${n("SELECT COUNT(*) n FROM tasks WHERE business_unit_id = 'hq' AND status = 'QUEUED'")}, tasdiq kutmoqda ${n("SELECT COUNT(*) n FROM tasks WHERE business_unit_id = 'hq' AND status = 'WAITING_APPROVAL'")}`,
+      `Bugun bajarildi: ${n(`SELECT COUNT(*) n FROM tasks WHERE business_unit_id = 'hq' AND status = 'DONE' AND completed_at >= '${new Date(Date.now() - 86_400_000).toISOString()}'`)}`,
     ].join("\n");
   }
 
   private agentsText() {
     const rows = this.ctx.db.all<{ dep: string; name: string; status: string; title: string | null }>(
       `SELECT d.short dep, a.name, a.status, (SELECT t.title FROM tasks t WHERE t.agent_id = a.id AND t.status = 'IN_PROGRESS' LIMIT 1) title
-       FROM agents a JOIN departments d ON d.id = a.department_id WHERE a.lifecycle = 'ACTIVE' AND a.status <> 'IDLE' ORDER BY d.sort, a.name`,
+       FROM agents a JOIN departments d ON d.id = a.department_id WHERE a.business_unit_id = 'hq' AND a.lifecycle = 'ACTIVE' AND a.status <> 'IDLE' ORDER BY d.sort, a.name`,
     );
-    const idle = this.ctx.db.get<{ n: number }>("SELECT COUNT(*) n FROM agents WHERE lifecycle = 'ACTIVE' AND status = 'IDLE'")!.n;
+    const idle = this.ctx.db.get<{ n: number }>("SELECT COUNT(*) n FROM agents WHERE business_unit_id = 'hq' AND lifecycle = 'ACTIVE' AND status = 'IDLE'")!.n;
     if (!rows.length) return `👥 Hozir hamma agent bo'sh (${idle}).`;
     return ["👥 <b>Band agentlar</b>", ...rows.map((r) => `[${esc(r.dep.toUpperCase())}] ${esc(r.name)} — ${r.status}${r.title ? `: ${esc(r.title)}` : ""}`), `Bo'sh: ${idle}`].join("\n");
   }
 
   private tasksText() {
-    const ts = listTasks(this.ctx, { status: ["QUEUED", "IN_PROGRESS", "WAITING_FOR_DEPENDENCY", "WAITING_APPROVAL", "BLOCKED"], parentId: null, limit: 10 });
+    const ts = listTasks(this.ctx, { status: ["QUEUED", "IN_PROGRESS", "WAITING_FOR_DEPENDENCY", "WAITING_APPROVAL", "BLOCKED"], parentId: null, limit: 10, unitId: "hq" });
     if (!ts.length) return "📋 Faol vazifa yo'q.";
     return ["📋 <b>Faol vazifalar</b>", ...ts.map((t) => `${shortId(t.id)} — ${esc(t.title)} · ${t.status}${t.stage ? ` · ${esc(t.stage)}` : ""}`)].join("\n");
   }
@@ -449,7 +449,8 @@ export class TelegramBot {
 
   onEvent(e: OfficeEvent) {
     // People's work is never posted to the group (it may be confidential); employees get personal notices instead.
-    if (!this.running || !e.taskId || e.data?.human) return;
+    // The HQ group only hears about HQ work; other business units' activity is never posted there.
+    if (!this.running || !e.taskId || e.data?.human || (e.unitId && e.unitId !== "hq")) return;
     const chat = this.targetFor(e.taskId);
     if (!chat) return;
     const t = getTask(this.ctx, e.taskId);

@@ -56,7 +56,8 @@ function row(ctx: Ctx, id: string): AgentRow {
 }
 
 export function listAgents(ctx: Ctx, f: { departmentId?: string; includeArchived?: boolean } = {}): AgentDto[] {
-  const where = ["1=1"];
+  // company-wide list = HQ agents; store AI Directors are served through their unit
+  const where = ["business_unit_id = 'hq'"];
   const p: string[] = [];
   if (f.departmentId) {
     where.push("department_id = ?");
