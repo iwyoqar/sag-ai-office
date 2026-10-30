@@ -19,7 +19,7 @@ interface UserRow {
   id: string; username: string; display_name: string; email: string | null; job_title: string; department_id: string | null;
   floor_id: string | null; manager_id: string | null; status: EmployeeStatus; start_date: string | null;
   capacity_hours_week: number; work_start: string; work_end: string; timezone: string; last_activity_at: string | null;
-  last_login_at: string | null; created_at: string; is_active: number;
+  last_login_at: string | null; created_at: string; is_active: number; activation_status: string;
 }
 
 const actorOf = (u: AuthUser): Actor => ({ type: "user", id: u.id });
@@ -36,6 +36,7 @@ function card(ctx: Ctx, r: UserRow): EmployeeCardDto {
   return {
     id: r.id, displayName: r.display_name, jobTitle: r.job_title, departmentId: r.department_id, floorId: floor,
     status: r.status, hasAvatar: hasAvatar(ctx, r.id), roles: rolesOf(ctx, r.id), managerId: r.manager_id,
+    pendingActivation: r.activation_status === "PENDING_ACTIVATION",
   };
 }
 
@@ -242,6 +243,8 @@ export function updateEmployee(ctx: Ctx, u: AuthUser, id: string, patch: Employe
 export function setEmployeeStatus(ctx: Ctx, u: AuthUser, id: string, status: EmployeeStatus): EmployeeDto {
   const r = row(ctx, id);
   if (id === u.id) throw conflict("self_lockout", "O'zingizni faolsizlantira olmaysiz");
+  // an invited account becomes active only through its own one-time code (it has no password yet)
+  if (status === "active" && r.activation_status === "PENDING_ACTIVATION") throw conflict("pending_activation", "Xodim hali taklif kodi bilan faollashtirmagan — yangi kod bering");
   if (!canManagePerson(ctx, u, { id, department_id: r.department_id, manager_id: r.manager_id, status: r.status })) throw forbidden();
   if (status !== "active" && rolesOf(ctx, id).includes("admin")) {
     const others = ctx.db.get<{ n: number }>(

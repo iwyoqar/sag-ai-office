@@ -7,8 +7,9 @@ import { WORKLOAD_META } from "../../config/status";
 import { Avatar, Empty, Loading, Msg, fmtDate, run, useLoad, type Note } from "./common";
 import { Directory, EmployeeForm } from "./Employees";
 import { WorkBoard } from "./Work";
+import { EmployeeImport } from "./EmployeeImport";
 
-type Tab = "work" | "people" | "org" | "settings";
+type Tab = "work" | "people" | "org" | "import" | "settings";
 
 export function PeoplePanel({ onClose, onOpenEmployee, onOpenTask, onNewTask, initialTab = "work" }: {
   onClose: () => void; onOpenEmployee: (id: string) => void; onOpenTask: (id: string) => void; onNewTask: () => void; initialTab?: Tab;
@@ -20,6 +21,7 @@ export function PeoplePanel({ onClose, onOpenEmployee, onOpenTask, onNewTask, in
   const canOrg = can("employees:read_all") || can("employees:manage_all") || !!user?.managedDepartments?.length;
   const tabs: [Tab, string][] = [
     ["work", "Vazifalar"], ["people", "Xodimlar"], ...(canOrg ? [["org", "Tuzilma"] as [Tab, string]] : []),
+    ...(can("users:manage") || can("employees:manage_all") ? [["import", "Excel import"] as [Tab, string]] : []),
     ...(can("workload:configure") ? [["settings", "Yuklama sozlamasi"] as [Tab, string]] : []),
   ];
   return (
@@ -44,6 +46,7 @@ export function PeoplePanel({ onClose, onOpenEmployee, onOpenTask, onNewTask, in
             </section>
           ) : <Directory onOpen={onOpenEmployee} onCreate={canAdd ? () => setAdding(true) : undefined} />)}
           {tab === "org" && <OrgChart onOpen={onOpenEmployee} />}
+          {tab === "import" && <EmployeeImport />}
           {tab === "settings" && <WorkloadSettings />}
         </div>
       </div>

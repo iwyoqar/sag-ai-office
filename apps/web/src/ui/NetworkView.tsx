@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import type { NetworkDto, UnitCardDto, UnitOverviewDto, UnitPersonDto } from "@sag/shared";
+import type { NetworkDto, UnitCardDto, UnitOverviewDto, UnitPersonDto, UnitTaskDto } from "@sag/shared";
 import { api } from "../api/client";
+import { useOffice } from "../api/office";
 import { NetworkScene, type StoreOccupant } from "../scene/network/NetworkScene";
 import { webglAvailable } from "../scene/SceneController";
 
@@ -10,6 +11,15 @@ const STATUS: Record<string, string> = {
   ASSIGNED: "Berilgan", ACCEPTED: "Qabul qilingan", IN_PROGRESS: "Jarayonda", IN_REVIEW: "Tekshiruvda", DONE: "Bajarildi",
   CHANGES_REQUESTED: "Qayta ishlash", CANCELLED: "Bekor", QUEUED: "Navbatda", BACKLOG: "Kutmoqda", FAILED: "Xato", WAITING_APPROVAL: "Tasdiq kutmoqda",
 };
+/** Human task steps in a store, as the server allows them (domain/units.ts HUMAN_FLOW): label, and lead-only or not. */
+const FLOW: Record<string, { to: string; label: string; lead?: boolean }[]> = {
+  ASSIGNED: [{ to: "ACCEPTED", label: "Qabul qilish" }, { to: "CANCELLED", label: "Bekor qilish", lead: true }],
+  ACCEPTED: [{ to: "IN_PROGRESS", label: "Boshlash" }, { to: "CANCELLED", label: "Bekor qilish", lead: true }],
+  IN_PROGRESS: [{ to: "IN_REVIEW", label: "Tekshiruvga topshirish" }, { to: "CANCELLED", label: "Bekor qilish", lead: true }],
+  IN_REVIEW: [{ to: "DONE", label: "Tasdiqlash", lead: true }, { to: "CHANGES_REQUESTED", label: "Qayta ishlashga", lead: true }],
+  CHANGES_REQUESTED: [{ to: "IN_PROGRESS", label: "Qayta boshlash" }],
+};
+
 /**
  * Who stands in the opened store: people this viewer may see (active ones solid, positions waiting for a real person or
  * for activation translucent) and the store's AI Director. Nobody is invented: a vacant position has no name.
@@ -126,6 +136,12 @@ export function UnitPanel({ unitId, onClose, onLoaded }: { unitId: string; onClo
   const [o, setO] = useState<UnitOverviewDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [secret, setSecret] = useState<{ who: string; username: string; token: string; expiresAt: string } | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const { user } = useOffice();
+  const act = (fn: () => Promise<unknown>, ok?: string) => {
+    setNote(null);
+    fn().then(() => { if (ok) setNote({ ok: true, text: ok }); load(); }).catch((e) => setNote({ ok: false, text: e.message }));
+  };
   const load = useCallback(() => {
     setError(null);
     api.get<{ overview: UnitOverviewDto }>(`/api/units/${unitId}`).then((r) => {
@@ -213,12 +229,35 @@ export function UnitPanel({ unitId, onClose, onLoaded }: { unitId: string; onClo
         <section>
           <h3>Xodimlar ({o.employees.length})</h3>
           <ul className="unit-people">
-            {o.employees.map((p) => (
-              <li key={p.id}>
-                <span>{p.displayName}</span>
-                <small>{p.role ? ROLE[p.role] : ""}{p.activation === "PENDING_ACTIVATION" ? " · faollashtirilmagan" : p.status !== "active" ? " · nofaol" : ""}</small>
-              </li>
-            ))}
+            {o.employees.map((p) => {
+              // the director manages staff and managers, never themself or another director
+              const manage = o.access.canManageEmployees && p.role !== "unit_director" && p.id !== user?.id;
+              return (
+                <li key={p.id}>
+                  <span>{p.displayName}{p.jobTitle ? <small> · {p.jobTitle}</small> : null}</span>
+                  <small>{p.role ? ROLE[p.role] : ""}{p.activation === "PENDING_ACTIVATION" ? " · faollashtirilmagan" : p.status !== "active" ? " · nofaol" : ""}</small>
+                  {manage && (
+                    <span className="unit-actions">
+                      <select aria-label={`${p.displayName} roli`} value={p.role ?? "unit_staff"}
+                        onChange={(e) => act(() => api.patch(`/api/units/${u.id}/employees/${p.id}`, { role: e.target.value }), "Rol o'zgardi.")}>
+                        <option value="unit_staff">Xodim</option>
+                        <option value="unit_manager">Menejer</option>
+                      </select>
+                      {p.activation === "PENDING_ACTIVATION" ? (
+                        <button className="link" onClick={() => api.post<Invite>(`/api/units/${u.id}/employees/${p.id}/invitation`)
+                          .then((r) => setSecret({ who: p.displayName, username: r.username ?? p.username, token: r.activationToken, expiresAt: r.expiresAt }))
+                          .catch((e) => setNote({ ok: false, text: e.message }))}>Yangi kod</button>
+                      ) : p.status === "active" ? (
+                        <button className="link danger" onClick={() => window.confirm(`${p.displayName} faolsizlantirilsinmi? Tizimga kira olmaydi.`)
+                          && act(() => api.patch(`/api/units/${u.id}/employees/${p.id}`, { status: "inactive" }), "Faolsizlantirildi.")}>Faolsizlantirish</button>
+                      ) : (
+                        <button className="link" onClick={() => act(() => api.patch(`/api/units/${u.id}/employees/${p.id}`, { status: "active" }), "Faollashtirildi.")}>Faollashtirish</button>
+                      )}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
@@ -234,15 +273,32 @@ export function UnitPanel({ unitId, onClose, onLoaded }: { unitId: string; onClo
               <li key={t.id}>
                 <span>{t.title}</span>
                 <small>
-                  {STATUS[t.status] ?? t.status} · {t.agentId ? "AI Direktor" : peopleById.get(t.assigneeUserId ?? "")?.displayName ?? "xodim"}
+                  {STATUS[t.status] ?? t.status} · {t.agentId ? "AI Direktor" : t.assigneeUserId === user?.id ? "siz" : peopleById.get(t.assigneeUserId ?? "")?.displayName ?? "xodim"}
                 </small>
+                <TaskSteps t={t} lead={o.access.canAssignTasks} mine={t.assigneeUserId === user?.id}
+                  onMove={(to) => act(() => api.post(`/api/units/${u.id}/tasks/${t.id}/transition`, { to }))} />
               </li>
             ))}
           </ul>
         </section>
       )}
+      {note && <div className={note.ok ? "notice ok" : "notice warn"} role={note.ok ? "status" : "alert"}>{note.text}</div>}
       {o.access.canAssignTasks && <NewUnitTask unitId={u.id} people={o.employees ?? []} onDone={load} />}
     </aside>
+  );
+}
+
+/** Next steps of a human task for this viewer: the assignee moves their own work, the lead also reviews and cancels. */
+function TaskSteps({ t, lead, mine, onMove }: { t: UnitTaskDto; lead: boolean; mine: boolean; onMove: (to: string) => void }) {
+  if (t.kind !== "human" || (!lead && !mine)) return null;
+  const steps = (FLOW[t.status] ?? []).filter((s) => (s.lead ? lead : true));
+  if (!steps.length) return null;
+  return (
+    <span className="unit-actions">
+      {steps.map((s) => (
+        <button key={s.to} className={s.to === "CANCELLED" ? "link danger" : "link"} onClick={() => onMove(s.to)}>{s.label}</button>
+      ))}
+    </span>
   );
 }
 

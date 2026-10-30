@@ -15,7 +15,7 @@
 import {
   type AgreementAccess, type AgreementDto, type AgreementStatus, BUSINESS_FUNCTIONS, type BusinessFunction, type BusinessType,
   type DataClass, type NetworkDto, type OwnershipModel, type ShareLevel, type UnitAccessDto, type UnitCardDto,
-  type UnitOverviewDto, type UnitPersonDto, type UnitRole, type UnitTaskDto,
+  type Role, type UnitOverviewDto, type UnitPersonDto, type UnitRole, type UnitTaskDto,
 } from "@sag/shared";
 import { json, now } from "../db/db.js";
 import { type Actor, SYSTEM, audit } from "../lib/audit.js";
@@ -26,6 +26,7 @@ import { slug, token, uid } from "../lib/ids.js";
 import { hashPassword } from "../lib/passwords.js";
 import type { Ctx } from "./context.js";
 import { createTask } from "./tasks.js";
+import { nextDesk } from "./employees.js";
 import { checkPassword } from "./users.js";
 
 export const HQ_UNIT = "hq";
@@ -320,7 +321,7 @@ function uniqueCode(ctx: Ctx, base: string): string {
   }
 }
 
-function uniqueUsername(ctx: Ctx, base: string): string {
+export function uniqueUsername(ctx: Ctx, base: string): string {
   for (let i = 1; ; i++) {
     const c = i === 1 ? base : `${base}-${i}`;
     if (!ctx.db.get("SELECT 1 FROM users WHERE username = ?", c)) return c;
@@ -402,7 +403,7 @@ export function provisionStoreUnit(ctx: Ctx, i: ProvisionStoreInput, actor: Acto
 
 // ---------- directors, invitations, activation ----------
 
-function issueInvitation(ctx: Ctx, by: AuthUser, unitId: string, userId: string, role: UnitRole) {
+export function issueInvitation(ctx: Ctx, by: AuthUser, unitId: string, userId: string, role: UnitRole | Role) {
   const raw = token(32);
   const t = now();
   ctx.db.run("UPDATE user_invitations SET revoked_at = ? WHERE user_id = ? AND accepted_at IS NULL AND revoked_at IS NULL", t, userId);
@@ -455,6 +456,12 @@ export async function activateAccount(ctx: Ctx, rawToken: string, password: stri
     ctx.db.run(
       "UPDATE users SET password_hash = ?, is_active = 1, status = 'active', activation_status = 'ACTIVE' WHERE id = ?", hash, inv.user_id,
     );
+    // HQ people (bulk import) get their desk when they become active: desks are numbered among active colleagues
+    const p = ctx.db.get<{ home_unit_id: string; department_id: string | null; desk: number | null }>(
+      "SELECT home_unit_id, department_id, desk FROM users WHERE id = ?", inv.user_id,
+    )!;
+    if (p.home_unit_id === "hq" && p.department_id && p.desk === null)
+      ctx.db.run("UPDATE users SET desk = ? WHERE id = ?", nextDesk(ctx, p.department_id, inv.user_id), inv.user_id);
     audit(ctx.db, { type: "user", id: inv.user_id }, "user.activate", { type: "user", id: inv.user_id });
     return { username: ctx.db.get<{ username: string }>("SELECT username FROM users WHERE id = ?", inv.user_id)!.username };
   });

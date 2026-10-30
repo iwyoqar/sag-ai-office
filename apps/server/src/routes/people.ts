@@ -10,6 +10,7 @@ import {
   createEmployee, directory, getAvatar, grantPermission, orgChart, presence, profile, revokePermission, setAvatar,
   setDepartmentHead, setEmployeeRoles, setEmployeeStatus, updateEmployee,
 } from "../domain/employees.js";
+import { importEmployees, reissueHqInvitation } from "../domain/employeeImport.js";
 import { listNotifications, markRead } from "../domain/notifications.js";
 import {
   acceptWork, addAttachment, addComment, assignWork, blockWork, cancelWork, createWork, declineWork, getAttachment, listWork,
@@ -148,6 +149,19 @@ export const peopleRoutes = (d: Deps) => async (app: FastifyInstance) => {
     revokePermission(d, u, p.id, p.grantId);
     return { ok: true };
   });
+
+  // bulk import (.xlsx, multipart field "file"): dry run by default, ?apply=1 creates everyone or no one
+  app.post("/api/employees/import", { bodyLimit: 6_000_000 }, async (req) => {
+    const u = requireUser(req);
+    const apply = parse(z.object({ apply: z.enum(["0", "1"]).optional() }), req.query).apply === "1";
+    const file = await req.file({ limits: { fileSize: 5 * 1024 * 1024 } });
+    if (!file) throw badRequest("Fayl tanlanmagan");
+    const data = await file.toBuffer();
+    if (file.file.truncated) throw badRequest("Fayl 5 MB dan katta");
+    return importEmployees(d, u, new Uint8Array(data), apply);
+  });
+
+  app.post("/api/employees/:id/invitation", async (req) => reissueHqInvitation(d, requireUser(req), parse(Id, req.params).id));
 
   app.put("/api/employees/:id/avatar", { bodyLimit: 1_500_000 }, async (req) => {
     const u = requireUser(req);

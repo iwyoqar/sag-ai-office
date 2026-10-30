@@ -34,6 +34,8 @@ export interface WorkloadDto {
 export interface EmployeeCardDto {
   id: string; displayName: string; jobTitle: string; departmentId: string | null; floorId: string | null;
   status: EmployeeStatus; hasAvatar: boolean; roles: Role[]; managerId: string | null;
+  /** imported / invited, has not set a password with the one-time code yet */
+  pendingActivation: boolean;
 }
 
 /** Full profile: self, managers in scope, and company-wide readers only. */

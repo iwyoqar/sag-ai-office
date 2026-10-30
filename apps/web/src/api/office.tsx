@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { PlanDept } from "../scene/office/plan";
 import type { AgentDto, ConnectorDto, DepartmentDto, FloorDto, OfficeEvent, Permission, PresenceDto, UserDto } from "@sag/shared";
 import { api, ApiError } from "./client";
 
@@ -188,6 +189,14 @@ export function peopleOfFloor(office: Office, floorId: string): PresenceDto[] {
   const f = office.floors.find((x) => x.id === floorId);
   // seated with their department (desks belong to departments)
   return f ? office.people.filter((p) => f.departments.includes(p.departmentId)) : [];
+}
+
+/** Departments of a floor as plan input, with how many agents and employees need a desk in each. */
+export function planDepts(deps: { id: string; name: string; color: string; weight: number }[], agents: AgentDto[], people: PresenceDto[]): PlanDept[] {
+  return deps.map((d) => ({
+    id: d.id, name: d.name, color: d.color, weight: d.weight,
+    need: agents.filter((a) => a.departmentId === d.id).length + people.filter((p) => p.departmentId === d.id).length,
+  }));
 }
 
 export function agentsOfFloor(office: Office, floorId: string): AgentDto[] {

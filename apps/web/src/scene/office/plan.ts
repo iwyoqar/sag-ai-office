@@ -184,12 +184,37 @@ export const FLOOR_PLANS: Record<string, FloorPlan> = { "5": marketingPlan() };
 const BOUNDS: Rect = { x0: -17.25, x1: 17.25, z0: -11.25, z1: 7.4 };
 const POD_PITCH = 2 * (DESK_W + 0.08) + 1.9; // pod width + aisle
 
-export interface PlanDept { id: string; name: string; color: string; weight: number }
+export interface PlanDept {
+  id: string; name: string; color: string; weight: number;
+  /** people who need a desk here (agents + employees); more than the front row holds makes the zone dense */
+  need?: number;
+}
+
+const POD3_PITCH = 3 * (DESK_W + 0.08) + 1.9;
+const FRONT_Z = -0.4;
+const REAR_Z = -6.0;
+
+/**
+ * Desk rows for a department zone of width w. Normal: one front row of 4-desk pods (plus a shorter rear row on
+ * single-department floors). Dense (more people than that): a full rear row too, and 6-desk pods when they fit more
+ * people; the zone's free-standing furniture then gives way to wall-mounted pieces.
+ */
+function zoneRows(w: number, need: number, single: boolean, reception: boolean) {
+  const n = Math.max(1, Math.floor((w - 1.2) / POD_PITCH));
+  const normal = single && !reception ? [{ z: FRONT_Z, pods: n }, { z: REAR_Z, pods: Math.max(1, n - 2) }] : [{ z: FRONT_Z, pods: n }];
+  const cap = (rows: { pods: number }[], cols: number) => rows.reduce((k, r) => k + r.pods * cols * 2, 0);
+  if (need <= cap(normal, 2)) return { rows: normal, cols: 2, dense: false };
+  const n3 = Math.floor((w - 1.2) / POD3_PITCH);
+  const cols = n3 * 6 > n * 4 ? 3 : 2;
+  const pods = cols === 3 ? n3 : n;
+  return { rows: [{ z: FRONT_Z, pods }, { z: REAR_Z, pods }], cols, dense: true };
+}
 
 /**
  * Generated plan for floors without a hand-made layout: departments side by side (by weight, like the overview),
  * a row of desk pods per department, a shared meeting table, glass partitions between departments at the back,
- * and each department's signature furniture against the back wall.
+ * and each department's signature furniture against the back wall. A department with more people than desks gets
+ * a second row (and wider pods), so headcount growth adds desks instead of leaving people out.
  */
 export function zonePlan(floorId: string, deps: PlanDept[]): FloorPlan {
   const total = deps.reduce((n, d) => n + d.weight, 0) || 1;
@@ -204,28 +229,30 @@ export function zonePlan(floorId: string, deps: PlanDept[]): FloorPlan {
   // meeting table goes to the widest zone's back half; the others get their signature props there
   // …preferring a zone whose department has no centrepiece of its own (Brain core, director desk, racks, reception)
   const widest = (zs: typeof zones) => zs.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a));
-  const plain = zones.filter((z) => !["brain", "director", "it", "reception"].includes(z.dep.id));
-  const meetZone = widest(plain.length ? plain : zones);
+  const single = zones.length === 1;
+  const layout = new Map(zones.map((z) => [z, zoneRows(z.x1 - z.x0, z.dep.need ?? 0, single, z.dep.id === "reception")]));
+  // the meeting table needs the back of a zone that is not dense; with none left, the floor has no meeting table
+  const open = zones.filter((z) => !layout.get(z)!.dense);
+  const plain = open.filter((z) => !["brain", "director", "it", "reception"].includes(z.dep.id));
+  const meetZone = open.length ? widest(plain.length ? plain : open) : null;
   const pods: FloorPlan["pods"] = [];
   const workstations: Seat[] = [];
   const deskDept: string[] = [];
   const props: Prop[] = [];
   const areas: Area[] = [];
   const meetingSeats: Seat[] = [];
-  const single = zones.length === 1;
 
   zones.forEach((z, zi) => {
     const w = z.x1 - z.x0;
     const cx = (z.x0 + z.x1) / 2;
-    const n = Math.max(1, Math.floor((w - 1.2) / POD_PITCH));
-    // single-department floors get a second, rear row of pods
-    const rows = single && z.dep.id !== "reception" ? [-0.4, -6.0] : [-0.4];
-    for (const pz of rows) {
-      for (let i = 0; i < (pz === -0.4 ? n : Math.max(1, n - 2)); i++) {
-        const cnt = pz === -0.4 ? n : Math.max(1, n - 2);
-        const px = cx + (i - (cnt - 1) / 2) * POD_PITCH;
-        pods.push({ x: px, z: pz, cols: 2 });
-        for (const s of podSeats(px, pz, 2)) {
+    const { rows, cols, dense } = layout.get(z)!;
+    const pitch = cols === 3 ? POD3_PITCH : POD_PITCH;
+    // front row first, so agents (who fill desks from the front) keep their seats when a rear row is added
+    for (const r of rows) {
+      for (let i = 0; i < r.pods; i++) {
+        const px = cx + (i - (r.pods - 1) / 2) * pitch;
+        pods.push({ x: px, z: r.z, cols });
+        for (const s of podSeats(px, r.z, cols)) {
           workstations.push(s);
           deskDept.push(z.dep.id);
         }
@@ -237,6 +264,13 @@ export function zonePlan(floorId: string, deps: PlanDept[]): FloorPlan {
 
     const back = -10.6;
     if (z === meetZone && !single) return; // meeting table takes this zone's back
+    if (dense) {
+      // the rear desk row needs the floor space: only wall-mounted pieces stay
+      if (z.dep.id === "it") for (let k = 0; k < Math.min(8, Math.floor((w - 2) / 1.1)); k++) props.push({ kind: "serverRack", x: z.x0 + 1.6 + k * 1.1, z: back });
+      else props.push({ kind: "kanban", x: cx, z: back, w: Math.min(3.2, w - 2) });
+      props.push({ kind: "plantTall", x: z.x1 - 0.8, z: -10.4 });
+      return;
+    }
     switch (z.dep.id) {
       case "it":
         for (let k = 0; k < Math.min(8, Math.floor((w - 2) / 1.1)); k++) props.push({ kind: "serverRack", x: z.x0 + 1.6 + k * 1.1, z: back });
@@ -279,21 +313,35 @@ export function zonePlan(floorId: string, deps: PlanDept[]): FloorPlan {
   });
 
   // shared meeting table (back half of the widest zone; on single-department floors, the east end)
-  const mt = single ? { x: 12.6, z: -8.4 } : { x: (meetZone.x0 + meetZone.x1) / 2, z: -8.4 };
-  props.push({ kind: "meetingTable", x: mt.x, z: mt.z }, { kind: "wallScreen", x: mt.x, z: -11.05 });
-  for (const sx of [-1.5, -0.5, 0.5, 1.5])
-    for (const side of [-1, 1]) {
-      const z = mt.z + side * 1.15;
-      meetingSeats.push({ x: mt.x + sx, z, face: side === -1 ? 0 : Math.PI, ax: mt.x + sx, az: z + side * 0.65 });
-    }
-  areas.push({ label: "Meeting", x: mt.x, z: -6.2 });
+  if (meetZone) {
+    const mt = single ? { x: 12.6, z: -8.4 } : { x: (meetZone.x0 + meetZone.x1) / 2, z: -8.4 };
+    props.push({ kind: "meetingTable", x: mt.x, z: mt.z }, { kind: "wallScreen", x: mt.x, z: -11.05 });
+    for (const sx of [-1.5, -0.5, 0.5, 1.5])
+      for (const side of [-1, 1]) {
+        const z = mt.z + side * 1.15;
+        meetingSeats.push({ x: mt.x + sx, z, face: side === -1 ? 0 : Math.PI, ax: mt.x + sx, az: z + side * 0.65 });
+      }
+    areas.push({ label: "Meeting", x: mt.x, z: -6.2 });
+  }
   props.push({ kind: "coffeePoint", x: 16.6, z: 1.6, rot: -Math.PI / 2 });
 
   return { floorId, bounds: BOUNDS, workstations, deskDept, pods, meetingSeats, props, areas, obstacles: [], entry: FLOOR_ENTRY };
 }
 
+/** Hand-made plan while it has a desk for everyone; otherwise the generated plan, which grows with headcount. */
 export function planFor(floorId: string, deps?: PlanDept[]): FloorPlan | undefined {
-  return FLOOR_PLANS[floorId] ?? (deps?.length ? zonePlan(floorId, deps) : undefined);
+  const hand = FLOOR_PLANS[floorId];
+  const fits = (p: FloorPlan) => (deps ?? []).every((d) => (d.need ?? 0) <= p.deskDept.filter((x) => x === d.id).length);
+  if (hand && fits(hand)) return hand;
+  return deps?.length ? zonePlan(floorId, deps) : hand;
+}
+
+export interface DeskCount { departmentId: string; desks: number; need: number }
+
+/** Desks per department on a floor's plan and how many people need one: `need > desks` means some are not drawn. */
+export function deskReport(floorId: string, deps: PlanDept[]): DeskCount[] {
+  const plan = planFor(floorId, deps);
+  return deps.map((d) => ({ departmentId: d.id, desks: plan ? plan.deskDept.filter((x) => x === d.id).length : 0, need: d.need ?? 0 }));
 }
 
 /** Footprint rectangles of every solid prop (used for the navigation grid). */

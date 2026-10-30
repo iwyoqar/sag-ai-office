@@ -3,7 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import type { FloorDto, NetworkDto } from "@sag/shared";
-import { agentsOfFloor, peopleOfFloor, type Office } from "../api/office";
+import { agentsOfFloor, peopleOfFloor, planDepts, type Office } from "../api/office";
 import { ATTIC, FL, PLINTH, PODIUM, X0, X1, Z0, Z1, floorRange, outline } from "./buildingGeometry";
 import { CloudBank } from "./clouds";
 import { FloorInterior, interiorKey, type Interior } from "./interior";
@@ -899,7 +899,7 @@ export class SceneController {
     const people = peopleOfFloor(o, floor.id);
     const own = floor.departments.map((id) => o.departments[id]).filter((d) => !!d);
     // Realistic office (furniture + walking people) when the floor has a plan; simple zones otherwise.
-    const plan = this.realistic ? planFor(floor.id, own.map((d) => ({ id: d.id, name: d.name, color: d.color, weight: d.weight }))) : undefined;
+    const plan = this.realistic ? planFor(floor.id, planDepts(own, agents, people)) : undefined;
     // (the lightweight zone view has no desks for people; they appear on realistic floors)
     const it: Interior = plan ? new OfficeFloor(floor, plan, deps, agents, people) : new FloorInterior(floor, deps, agents);
     it.root.visible = false;

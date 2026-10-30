@@ -54,7 +54,7 @@ export function Directory({ onOpen, onCreate }: { onOpen: (id: string) => void; 
                 <span className="pc-meta">
                   {e.departmentId && office?.departments[e.departmentId] && <DeptChip dep={office.departments[e.departmentId]} />}
                   {e.roles.includes("department_head") && <span className="tag">rahbar</span>}
-                  {e.status !== "active" && <span className="tag">{e.status === "archived" ? "arxiv" : "faolsiz"}</span>}
+                  {e.pendingActivation ? <span className="tag">taklif kutilmoqda</span> : e.status !== "active" && <span className="tag">{e.status === "archived" ? "arxiv" : "faolsiz"}</span>}
                 </span>
               </span>
               {e.workload && <WorkloadBadge w={e.workload} compact />}
@@ -134,7 +134,12 @@ export function EmployeeProfile({ id, onClose, onOpenTask, onAssign }: {
               <div className="row-end">
                 {full.can.assignTasks && full.status === "active" && <button className="link" onClick={() => onAssign(full.id)}>+ Vazifa berish</button>}
                 {full.can.edit && <button className="link" onClick={() => setEdit(true)}>Tahrirlash</button>}
-                {full.can.changeStatus && <StatusMenu e={full} onDone={(t) => { setMsg({ ok: true, text: t }); reload(); }} onError={(t) => setMsg({ ok: false, text: t })} />}
+                {full.can.changeStatus && !full.pendingActivation && <StatusMenu e={full} onDone={(t) => { setMsg({ ok: true, text: t }); reload(); }} onError={(t) => setMsg({ ok: false, text: t })} />}
+                {full.pendingActivation && full.can.changeStatus && (
+                  <button className="link" onClick={() => void api.post<{ activationToken: string; expiresAt: string }>(`/api/employees/${full.id}/invitation`)
+                    .then((r) => setMsg({ ok: true, text: `Yangi bir martalik kod (${r.expiresAt.slice(0, 10)} gacha, eskisi bekor): ${r.activationToken}` }))
+                    .catch((x) => setMsg({ ok: false, text: errorText(x) }))}>Yangi taklif kodi</button>
+                )}
                 {full.can.edit && <AvatarUpload id={full.id} onDone={() => { setMsg({ ok: true, text: "Rasm yangilandi." }); reload(); }} onError={(t) => setMsg({ ok: false, text: t })} />}
               </div>
               <section>

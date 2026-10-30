@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { FloorDto, StatsRange } from "@sag/shared";
 import { STATUS_META } from "../config/status";
-import { useOffice } from "../api/office";
+import { agentsOfFloor, peopleOfFloor, planDepts, useOffice } from "../api/office";
+import { deskReport } from "../scene/office/plan";
 import { sumStats, useStats } from "../api/stats";
 import { ConnectorRow, DeptChip, Stat, StatusPill, fmtTokens, fmtUsd, floorLabel } from "./shared";
 
@@ -26,6 +27,9 @@ export function FloorPanel({ floor, onBack, onAgent, selectedAgent }: {
   const connectors = office.connectors.filter((c) => connectorIds.has(c.id));
   const connected = connectors.filter((c) => c.status === "connected").length;
   const v = (n: number | undefined) => (n === undefined ? "–" : n);
+  // desks on the 3D plan against the people who need one (agents + employees); the plan adds rows as headcount grows
+  const desks = deskReport(floor.id, planDepts(deps, agentsOfFloor(office, floor.id), peopleOfFloor(office, floor.id)));
+  const short = desks.filter((d) => d.need > d.desks);
 
   return (
     <aside className="panel floor-panel" aria-label={`${floor.title} paneli`}>
@@ -37,6 +41,19 @@ export function FloorPanel({ floor, onBack, onAgent, selectedAgent }: {
         {floor.title}
       </h2>
       <div className="chips">{deps.map((d) => <DeptChip key={d.id} dep={d} />)}</div>
+      <div className="desk-report" aria-label="Ish joylari">
+        {desks.map((d) => (
+          <span key={d.departmentId} className={d.need > d.desks ? "warn" : ""}>
+            {office.departments[d.departmentId]?.name}: {d.need}/{d.desks} stol
+          </span>
+        ))}
+        {short.length > 0 && (
+          <div className="notice warn">
+            Stol yetmadi: {short.map((d) => `${office.departments[d.departmentId]?.name} (${d.need - d.desks} kishi)`).join(", ")} — ular
+            ro'yxatda bor, lekin 3D ofisda ko'rinmaydi.
+          </div>
+        )}
+      </div>
 
       <section>
         <h3>Connectorlar · {connected}/{connectors.length} ulangan</h3>

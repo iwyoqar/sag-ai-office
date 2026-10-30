@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FLOOR_PLANS, planFor, planObstacles, propFootprint, podRect, type FloorPlan, type PlanDept } from "../src/scene/office/plan";
+import { FLOOR_PLANS, deskReport, planFor, planObstacles, propFootprint, podRect, type FloorPlan, type PlanDept } from "../src/scene/office/plan";
 import { buildNavGrid, findPath, isFree, lineOfSight, pathLength } from "../src/scene/office/nav";
 import { insidePolygon, outline } from "../src/scene/buildingGeometry";
 import { activityFor } from "../src/scene/office/behaviour";
@@ -98,8 +98,39 @@ describe("generated floor plans (Phase 3: every floor)", () => {
   for (const [floorId, deps] of Object.entries(FLOORS)) {
     it(`floor ${floorId}: furniture inside, no overlaps, every seat reachable`, () => {
       const p: FloorPlan = planFor(floorId, deps)!;
-      expect(p.deskDept).toHaveLength(p.workstations.length);
       for (const d of deps) expect(p.deskDept.filter((x) => x === d.id).length, d.id).toBeGreaterThanOrEqual(4);
+      checkPlan(floorId, p);
+    });
+  }
+});
+
+describe("floor plans grow with headcount", () => {
+  const withNeed = (deps: PlanDept[], need: number) => deps.map((d) => ({ ...d, need }));
+  for (const [floorId, deps] of Object.entries({ ...FLOORS, "5": [D("marketing")] })) {
+    it(`floor ${floorId}: a crowded department gets more desks, and the plan stays valid`, () => {
+      const base = planFor(floorId, withNeed(deps, 0))!;
+      const crowded = planFor(floorId, withNeed(deps, 200))!;
+      for (const d of deps) {
+        const before = base.deskDept.filter((x) => x === d.id).length, after = crowded.deskDept.filter((x) => x === d.id).length;
+        expect(after, d.id).toBeGreaterThan(before);
+      }
+      checkPlan(floorId, crowded);
+    });
+  }
+  it("keeps the hand-made marketing floor while everyone has a desk on it", () => {
+    expect(planFor("5", [{ ...D("marketing"), need: 16 }])).toBe(FLOOR_PLANS["5"]);
+    expect(planFor("5", [{ ...D("marketing"), need: 17 }])).not.toBe(FLOOR_PLANS["5"]);
+  });
+  it("reports desks against need per department", () => {
+    const r = deskReport("2", [{ ...D("sales", 1.1), need: 500 }, { ...D("design", 0.9), need: 2 }]);
+    expect(r.find((x) => x.departmentId === "sales")!.need).toBe(500);
+    expect(r.find((x) => x.departmentId === "sales")!.desks).toBeLessThan(500);
+    expect(r.find((x) => x.departmentId === "design")!.desks).toBeGreaterThanOrEqual(2);
+  });
+});
+
+function checkPlan(floorId: string, p: FloorPlan) {
+      expect(p.deskDept).toHaveLength(p.workstations.length);
       const solids = [...p.props.flatMap(propFootprint), ...p.pods.map(podRect)];
       for (const r of solids)
         for (const c of [[r.x0, r.z0], [r.x1, r.z0], [r.x0, r.z1], [r.x1, r.z1]] as [number, number][])
@@ -115,9 +146,8 @@ describe("generated floor plans (Phase 3: every floor)", () => {
       const seats = [...p.workstations, ...p.meetingSeats];
       const hub = seats[0];
       for (const s of seats) expect(findPath(g, [hub.ax, hub.az], [s.ax, s.az]), `floor ${floorId} → ${s.ax},${s.az}`).not.toBeNull();
-    });
-  }
-});
+      expect(findPath(g, [p.entry.x, p.entry.z], [hub.ax, hub.az]), `floor ${floorId}: lift lobby → desks`).not.toBeNull();
+}
 
 import { ActorMotion, seatSpot } from "../src/scene/office/actor";
 

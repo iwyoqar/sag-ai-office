@@ -732,3 +732,19 @@ pre.args { font-family: var(--mono); font-size: 11.5px; background: #f8fafc; bor
 .integration-hub .inline-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
 .integration-hub .inline-form input { min-width: 220px; }
 .integration-hub code { font: 11px var(--mono); }
+
+/* floor panel: desks on the 3D plan per department */
+.desk-report { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 6px 0 2px; font-size: 12px; color: var(--muted, #6b7280); }
+.desk-report .warn { color: #b45309; font-weight: 600; }
+.desk-report .notice { flex-basis: 100%; margin-top: 4px; }
+
+/* Excel import of HQ employees */
+.emp-import table.data { width: 100%; border-collapse: collapse; font-size: 12px; }
+.emp-import table.data th, .emp-import table.data td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #eef0f3; vertical-align: top; }
+.emp-import tr.bad td { background: #fef2f2; }
+.emp-import code.code { font-size: 11px; word-break: break-all; }
+
+/* store panel: actions on employees and task steps */
+.unit-people li, .unit-tasks li { flex-wrap: wrap; }
+.unit-actions { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; flex-basis: 100%; margin-top: 2px; font-size: 12px; }
+.unit-actions select { font-size: 12px; padding: 1px 4px; }
