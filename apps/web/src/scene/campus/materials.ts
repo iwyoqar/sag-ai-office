@@ -122,6 +122,41 @@ const pavingMap = () =>
       }
   });
 
+// ---- lawn: mottled green with darker clumps and blade flecks (stylised, reads well from the aerial camera)
+const grassMap = () =>
+  canvasTex(256, 256, (g, w, h) => {
+    const r = rng(11);
+    g.fillStyle = "#6f9a43";
+    g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 90; i++) {
+      const x = r() * w, y = r() * h, rad = 10 + r() * 26;
+      const grad = g.createRadialGradient(x, y, 0, x, y, rad);
+      const dark = r() < 0.5;
+      grad.addColorStop(0, dark ? "rgba(70,105,40,0.45)" : "rgba(150,180,85,0.35)");
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = grad;
+      g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    }
+    for (let i = 0; i < 5000; i++) {
+      const v = r();
+      g.fillStyle = v < 0.5 ? `rgba(60,95,35,0.5)` : `rgba(165,195,95,0.45)`;
+      g.fillRect(r() * w, r() * h, 1, 2 + r() * 2);
+    }
+  });
+
+// ---- bark mulch for planting beds
+const mulchMap = () =>
+  canvasTex(128, 128, (g, w, h) => {
+    const r = rng(13);
+    g.fillStyle = "#6b4a33";
+    g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 900; i++) {
+      const v = r();
+      g.fillStyle = v < 0.5 ? "rgba(60,38,24,0.7)" : "rgba(140,100,70,0.5)";
+      g.fillRect(r() * w, r() * h, 1 + r() * 3, 1 + r() * 2);
+    }
+  });
+
 const solarMap = () =>
   canvasTex(512, 64, (g, w, h) => {
     g.fillStyle = "#1c2a44";
@@ -267,6 +302,11 @@ export function createCampusMaterials() {
     trunk: new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 0.9 }),
     leaves: new THREE.MeshStandardMaterial({ color: 0x5c7a3a, roughness: 0.85 }),
     ground: new THREE.MeshStandardMaterial({ color: 0xbdb5a3, roughness: 1 }),
+    // landscaping
+    grass: new THREE.MeshStandardMaterial({ map: tiled(grassMap(), { w: 9, h: 9 }), roughness: 0.95 }),
+    mulch: new THREE.MeshStandardMaterial({ map: tiled(mulchMap(), { w: 2, h: 2 }), roughness: 1 }),
+    shrub: new THREE.MeshStandardMaterial({ color: 0x4f7a32, roughness: 0.9, flatShading: true }),
+    hedge: new THREE.MeshStandardMaterial({ color: 0x3f6a2a, roughness: 0.9 }),
     // vehicles
     carBody: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.28, metalness: 0.55 }),
     carGlass: new THREE.MeshStandardMaterial({ color: 0x1b222b, roughness: 0.08, metalness: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
@@ -277,6 +317,18 @@ export function createCampusMaterials() {
 }
 
 export type CampusMaterials = ReturnType<typeof createCampusMaterials>;
+
+let shared: CampusMaterials | null = null;
+/** One shared set (textures are generated once for the campus, the store lots and the landscaping). */
+export const campusMaterials = () => (shared ??= createCampusMaterials());
+
+/** Grass for the open land around the site: same lawn texture, slightly drier, tiled over a large ground. */
+export function landMaterial(size: number): THREE.MeshStandardMaterial {
+  const map = (campusMaterials().grass.map as THREE.Texture).clone();
+  map.needsUpdate = true;
+  map.repeat.set(size / 14, size / 14);
+  return new THREE.MeshStandardMaterial({ map, color: 0xdfe0c8, roughness: 1 });
+}
 
 /** BoxGeometry whose UVs are in metres, so tiled textures keep their real-world scale on any box. */
 export function boxGeometryM(w: number, h: number, d: number): THREE.BoxGeometry {

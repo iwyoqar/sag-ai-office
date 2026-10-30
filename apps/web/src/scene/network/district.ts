@@ -6,10 +6,12 @@
 import * as THREE from "three";
 import { CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import type { NetworkDto, UnitCardDto } from "@sag/shared";
-import { boxGeometryM } from "../campus/materials";
+import { Batch } from "../campus/batch";
+import { Instancer } from "../campus/instancer";
 import { Character } from "../office/character";
 import { buildStore, lookFor } from "./storeLooks";
 import { buildStoreInterior, type Rect, type Spot } from "./storeInterior";
+import { buildBlockGreen, buildRegionPlot, buildStoreLot, buildStreets } from "./storeLot";
 
 const PER_ROW = 3;
 const STORE_PITCH_X = 38;
@@ -17,6 +19,11 @@ const STORE_PITCH_Z = 34;
 const PLOT_PAD = 10;
 const REGION_COLS = 4;
 const REGION_GAP = 22;
+/** lot props (cars, trees, lamps, fences) are drawn only closer than this */
+const DETAIL_DISTANCE = 1400;
+/** lot props are instanced per 120 m tile, so frustum culling drops the off-screen ones */
+const PROP_TILE = 120;
+
 
 /**
  * Someone at a store: a person the viewer may see, the store's AI Director, or a vacant / not yet activated
@@ -70,6 +77,10 @@ export class StoreDistrict {
   private hits: THREE.Mesh[] = [];
   private buildings = new Map<string, StoreBuilding>();
   private storeLabels: CSS2DObject[] = [];
+  private lotBatch = new Batch();
+  private lotProps = new Instancer(PROP_TILE);
+  private details = new THREE.Group();
+  private detailOn = true;
   private labelsNear = true;
   private hovered: string | null = null;
   private selected: string | null = null;
@@ -104,55 +115,82 @@ export class StoreDistrict {
     const colW = Math.max(...plots.map((p) => p.w), 80);
     let z = origin.z;
     this.bounds.makeEmpty();
+    const streetZs: number[] = [];
     for (let i = 0; i < plots.length; i += REGION_COLS) {
       const row = plots.slice(i, i + REGION_COLS);
       const depth = Math.max(...row.map((p) => p.d));
       row.forEach((p, j) => {
         const x0 = origin.x + j * (colW + REGION_GAP);
-        this.addPlot(p.r.name, p.r.units, x0 + (colW - p.w) / 2, z, p.w, p.d);
+        // each grid cell is a city block (lawn, sidewalks, street trees) holding the region's plot
+        buildRegionPlot(x0, z, colW, depth, this.lotBatch, this.lotProps, i * 7 + j);
+        const lots = this.addPlot(p.r.name, p.r.units, x0 + (colW - p.w) / 2, z, p.w, p.d);
+        buildBlockGreen({ x0: x0 + 3, x1: x0 + colW - 3, z0: z + 3, z1: z + depth - 3 }, lots, this.lotProps, i * 7 + j);
         this.bounds.expandByPoint(new THREE.Vector3(x0, 0, z)).expandByPoint(new THREE.Vector3(x0 + colW, 0, z + depth));
       });
       z += depth + REGION_GAP;
+      streetZs.push(z - REGION_GAP / 2);
     }
+    streetZs.pop();
+    if (!this.bounds.isEmpty()) {
+      const cols = Math.min(REGION_COLS, plots.length);
+      buildStreets({
+        x0: this.bounds.min.x, x1: this.bounds.max.x, z0: this.bounds.min.z, z1: this.bounds.max.z, width: REGION_GAP,
+        xs: Array.from({ length: cols - 1 }, (_, j) => origin.x + (j + 1) * (colW + REGION_GAP) - REGION_GAP / 2), zs: streetZs,
+      }, this.lotBatch, this.lotProps);
+    }
+    this.root.add(...this.lotBatch.build());
+    this.details = new THREE.Group();
+    this.details.name = "store-lot-props";
+    this.details.add(...this.lotProps.build());
+    this.details.visible = this.detailOn;
+    this.root.add(this.details);
+    this.lotProps = new Instancer(PROP_TILE);
     this.applyLabels();
   }
 
-  private addPlot(name: string, units: UnitCardDto[], x0: number, z0: number, w: number, d: number) {
-    const plot = new THREE.Mesh(boxGeometryM(w, 0.4, d), new THREE.MeshStandardMaterial({ color: 0xf4f6f8, roughness: 0.95 }));
-    plot.position.set(x0 + w / 2, 0.2, z0 + d / 2);
-    plot.receiveShadow = true;
-    this.root.add(plot);
-    const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w, 0.4, d)), new THREE.LineBasicMaterial({ color: 0x9aa9b6 }));
-    edge.position.copy(plot.position);
-    this.root.add(edge);
+  /** Places the region's stores; returns their lot rectangles. */
+  private addPlot(name: string, units: UnitCardDto[], x0: number, z0: number, w: number, d: number): Rect[] {
     const title = label(name, "network-region");
     title.position.set(x0 + w / 2, 1, z0 + d + 4);
     this.root.add(title);
 
+    const lots: Rect[] = [];
     units.forEach((u, i) => {
       const cx = x0 + PLOT_PAD + (i % PER_ROW) * STORE_PITCH_X + STORE_PITCH_X / 2;
       const cz = z0 + PLOT_PAD + Math.floor(i / PER_ROW) * STORE_PITCH_Z + STORE_PITCH_Z / 2;
-      // ownership pad under the building: SAG blue for SAG-owned, amber for franchise
       const own = u.ownershipModel === "SAG_OWNED";
-      const pad = new THREE.Mesh(boxGeometryM(STORE_PITCH_X - 4, 0.12, STORE_PITCH_Z - 4), new THREE.MeshStandardMaterial({ color: own ? 0xc9dcf0 : 0xf2dfb4, roughness: 0.9 }));
-      pad.position.set(cx, 0.46, cz);
-      pad.receiveShadow = true;
-      this.root.add(pad);
-      // facade modelled after the store's photo (storeLooks.ts); the whole building hides when the store is opened
-      const b = buildStore(lookFor(u.name, u.isHeadOffice), cx, cz - 2);
-      this.root.add(b.group);
-      b.hit.userData.unitId = u.id;
-      this.hits.push(b.hit);
-      const tag = u.isHeadOffice
-        ? { text: "BOSH OFIS", cls: "net-badge hq" }
-        : own ? { text: "HD · SAG", cls: "net-badge hd" } : { text: "F · Franshiza", cls: "net-badge f" };
-      const l = label(u.name, "network-label", tag);
-      l.position.set(cx, b.size.y + 4, cz);
-      l.element.title = u.name;
-      this.root.add(l);
-      this.storeLabels.push(l);
-      this.buildings.set(u.id, { unit: u, rect: b.rect, group: b.group, label: l, outline: b.outline });
+      // the building sits back on its lot: forecourt, a parking row and a drive aisle in front, loading yard behind
+      const look = lookFor(u.name, u.isHeadOffice);
+      const bz = cz - 4;
+      const b = buildStore(look, cx, bz, true);
+      buildStoreLot({ cx, cz, cellW: STORE_PITCH_X, cellD: STORE_PITCH_Z, bz, look, own, seed: i + units.length * 7 }, this.lotBatch, this.lotProps);
+      this.addStore(u, b, cx, cz, own);
+      lots.push({ x0: cx - STORE_PITCH_X / 2, x1: cx + STORE_PITCH_X / 2, z0: cz - STORE_PITCH_Z / 2, z1: cz + STORE_PITCH_Z / 2 });
     });
+    return lots;
+  }
+
+  private addStore(u: UnitCardDto, b: ReturnType<typeof buildStore>, cx: number, cz: number, own: boolean) {
+    this.root.add(b.group);
+    b.hit.userData.unitId = u.id;
+    this.hits.push(b.hit);
+    const tag = u.isHeadOffice
+      ? { text: "BOSH OFIS", cls: "net-badge hq" }
+      : own ? { text: "HD · SAG", cls: "net-badge hd" } : { text: "F · Franshiza", cls: "net-badge f" };
+    const l = label(u.name, "network-label", tag);
+    l.position.set(cx, b.size.y + 4, cz);
+    l.element.title = u.name;
+    this.root.add(l);
+    this.storeLabels.push(l);
+    this.buildings.set(u.id, { unit: u, rect: b.rect, group: b.group, label: l, outline: b.outline });
+  }
+
+  /** Level of detail: lot props only when the camera is close enough to see them. */
+  setDetail(cameraDistance: number) {
+    const on = cameraDistance < DETAIL_DISTANCE;
+    if (on === this.detailOn) return;
+    this.detailOn = on;
+    this.details.visible = on;
   }
 
   /** Store labels only when close enough to read them (region labels are always on). */

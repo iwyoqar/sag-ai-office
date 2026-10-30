@@ -2,10 +2,11 @@
 import * as THREE from "three";
 import { CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import { AREAS, BUILDINGS, CAMPUS_BOUNDS, HQ, type BuildingSpec } from "./layout";
-import { createCampusMaterials } from "./materials";
+import { campusMaterials } from "./materials";
 import { Instancer } from "./instancer";
 import { buildBuilding, type BuiltBuilding } from "./buildings";
 import { buildSite } from "./site";
+import { buildHqLandscape } from "./landscape";
 
 export interface CampusBuildingInfo {
   id: string;
@@ -45,7 +46,7 @@ export class CampusScene {
 
   constructor() {
     this.root.name = "campus";
-    const m = createCampusMaterials();
+    const m = campusMaterials();
     const inst = new Instancer();
 
     for (const spec of BUILDINGS) {
@@ -73,6 +74,7 @@ export class CampusScene {
     const hqCenter = new THREE.Vector3((HQ.x0 + HQ.x1) / 2, HQ.h / 2, (HQ.z0 + HQ.z1) / 2);
     const hqGeo = new THREE.BoxGeometry(hqSize.x + 1, hqSize.y + 4, hqSize.z + 1);
     const hqHit = new THREE.Mesh(hqGeo, new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false }));
+    hqHit.visible = false; // picking only: the raycaster ignores visibility, the renderer skips the draw call
     hqHit.position.copy(hqCenter).setY((hqSize.y + 4) / 2);
     hqHit.userData.buildingId = HQ.id;
     this.root.add(hqHit);
@@ -98,6 +100,7 @@ export class CampusScene {
     const site = buildSite(m, inst);
     this.surface = site.surface;
     this.root.add(site.root);
+    site.surface.add(...buildHqLandscape(m, inst));
     for (const mesh of inst.build()) {
       // ground-level instancing (cars, markings, lamps) disappears with the surface in basement view
       if (/^(car|mark|lamp)/.test(mesh.name)) site.surface.add(mesh);

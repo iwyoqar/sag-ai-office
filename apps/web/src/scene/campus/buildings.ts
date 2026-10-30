@@ -4,6 +4,22 @@ import * as THREE from "three";
 import type { BuildingSpec, Side, WindowKind } from "./layout";
 import { boxGeometryM, type CampusMaterials } from "./materials";
 import { Instancer, UNIT } from "./instancer";
+import { truckModel } from "./site";
+
+let TRUCK: ReturnType<typeof truckModel> | null = null;
+const hashN = (n: number) => {
+  const x = Math.sin(n * 57.3 + 19.1) * 43758.5453;
+  return x - Math.floor(x);
+};
+
+/** A delivery truck backed up to a door: rear at `out` metres from the facade, pointing away from it. */
+export function addTruck(inst: Instancer, m: CampusMaterials, pos: THREE.Vector3, rotY: number) {
+  const t = (TRUCK ??= truckModel());
+  inst.add("truck-box", t.box, m.white, pos, undefined, { y: rotY });
+  inst.add("truck-cab", t.cab, m.blueTrim, pos, undefined, { y: rotY });
+  inst.add("truck-glass", t.glass, m.carGlass, pos, undefined, { y: rotY }, null, { cast: false, receive: false });
+  inst.add("truck-tyre", t.tyres, m.tyre, pos, undefined, { y: rotY }, null, { cast: false, receive: false });
+}
 
 export interface BuiltBuilding {
   spec: BuildingSpec;
@@ -136,6 +152,18 @@ export function buildBuilding(spec: BuildingSpec, m: CampusMaterials, inst: Inst
       inst.add("roller-box", UNIT.box, m.white, f.at(door.at, door.h + 0.3, 0.25), fScale(door.w + 0.4, 0.6, 0.5), { y: f.rotY });
       // blue sign plate above loading doors (photo 4)
       inst.add("door-sign", UNIT.box, m.blueTrim, f.at(door.at, door.h + 1.2, 0.08), fScale(1.8, 0.7, 0.06), { y: f.rotY });
+      // loading bay: yellow box markings, dock bumpers, and (on most doors) a truck backed up to it
+      const bayLen = 9, bw = door.w + 1.2;
+      for (const sx of [-1, 1])
+        inst.add("mark-bay", UNIT.box, m.markingYellow, f.at(door.at + (sx * bw) / 2, 0.06, bayLen / 2 + 0.3), fScale(0.15, 0.01, bayLen), { y: f.rotY }, null, { cast: false, receive: true });
+      inst.add("mark-bay", UNIT.box, m.markingYellow, f.at(door.at, 0.06, bayLen + 0.3), fScale(bw, 0.01, 0.15), { y: f.rotY }, null, { cast: false, receive: true });
+      for (const sx of [-1, 1]) inst.add("bumper", UNIT.box, m.tyre, f.at(door.at + sx * (door.w / 2 + 0.25), 0.9, 0.15), fScale(0.3, 0.5, 0.3), { y: f.rotY });
+      if (hashN(door.at + spec.x0) < 0.7) {
+        // truck length runs out along the facade normal, rear doors 0.6 m from the wall
+        const p = f.at(door.at, 0.03, 0.6);
+        const out = new THREE.Vector3().subVectors(f.at(door.at, 0, 1), f.at(door.at, 0, 0));
+        addTruck(inst, m, p, Math.atan2(-out.z, out.x));
+      }
     } else if (door.kind === "gate") {
       const gate = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), m.gate);
       gate.scale.set(door.w, door.h, 0.3);
@@ -198,6 +226,7 @@ export function buildBuilding(spec: BuildingSpec, m: CampusMaterials, inst: Inst
   const top = h + (spec.parapetStep?.h ?? 0) + (spec.blueTiles ? 0.5 : 0);
   const hitGeo = new THREE.BoxGeometry(w + 0.6, top + 0.4, d + 0.6);
   const hit = new THREE.Mesh(hitGeo, new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false }));
+  hit.visible = false; // picking only: the raycaster ignores visibility, the renderer skips the draw call
   hit.position.set(cx, (top + 0.4) / 2, cz);
   hit.userData.buildingId = spec.id;
   g.add(hit);

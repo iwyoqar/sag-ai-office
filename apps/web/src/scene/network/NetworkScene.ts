@@ -6,12 +6,15 @@ import { CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import type { NetworkDto, UnitCardDto } from "@sag/shared";
 import { Tweens, ease } from "../tween";
 import { StoreDistrict, type StoreOccupant } from "./district";
+import { landMaterial } from "../campus/materials";
 
 export type { StoreOccupant } from "./district";
 
 /** store labels appear only closer than this (region labels are always on), so the overview stays readable */
 const STORE_LABEL_DISTANCE = 420;
 const FLY_MS = 1100;
+/** same sun as the campus (SceneController): front-left of the default camera, so shadows fall on the visible side */
+const SUN_DIR = new THREE.Vector3(-52, 64, 40).normalize();
 
 export interface NetworkSceneEvents {
   onSelect(unitId: string): void;
@@ -33,6 +36,9 @@ export class NetworkScene {
   private resize: ResizeObserver;
   private down = { x: 0, y: 0 };
   private tweens = new Tweens();
+  private sun: THREE.DirectionalLight;
+  private shadowKey = "";
+  private shadowStore: string | null = null;
   private clock = new THREE.Clock();
   /** overview camera to return to when leaving a store */
   private overview: { pos: THREE.Vector3; target: THREE.Vector3 } | null = null;
@@ -56,12 +62,13 @@ export class NetworkScene {
     this.controls.minDistance = 40;
     this.controls.maxDistance = 1600;
 
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xb9c4cc, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 2.2);
-    sun.position.set(300, 500, 260);
+    this.scene.add(new THREE.HemisphereLight(0xd6e6fb, 0xa8a68a, 0.8));
+    const sun = new THREE.DirectionalLight(0xffeed6, 3.2);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(sun.shadow.camera, { left: -700, right: 700, top: 700, bottom: -700, near: 10, far: 1600 });
+    sun.shadow.bias = -0.0003;
+    sun.shadow.normalBias = 0.05;
+    this.sun = sun;
     this.scene.add(sun, sun.target, this.district.root);
 
     const el = this.renderer.domElement;
@@ -81,11 +88,12 @@ export class NetworkScene {
     const size = this.district.bounds.getSize(new THREE.Vector3());
     const center = this.district.bounds.getCenter(new THREE.Vector3());
     if (this.ground) this.ground.removeFromParent();
-    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(size.x + 600, size.z + 600), new THREE.MeshStandardMaterial({ color: 0xd9e2e8, roughness: 1 }));
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(size.x + 600, size.z + 600), landMaterial(Math.max(size.x, size.z) + 600));
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.position.set(center.x, -0.05, center.z);
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
+    this.shadowKey = "";
     this.controls.target.copy(center);
     const span = Math.max(size.x, size.z, 160);
     this.camera.position.set(center.x + span * 0.1, span * 0.55, center.z + span * 0.7);
@@ -168,10 +176,41 @@ export class NetworkScene {
     if (this.controls.enabled) this.controls.update();
     else this.camera.lookAt(this.controls.target);
     this.district.update(dt, this.clock.elapsedTime);
-    this.district.setLabelDetail(this.camera.position.distanceTo(this.controls.target) < STORE_LABEL_DISTANCE);
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    this.district.setLabelDetail(dist < STORE_LABEL_DISTANCE);
+    this.district.setDetail(dist);
+    this.followShadows(dist);
     this.renderer.render(this.scene, this.camera);
     this.labels.render(this.scene, this.camera);
   };
+
+  /**
+   * The shadow box follows the view (crisp up close, the whole district from far away); the shadow map is redrawn
+   * only after a refit or when a store is opened / closed, not on every frame.
+   */
+  private followShadows(dist: number) {
+    const sm = this.renderer.shadowMap;
+    sm.autoUpdate = this.district.openStore !== null;
+    if (this.district.openStore !== this.shadowStore) {
+      this.shadowStore = this.district.openStore;
+      sm.needsUpdate = true;
+    }
+    const half = Math.pow(1.25, Math.round(Math.log(THREE.MathUtils.clamp(dist * 0.75, 45, 700)) / Math.log(1.25)));
+    const step = half / 6;
+    const t = this.controls.target;
+    const cx = Math.round(t.x / step) * step, cz = Math.round(t.z / step) * step;
+    const key = `${half.toFixed(1)}:${cx.toFixed(1)}:${cz.toFixed(1)}`;
+    if (key === this.shadowKey) return;
+    this.shadowKey = key;
+    const far = half * 2.2 + 120;
+    this.sun.position.set(cx, 0, cz).addScaledVector(SUN_DIR, far);
+    this.sun.target.position.set(cx, 0, cz);
+    const sc = this.sun.shadow.camera;
+    sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
+    sc.near = Math.max(1, far - half * 2); sc.far = far + half * 2;
+    sc.updateProjectionMatrix();
+    sm.needsUpdate = true;
+  }
 
   dispose() {
     cancelAnimationFrame(this.frame);

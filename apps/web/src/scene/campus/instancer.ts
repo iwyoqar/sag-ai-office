@@ -19,12 +19,19 @@ const _e = new THREE.Euler();
 export class Instancer {
   private buckets = new Map<string, Bucket>();
 
+  /**
+   * `tile` (metres): split each bucket into square tiles so frustum culling can skip what is off screen. Use it for
+   * props spread over a large area (the store district); leave it off for compact sets.
+   */
+  constructor(private tile = 0) {}
+
   add(
     key: string, geo: THREE.BufferGeometry, mat: THREE.Material,
     pos: THREE.Vector3Like, scale: THREE.Vector3Like = { x: 1, y: 1, z: 1 },
     rot: { x?: number; y?: number; z?: number } = {}, color: THREE.Color | null = null,
     shadow = { cast: true, receive: true },
   ) {
+    if (this.tile) key = `${key}@${Math.floor(pos.x / this.tile)},${Math.floor(pos.z / this.tile)}`;
     let b = this.buckets.get(key);
     if (!b) this.buckets.set(key, (b = { geo, mat, matrices: [], colors: [], shadow }));
     _e.set(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0);
@@ -35,9 +42,6 @@ export class Instancer {
     b.colors.push(color);
   }
 
-  count(key: string) {
-    return this.buckets.get(key)?.matrices.length ?? 0;
-  }
 
   build(): THREE.InstancedMesh[] {
     const out: THREE.InstancedMesh[] = [];

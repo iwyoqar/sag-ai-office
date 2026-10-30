@@ -12,6 +12,7 @@ import { planFor } from "./office/plan";
 import { Tweens, ease, lerp } from "./tween";
 import { CampusScene, type CampusBuildingInfo } from "./campus/CampusScene";
 import { CAMPUS_BOUNDS, STORE_DISTRICT } from "./campus/layout";
+import { landMaterial } from "./campus/materials";
 import { StoreDistrict, type StoreOccupant } from "./network/district";
 
 export interface SceneEvents {
@@ -51,7 +52,8 @@ const NO_CLIP = 1e4;
 /** The model's own demo paving/street; replaced by the campus site (its centre dashes stay as the drive-aisle line). */
 const GLB_GROUND = new Set(["paving", "asphalt"]);
 const INTRO_KEY = "sag.introSeen";
-const SUN_DIR = new THREE.Vector3(45, 80, 55).normalize();
+/** Sun from the front-left of the default camera, so shadows fall to the visible right-hand side (city-builder lighting). */
+const SUN_DIR = new THREE.Vector3(-52, 64, 40).normalize();
 
 export function webglAvailable(): boolean {
   try {
@@ -119,6 +121,9 @@ export class SceneController {
   private lastLoopT = 0;
   private skyBackground: THREE.Texture | null = null;
   private shadowCatcher!: THREE.Group;
+  private shadowFollow = false;
+  private shadowKey = "";
+  private shadowStore: string | null = null;
 
   constructor(private host: HTMLElement, private ev: SceneEvents) {
     // Log depth keeps ground layers (paving, asphalt, markings) stable from 20 m to 1.5 km away.
@@ -193,20 +198,21 @@ export class SceneController {
     envScene.add(sunDisc);
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     s.environment = pmrem.fromScene(envScene, 0.02).texture;
-    s.environmentIntensity = 0.75;
+    s.environmentIntensity = 0.45;
     pmrem.dispose();
 
-    s.add(new THREE.HemisphereLight(0xdce9fa, 0xb9ab95, 1.0));
-    const sun = new THREE.DirectionalLight(0xfff2df, 2.5);
+    // Fill kept low enough that the sun still draws readable shadows (city-builder look); ground bounce slightly green.
+    s.add(new THREE.HemisphereLight(0xd6e6fb, 0xa8a68a, 0.55));
+    const sun = new THREE.DirectionalLight(0xffeed6, 3.4);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(4096, 4096);
+    sun.shadow.mapSize.set(2048, 2048); // enough: outside the office the shadow box follows the view (followShadows)
     sun.shadow.bias = -0.0003;
     sun.shadow.normalBias = 0.05;
     s.add(sun, sun.target);
     this.sun = sun;
     this.frameShadows("campus");
 
-    const outerMat = new THREE.MeshStandardMaterial({ color: 0xc2baa8, roughness: 1 });
+    const outerMat = landMaterial(8000);
     this.outerGround = new THREE.Mesh(new THREE.CircleGeometry(4000, 64), outerMat);
     this.outerGround.rotation.x = -Math.PI / 2;
     this.outerGround.position.y = -0.14;
@@ -306,6 +312,8 @@ export class SceneController {
 
   /** Fit the sun's shadow frustum to what is on screen: the whole campus, or the office up close. */
   private frameShadows(kind: "campus" | "office") {
+    this.shadowFollow = kind === "campus";
+    this.shadowKey = "";
     const center = kind === "campus" ? CAMPUS_TARGET.clone() : new THREE.Vector3(0, 8, 0);
     const half = kind === "campus" ? 290 : 50;
     const dist = kind === "campus" ? 700 : 160;
@@ -316,6 +324,29 @@ export class SceneController {
     sc.near = dist - half * 1.6; sc.far = dist + half * 1.6;
     sc.updateProjectionMatrix();
     this.sun.shadow.needsUpdate = true;
+  }
+
+  /**
+   * Outside the office, the sun's shadow box follows the view: tight and crisp up close (a store, the office front),
+   * the whole campus from the aerial camera. Snapped to a coarse grid so it is refitted only after real camera moves.
+   */
+  private followShadows(dist: number) {
+    const half = Math.pow(1.25, Math.round(Math.log(THREE.MathUtils.clamp(dist * 0.75, 45, 300)) / Math.log(1.25)));
+    const step = half / 6;
+    const t = this.controls.target;
+    const cx = Math.round(t.x / step) * step, cz = Math.round(t.z / step) * step;
+    const key = `${half.toFixed(1)}:${cx.toFixed(1)}:${cz.toFixed(1)}`;
+    if (key === this.shadowKey) return;
+    this.shadowKey = key;
+    const center = new THREE.Vector3(cx, 0, cz);
+    const far = half * 2.2 + 120;
+    this.sun.position.copy(center).addScaledVector(SUN_DIR, far);
+    this.sun.target.position.copy(center);
+    const sc = this.sun.shadow.camera;
+    sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
+    sc.near = Math.max(1, far - half * 2); sc.far = far + half * 2;
+    sc.updateProjectionMatrix();
+    this.renderer.shadowMap.needsUpdate = true;
   }
 
   private setupIntro() {
@@ -632,6 +663,7 @@ export class SceneController {
   /** The SAG store network the viewer may see, as buildings beside the campus. */
   setNetwork(net: NetworkDto) {
     this.district.setNetwork(net, DISTRICT_ORIGIN);
+    this.renderer.shadowMap.needsUpdate = true;
     this.invalidate();
   }
 
@@ -1039,6 +1071,16 @@ export class SceneController {
       this.fog.near = this.diorama >= 1 ? dist * 1.6 : dist * 1.3 + 80;
       this.fog.far = this.diorama >= 1 ? dist * 4 : dist * 5 + 900;
       this.campus.updateLabelDetail(dist);
+      this.district.setDetail(dist);
+      if (this.shadowFollow) this.followShadows(dist);
+      // On the campus nothing that casts a shadow moves while the camera does: redraw the shadow map only after a
+      // refit or a scene change (an opened / closed store), not on every orbit frame.
+      const sm = this.renderer.shadowMap;
+      sm.autoUpdate = this.mode !== "campus" || this.district.openStore !== null;
+      if (this.district.openStore !== this.shadowStore) {
+        this.shadowStore = this.district.openStore;
+        sm.needsUpdate = true;
+      }
       this.district.setLabelDetail(dist < 380);
       this.renderer.render(this.scene, this.camera);
       this.labels.render(this.scene, this.camera);

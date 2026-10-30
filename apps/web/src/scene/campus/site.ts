@@ -35,7 +35,7 @@ function carModel(profile: [number, number][], greenhouse: [number, number][], w
 }
 
 /** Three silhouettes matching the photos: sedan (Lacetti/Cobalt), compact SUV, small hatch (Matiz). */
-function carModels(): CarModel[] {
+export function carModels(): CarModel[] {
   return [
     carModel(
       [[0, 0.35], [0, 0.72], [0.2, 0.88], [1.15, 0.98], [1.75, 1.4], [3.05, 1.43], [3.8, 1.02], [4.45, 0.95], [4.55, 0.7], [4.55, 0.35]],
@@ -56,7 +56,7 @@ const CAR_COLORS = [
   { c: 0xf4f4f2, p: 0.56 }, { c: 0xb9bdc2, p: 0.14 }, { c: 0x16181c, p: 0.14 },
   { c: 0x5b6068, p: 0.1 }, { c: 0x1f3352, p: 0.06 },
 ];
-function carColor(r: number) {
+export function carColor(r: number) {
   let acc = 0;
   for (const k of CAR_COLORS) {
     acc += k.p;
@@ -65,21 +65,42 @@ function carColor(r: number) {
   return new THREE.Color(CAR_COLORS[0].c);
 }
 
+/** Box truck (Isuzu-style delivery truck), length along +x with the cab at +x; rear doors at x = 0. */
+export function truckModel() {
+  const box = new THREE.BoxGeometry(5.6, 2.7, 2.4);
+  box.translate(2.8, 0.75 + 1.35, 0);
+  const chassis = new THREE.BoxGeometry(7.6, 0.3, 2.0);
+  chassis.translate(3.8, 0.6, 0);
+  const cab = new THREE.BoxGeometry(1.9, 2.1, 2.3);
+  cab.translate(6.65, 0.75 + 1.05, 0);
+  const glass = new THREE.BoxGeometry(0.06, 0.85, 2.0);
+  glass.translate(7.62, 2.25, 0);
+  const wheels: THREE.BufferGeometry[] = [];
+  for (const x of [1.4, 2.6, 6.6])
+    for (const z of [-1, 1]) {
+      const w = new THREE.CylinderGeometry(0.48, 0.48, 0.32, 14);
+      w.rotateX(Math.PI / 2);
+      w.translate(x, 0.48, z * 1.0);
+      wheels.push(w);
+    }
+  return { box: mergeGeometries([box, chassis]), cab, glass, tyres: mergeGeometries(wheels) };
+}
+
 // ---------- props ----------
-function lampGeometry() {
+export function lampGeometry() {
   const pole = new THREE.CylinderGeometry(0.08, 0.12, 8, 8);
   pole.translate(0, 4, 0);
   const arm = new THREE.BoxGeometry(1.6, 0.08, 0.08);
   arm.translate(0.75, 7.9, 0);
   return mergeGeometries([pole, arm]);
 }
-function lampHead() {
+export function lampHead() {
   const head = new THREE.BoxGeometry(0.7, 0.14, 0.32);
   head.translate(1.45, 7.85, 0);
   return head;
 }
 
-function treeGeometries() {
+export function treeGeometries() {
   const trunk = new THREE.CylinderGeometry(0.14, 0.2, 2.6, 7);
   trunk.translate(0, 1.3, 0);
   const a = new THREE.IcosahedronGeometry(1.9, 1);

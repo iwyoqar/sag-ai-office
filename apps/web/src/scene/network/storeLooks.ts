@@ -4,6 +4,7 @@
 // standard SAG XL look. Matching is by the store name exactly as written in the owner's workbook.
 import * as THREE from "three";
 import logoUrl from "../../assets/sag-logo.png";
+import { Batch, mergeByMaterial } from "../campus/batch";
 
 export interface StoreSign {
   /** main wordmark; "saG" = the official SAG logo (assets/sag-logo.png), anything else is drawn as text */
@@ -149,13 +150,21 @@ function glassTexture(dark: boolean): THREE.CanvasTexture {
 }
 const GLASS_TEX = { light: null as THREE.CanvasTexture | null, dark: null as THREE.CanvasTexture | null };
 
+/** Shared per (tone, cell counts): identical glass panels across all stores reuse one material, so they merge. */
+const GLASS_MATS = new Map<string, THREE.MeshStandardMaterial>();
 function glassMat(cellsX: number, cellsY: number, dark = false): THREE.MeshStandardMaterial {
   const key = dark ? "dark" : "light";
+  const nx = Math.max(1, Math.round(cellsX)), ny = Math.max(1, Math.round(cellsY));
+  const id = `${key}:${nx}:${ny}`;
+  let m = GLASS_MATS.get(id);
+  if (m) return m;
   const base = (GLASS_TEX[key] ??= glassTexture(dark));
   const map = base.clone();
   map.needsUpdate = true;
-  map.repeat.set(Math.max(1, Math.round(cellsX)), Math.max(1, Math.round(cellsY)));
-  return new THREE.MeshStandardMaterial({ map, roughness: 0.12, metalness: 0.25, emissive: 0x0b1a33, emissiveIntensity: 0.25 });
+  map.repeat.set(nx, ny);
+  m = new THREE.MeshStandardMaterial({ map, roughness: 0.12, metalness: 0.25, emissive: 0x0b1a33, emissiveIntensity: 0.25 });
+  GLASS_MATS.set(id, m);
+  return m;
 }
 
 const SIGN_FONT = '"Century Gothic", "Futura", "Avenir Next", "Montserrat", "Trebuchet MS", sans-serif';
@@ -311,6 +320,142 @@ function addSign(g: THREE.Group, s: StoreSign, x: number, topY: number, frontZ: 
   return y + h / 2;
 }
 
+// ---- visual system v2: architectural depth on top of the photo-based look ---------------------------------------
+
+let kit: ReturnType<typeof detailKit> | null = null;
+function detailKit() {
+  const roller = document.createElement("canvas");
+  roller.width = 64;
+  roller.height = 128;
+  const rg = roller.getContext("2d")!;
+  rg.fillStyle = "#b9bec4";
+  rg.fillRect(0, 0, 64, 128);
+  rg.fillStyle = "rgba(60,66,74,0.35)";
+  for (let y = 0; y < 128; y += 8) rg.fillRect(0, y, 64, 2);
+  const rollerTex = new THREE.CanvasTexture(roller);
+  rollerTex.colorSpace = THREE.SRGBColorSpace;
+  return {
+    frame: new THREE.MeshStandardMaterial({ color: 0x2c3138, roughness: 0.35, metalness: 0.6 }),
+    coping: new THREE.MeshStandardMaterial({ color: 0xc9cdd2, roughness: 0.35, metalness: 0.65 }),
+    membrane: new THREE.MeshStandardMaterial({ color: 0xa3a7ab, roughness: 0.95 }),
+    plant: new THREE.MeshStandardMaterial({ color: 0xd9dcdf, roughness: 0.5, metalness: 0.3 }),
+    fan: new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.6 }),
+    canopy: new THREE.MeshStandardMaterial({ color: 0xeef0f2, roughness: 0.5, metalness: 0.2 }),
+    fascia: new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.35, metalness: 0.3 }),
+    light: new THREE.MeshStandardMaterial({ color: 0xfff6e0, emissive: 0xffe2a8, emissiveIntensity: 1.4 }),
+    housing: new THREE.MeshStandardMaterial({ color: 0x33373d, roughness: 0.4, metalness: 0.6 }),
+    roller: new THREE.MeshStandardMaterial({ map: rollerTex, roughness: 0.5, metalness: 0.4 }),
+    door: new THREE.MeshStandardMaterial({ color: 0xe9eaec, roughness: 0.6 }),
+    rubber: new THREE.MeshStandardMaterial({ color: 0x1d1e20, roughness: 0.85 }),
+    sideGlass: glassMat(1, 1),
+    sideGlassDark: glassMat(1, 1, true),
+  };
+}
+
+/** Plane with UVs in ~1.8 m glass cells, so one shared glass material tiles correctly on any size. */
+function glassPlane(w: number, h: number, cellH: number) {
+  const geo = new THREE.PlaneGeometry(w, h);
+  const uv = geo.attributes.uv as THREE.BufferAttribute;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * Math.max(1, Math.round(w / 1.8)), uv.getY(i) * Math.max(1, Math.round(h / cellH)));
+  return geo;
+}
+
+function facadeDetail(look: StoreLook, cx: number, cz: number): Batch {
+  const k = (kit ??= detailKit());
+  const b = new Batch();
+  const { w, d, h, floors } = look;
+  const base = 0.5, top = base + h, front = cz + d / 2, back = cz - d / 2, floorH = h / floors;
+  const dark = look.wall < 0x808080;
+  const flatRoof = !look.roof && !look.setbacks;
+
+  // plinth: a darker base course, slightly proud of the walls
+  b.box(w + 0.3, 0.45, d + 0.3, mat(new THREE.Color(look.wall).multiplyScalar(0.62).getHex(), 0.9), cx, base - 0.02, cz);
+
+  if (flatRoof) {
+    // metal coping round the parapet, roof membrane inside it, rooftop plant on the back half
+    const t = 0.5, cy = top - 0.02;
+    b.box(w + 0.6, 0.28, t, k.coping, cx, cy, front - t / 2 + 0.3);
+    b.box(w + 0.6, 0.28, t, k.coping, cx, cy, back + t / 2 - 0.3);
+    b.box(t, 0.28, d, k.coping, cx - w / 2 + t / 2 - 0.3, cy, cz);
+    b.box(t, 0.28, d, k.coping, cx + w / 2 - t / 2 + 0.3, cy, cz);
+    b.box(w - 0.6, 0.04, d - 0.6, k.membrane, cx, top, cz, 0, false);
+    const units = Math.max(2, Math.floor(w / 8));
+    for (let i = 0; i < units; i++) {
+      const ux = cx - w / 2 + (w / units) * (i + 0.5) + 1.5, uz = back + 2.6;
+      b.box(2.0, 1.1, 1.4, k.plant, ux, top, uz);
+      for (const fx of [-0.48, 0.48]) b.add(new THREE.CylinderGeometry(0.42, 0.42, 0.06, 16), k.fan, { x: ux + fx, y: top + 1.13, z: uz }, {}, false);
+    }
+    b.box(1.1, 0.5, 1.1, k.plant, cx - w / 2 + 2, top, cz);
+    b.box(w * 0.6, 0.12, 0.12, k.coping, cx, top + 0.2, back + 1.2, 0, false); // duct run
+  }
+
+  // curtain wall: real mullions and floor transoms give the glass depth
+  const z = front + 0.04;
+  if (look.glass === "curtain") {
+    const [a, c] = look.span ?? [0.1, 0.9];
+    const gw = w * (c - a), gx0 = cx - w / 2 + w * a;
+    const n = Math.max(2, Math.round(gw / 1.8));
+    for (let i = 0; i <= n; i++) b.box(0.1, h - 1.2, 0.16, k.frame, gx0 + (gw / n) * i, base + 0.4, z + 0.04);
+    for (let f = 0; f <= floors; f++) b.box(gw, 0.16, 0.18, k.frame, gx0 + gw / 2, base + 0.4 + Math.min(h - 1.36, f * floorH), z + 0.05);
+  } else if (look.glass === "ribbon") {
+    for (let f = 0; f < floors; f++) {
+      const y0 = base + f * floorH + floorH * 0.19;
+      b.box(w - 1.4, 0.14, 0.22, k.frame, cx, y0 - 0.07, z + 0.06); // sill
+      const n = Math.round((w - 1.6) / 1.6);
+      for (let i = 0; i <= n; i++) b.box(0.08, floorH * 0.62, 0.12, k.frame, cx - (w - 1.6) / 2 + ((w - 1.6) / n) * i, y0, z + 0.03);
+    }
+  } else if (look.glass === "grid") {
+    // deep reveals: a frame box round every window of the grid
+    const bays = Math.max(3, Math.floor(w / 4.2)), pitch = w / bays;
+    for (let f = 0; f < floors; f++)
+      for (let i = 0; i < bays; i++) {
+        const wx = cx - w / 2 + pitch * (i + 0.5), wy = base + f * floorH + floorH * 0.52, ww = pitch * 0.72, wh = floorH * 0.7;
+        b.box(ww + 0.3, 0.16, 0.3, k.coping, wx, wy - wh / 2 - 0.16, z + 0.1); // sill
+        b.box(ww + 0.2, 0.12, 0.14, k.frame, wx, wy + wh / 2, z + 0.05);
+        for (const sx of [-1, 1]) b.box(0.12, wh, 0.14, k.frame, wx + (sx * ww) / 2, wy - wh / 2, z + 0.05);
+        b.box(0.07, wh, 0.1, k.frame, wx, wy - wh / 2, z + 0.03);
+      }
+  }
+
+  // side and rear glazing (the photo looks only describe the front)
+  for (let f = 0; f < floors; f++) {
+    const gh = floorH * 0.42, y = base + f * floorH + floorH * 0.56;
+    for (const sx of [-1, 1]) {
+      b.add(glassPlane(d - 4, gh, gh), dark ? k.sideGlassDark : k.sideGlass, { x: cx + sx * (w / 2 + 0.02), y, z: cz + 0.5 }, { y: (sx * Math.PI) / 2 }, false);
+      b.box(0.2, 0.12, d - 3.8, k.frame, cx + sx * (w / 2 + 0.06), y - gh / 2 - 0.12, cz + 0.5, 0, false);
+    }
+    if (f > 0) b.add(glassPlane(w * 0.55, gh, gh), k.sideGlassDark, { x: cx - w * 0.15, y, z: back - 0.02 }, { y: Math.PI }, false);
+  }
+
+  // entrance canopy with SAG-blue fascia and downlights (unless a low facade sign already forms one)
+  const lowSign = look.sign.where === "facade" && !look.portal;
+  if (!lowSign) {
+    const ef = front + (look.portal ? 1.2 : 0.05), cy = base + Math.min(3.5, floorH - 0.4);
+    b.box(7.4, 0.3, 2.6, k.canopy, cx, cy, ef + 1.3);
+    b.box(7.5, 0.42, 0.14, k.fascia, cx, cy - 0.06, ef + 2.62);
+    for (const sx of [-1, 1]) {
+      b.box(0.3, 0.04, 0.3, k.light, cx + sx * 2.2, cy - 0.04, ef + 1.3, 0, false);
+      b.add(new THREE.CylinderGeometry(0.04, 0.04, 2.6, 6).rotateX(-0.75), k.frame, { x: cx + sx * 3.2, y: cy + 1.0, z: ef + 0.55 }, {}, false);
+    }
+  }
+
+  // wall packs on the side walls
+  for (const sx of [-1, 1])
+    for (const zz of [front - 2, back + 2]) {
+      b.box(0.2, 0.32, 0.4, k.housing, cx + sx * (w / 2 + 0.1), base + 3.2, zz, 0, false);
+      b.box(0.04, 0.12, 0.3, k.light, cx + sx * (w / 2 + 0.2), base + 3.15, zz, 0, false);
+    }
+
+  // rear: loading dock door with bumpers and a staff door with a small canopy
+  const dockX = cx + w / 4;
+  b.box(3.6, 3.8, 0.08, k.roller, dockX, base, back - 0.05, 0, false);
+  b.box(4.2, 0.3, 0.3, k.housing, dockX, base + 3.85, back - 0.15, 0, false);
+  for (const sx of [-1, 1]) b.box(0.3, 0.5, 0.25, k.rubber, dockX + sx * 2, base + 0.6, back - 0.15, 0, false);
+  b.box(1.1, 2.3, 0.08, k.door, cx - w / 4, base, back - 0.05, 0, false);
+  b.box(1.6, 0.12, 1.0, k.coping, cx - w / 4, base + 2.6, back - 0.5, 0, false);
+  return b;
+}
+
 export interface BuiltStore {
   group: THREE.Group;
   hit: THREE.Mesh;
@@ -321,7 +466,8 @@ export interface BuiltStore {
 }
 
 /** Builds one store at (cx, cz), front facing +z, standing on the plot surface (y = 0.5). */
-export function buildStore(look: StoreLook, cx: number, cz: number): BuiltStore {
+/** `detail`: visual system v2 (plinth, coping, mullions, side glazing, canopy, roof plant, wall lights, rear dock). */
+export function buildStore(look: StoreLook, cx: number, cz: number, detail = false): BuiltStore {
   const g = new THREE.Group();
   const { w, d, h, floors } = look;
   const base = 0.5;
@@ -440,14 +586,18 @@ export function buildStore(look: StoreLook, cx: number, cz: number): BuiltStore 
     for (const px of [-sw * 0.35, sw * 0.35]) addBox(g, 0.12, 0.9, 0.12, mat(0x6b7280), cx + w / 4 + px, top, front - 1.3);
   }
 
+  if (detail) g.add(...facadeDetail(look, cx, cz).build());
+
   const fullH = Math.max(signTop, top + (look.roof ? 3.2 : 0)) - base;
   const hitGeo = new THREE.BoxGeometry(w + 0.6, fullH, d + 0.6);
   const hit = new THREE.Mesh(hitGeo, new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false }));
+  hit.visible = false; // picking only: the raycaster ignores visibility, the renderer skips the draw call
   hit.position.set(cx, base + fullH / 2, cz);
   g.add(hit);
   const outline = new THREE.LineSegments(new THREE.EdgesGeometry(hitGeo), new THREE.LineBasicMaterial({ color: 0x1d4ed8 }));
   outline.position.copy(hit.position);
   outline.visible = false;
   g.add(outline);
+  mergeByMaterial(g, [hit, outline]); // dozens of parts → one mesh per material (draw calls)
   return { group: g, hit, outline, size: new THREE.Vector3(w, fullH + base, d), rect: { x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2 } };
 }
