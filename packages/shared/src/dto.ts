@@ -209,3 +209,47 @@ export interface ConnectorInstallationDto {
   status: "disconnected" | "connected" | "error"; credentialScope: "NONE" | "SERVER_ENV" | "SECRET_STORE";
   lastHealthAt: string | null; lastError: string | null;
 }
+
+// ---------------------------------------------------------------- agent marketplace (W4)
+
+/** A connector a template may grant, with the actions allowed on it (mirrors agent_connector_permissions). */
+export interface TemplateTool { connectorId: string; actions: ("read" | "write")[] }
+
+export interface TemplateVersionDto {
+  version: number; role: string; responsibilities: string; skills: string[]; instructions: string; tools: TemplateTool[];
+  model: string | null; maxTokensPerTask: number | null;
+  /** estimated monthly cost, UZS tiyin (0 = not entered yet) */
+  estMonthlyMinor: number;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH";
+  approvedAt: string | null; approvedNote: string | null;
+}
+
+export interface TemplateDto {
+  id: string; name: string; category: string; status: "DRAFT" | "APPROVED" | "RETIRED"; allowedDepartments: string[];
+  currentVersion: number | null; current: TemplateVersionDto | null; draft: TemplateVersionDto | null;
+  /** non-archived agents hired from this template */
+  hiredCount: number;
+}
+
+export type HireCheckId =
+  | "template_approved" | "department_allowed" | "tools_within" | "pending_cap"
+  | "agent_count" | "budget" | "auto_listed" | "risk";
+/** hard: failing rejects the request; soft: failing sends it to the admin */
+export interface HireCheck { id: HireCheckId; ok: boolean; hard: boolean; detail: string }
+export type HireOutcome = "hire" | "pending" | "reject";
+
+export interface HireRequestDto {
+  id: string; templateId: string; templateVersion: number; templateName: string; departmentId: string;
+  requestedBy: { id: string; name: string }; justification: string; checks: HireCheck[];
+  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED"; decidedVia: "user" | "policy" | null;
+  decidedBy: string | null; decisionReason: string | null; override: boolean; agentId: string | null;
+  createdAt: string; decidedAt: string | null;
+}
+
+export interface HiringLimitDto {
+  departmentId: string; maxAgents: number | null; monthlyBudgetMinor: number | null; autoTemplates: string[];
+  /** active + paused agents now */
+  activeAgents: number;
+  /** Σ estimated monthly cost of the department's templated agents, UZS tiyin */
+  committedMinor: number;
+}

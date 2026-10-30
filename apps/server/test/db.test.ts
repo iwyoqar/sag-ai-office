@@ -10,7 +10,7 @@ import { redact } from "../src/lib/audit.js";
 describe("database & migrations", () => {
   it("applies migrations once and is idempotent", () => {
     const db = new Db(":memory:");
-    expect(db.migrate()).toEqual(["001_init.sql", "002_agent_workstation.sql", "003_runtime.sql", "004_brain_telegram.sql", "005_schedule_users.sql", "006_embeddings.sql", "007_people_workflow.sql", "008_employee_desk.sql", "009_connector_actions.sql", "010_org_tree.sql", "011_sensitive_permissions.sql", "012_execution_reliability.sql", "013_login_throttle.sql", "014_backups.sql", "015_w1_foundation.sql", "016_integration_hub.sql"]);
+    expect(db.migrate()).toEqual(["001_init.sql", "002_agent_workstation.sql", "003_runtime.sql", "004_brain_telegram.sql", "005_schedule_users.sql", "006_embeddings.sql", "007_people_workflow.sql", "008_employee_desk.sql", "009_connector_actions.sql", "010_org_tree.sql", "011_sensitive_permissions.sql", "012_execution_reliability.sql", "013_login_throttle.sql", "014_backups.sql", "015_w1_foundation.sql", "016_integration_hub.sql", "017_agent_marketplace.sql"]);
     expect(db.migrate()).toEqual([]);
   });
 
