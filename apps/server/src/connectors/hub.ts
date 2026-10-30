@@ -9,10 +9,26 @@ import { audit } from "../lib/audit.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { uid } from "../lib/ids.js";
 import { embedderOf } from "../knowledge/semantic.js";
-import { ConnectorError, GoogleAuth } from "./google.js";
+import { ConnectorError, GOOGLE_SCOPES, GoogleAuth } from "./google.js";
 import { SecretStore, parseKey } from "./secrets.js";
 import { ALWAYS_ON, TOOLS, UNIT_INTERNAL, toolByName, type ToolDef, type ToolEnv } from "./tools.js";
 import { ensureHqInstallations } from "./installations.js";
+import { CredentialVault } from "./vault.js";
+import { STORABLE_AUTH, definitionOf } from "./registry.js";
+import { type Classified, HEALTH_CLASSES, READ_RETRY, RateLimiter, type RetryPolicy, classify, fetchWithTimeout, withRetry } from "./reliability.js";
+
+/** Why a tool call was refused, in the order the checks run (connectors/hub.ts authorizeTool). */
+export type DenyReason =
+  | "agent_inactive" | "unit_mismatch" | "unknown_tool" | "not_assigned" | "tool_not_permitted" | "missing_scope"
+  | "write_not_permitted" | "not_connected";
+export type ToolAuthorization =
+  | { ok: true; instanceId: string | null; mode: "auto" | "approval" }
+  | { ok: false; reason: DenyReason };
+
+interface InstanceRow { id: string; connector_id: string; scope_level: string; business_unit_id: string | null; status: string; enabled: number }
+
+export interface HubReliability { toolTimeoutMs: number; readRetry: RetryPolicy; callsPerMinute: number; sleep?: (ms: number) => Promise<unknown> }
+const DEFAULT_RELIABILITY: HubReliability = { toolTimeoutMs: 20_000, readRetry: READ_RETRY, callsPerMinute: 60 };
 
 export interface ConnectorConfig {
   /** public base URL of the web app (OAuth redirect goes to <publicUrl>/api/connectors/google/callback) */
@@ -42,16 +58,22 @@ const MAX_OUTPUT = 6000;
 
 export class ConnectorHub {
   readonly secrets: SecretStore;
+  readonly vault: CredentialVault;
   readonly google: GoogleAuth;
   private http: typeof fetch;
+  private rel: HubReliability;
+  private limiter: RateLimiter;
 
   constructor(
     private ctx: Ctx,
     private cfg: ConnectorConfig,
-    private deps: { llm: () => LlmClient | null; telegram: () => Bot | undefined; http?: typeof fetch },
+    private deps: { llm: () => LlmClient | null; telegram: () => Bot | undefined; http?: typeof fetch; reliability?: Partial<HubReliability> },
   ) {
     this.http = deps.http ?? fetch;
+    this.rel = { ...DEFAULT_RELIABILITY, ...deps.reliability };
+    this.limiter = new RateLimiter(this.rel.callsPerMinute);
     this.secrets = new SecretStore(ctx.db, parseKey(cfg.secretsKey));
+    this.vault = new CredentialVault(ctx.db, parseKey(cfg.secretsKey));
     this.google = new GoogleAuth(
       { ...cfg.google, redirectUri: `${cfg.publicUrl.replace(/\/+$/, "")}/api/connectors/google/callback` },
       this.secrets, this.http,
@@ -119,37 +141,104 @@ export class ConnectorHub {
 
   // ---------------------------------------------------------------- per agent
 
-  /**
-   * Tools this agent may use right now: internal reads (HQ: documents, people, memory; other units: their own
-   * documents only) + granted connectors that are installed and enabled in the agent's own unit and connected.
-   */
+  /** Tools this agent may use right now — exactly those authorizeTool() would let it call. */
   toolsFor(agentId: string): ToolDef[] {
-    const a = this.ctx.db.get<{ department_id: string; lifecycle: string; business_unit_id: string }>("SELECT department_id, lifecycle, business_unit_id FROM agents WHERE id = ?", agentId);
-    if (!a || a.lifecycle !== "ACTIVE") return [];
+    return TOOLS.filter((t) => this.authorizeTool(agentId, null, t.name).ok);
+  }
+
+  /** The instance serving `connectorId` for a unit: its own enabled instance, else an assigned region/group one. */
+  instanceFor(unitId: string, connectorId: string): InstanceRow | undefined {
+    return this.ctx.db.get<InstanceRow>(
+      `SELECT id, connector_id, scope_level, business_unit_id, status, enabled FROM connector_installations
+       WHERE connector_id = ? AND enabled = 1 AND (business_unit_id = ?
+         OR id IN (SELECT instance_id FROM connector_instance_assignments WHERE business_unit_id = ?))
+       ORDER BY CASE scope_level WHEN 'UNIT' THEN 0 WHEN 'REGION' THEN 1 ELSE 2 END LIMIT 1`,
+      connectorId, unitId, unitId,
+    );
+  }
+
+  /** Secret for an instance: its own stored credential; HQ instances may still use the server environment. */
+  private tokenFor(inst: InstanceRow | undefined, connectorId: "slack" | "notion"): string | undefined {
+    if (!inst) return undefined;
+    const stored = this.vault.resolve(inst.id, "API_KEY");
+    if (stored) return stored;
+    return inst.business_unit_id === "hq" ? (connectorId === "slack" ? this.cfg.slackToken : this.cfg.notionToken) : undefined;
+  }
+
+  private instanceConnected(inst: InstanceRow): boolean {
+    const id = inst.connector_id;
+    if (STORABLE_AUTH[id]) return !!this.tokenFor(inst, id as "slack" | "notion");
+    // credentials of every other connector live in the server environment and belong to HQ
+    if (inst.business_unit_id !== "hq" && id !== "web-search" && id !== "internal-api") return false;
+    return this.availability(id).connected;
+  }
+
+  /**
+   * Scopes the instance's account granted. Google via OAuth consent: exactly what Google returned (stored). Google
+   * via an operator-provided GOOGLE_REFRESH_TOKEN: unknown to us, taken as the scopes this app requests
+   * (GOOGLE_SCOPES) — documented limitation. Connectors without scopes need none.
+   */
+  private grantedScopes(inst: InstanceRow): string[] {
+    if (!GOOGLE.has(inst.connector_id) || inst.business_unit_id !== "hq") return [];
+    const stored = this.secrets.info("google");
+    if (stored) return safeArray(stored.scopes);
+    return this.cfg.google.refreshToken ? [...GOOGLE_SCOPES] : [];
+  }
+
+  /**
+   * The only gate for agent tool calls, in a fixed order: 1 agent identity, 2 business-unit ownership of the task,
+   * 3 connector assignment to the agent's unit, 4 tool permission (grant), 5 required scopes, 6 read/write
+   * permission, then a live connection; 7 the approval policy decides how it runs (reads: at once, writes: approval).
+   */
+  authorizeTool(agentId: string, taskId: string | null, toolName: string): ToolAuthorization {
+    const a = this.ctx.db.get<{ department_id: string; lifecycle: string; business_unit_id: string }>(
+      "SELECT department_id, lifecycle, business_unit_id FROM agents WHERE id = ?", agentId,
+    );
+    if (!a || a.lifecycle !== "ACTIVE") return { ok: false, reason: "agent_inactive" };
+    if (taskId) {
+      const t = this.ctx.db.get<{ u: string }>("SELECT business_unit_id u FROM tasks WHERE id = ?", taskId);
+      if (!t || t.u !== a.business_unit_id) return { ok: false, reason: "unit_mismatch" };
+    }
+    const tool = toolByName(toolName);
+    if (!tool) return { ok: false, reason: "unknown_tool" };
     const hq = a.business_unit_id === "hq";
-    const installed = new Set(
-      this.ctx.db.all<{ connector_id: string }>(
-        "SELECT connector_id FROM connector_installations WHERE business_unit_id = ? AND enabled = 1", a.business_unit_id,
-      ).map((r) => r.connector_id),
+    if (ALWAYS_ON.has(tool.name)) return hq || UNIT_INTERNAL.has(tool.name) ? { ok: true, instanceId: null, mode: "auto" } : { ok: false, reason: "tool_not_permitted" };
+    const inst = this.instanceFor(a.business_unit_id, tool.connector);
+    if (!inst) return { ok: false, reason: "not_assigned" };
+    const grant = this.ctx.db.get<{ allowed_actions: string }>(
+      `SELECT p.allowed_actions FROM agent_connector_permissions p
+       JOIN department_connectors dc ON dc.connector_id = p.connector_id AND dc.department_id = ?
+       WHERE p.agent_id = ? AND p.connector_id = ?`, a.department_id, agentId, tool.connector,
     );
-    const grants = new Map(
-      this.ctx.db.all<{ connector_id: string; allowed_actions: string }>(
-        `SELECT p.connector_id, p.allowed_actions FROM agent_connector_permissions p
-         JOIN department_connectors dc ON dc.connector_id = p.connector_id AND dc.department_id = ?
-         WHERE p.agent_id = ?`, a.department_id, agentId,
-      ).map((g) => [g.connector_id, safeArray(g.allowed_actions)]),
+    if (!grant) return { ok: false, reason: "tool_not_permitted" };
+    const needed = definitionOf(tool.connector)?.actions.find((x) => x.tool === tool.name)?.scopes ?? [];
+    if (needed.length) {
+      const granted = this.grantedScopes(inst);
+      if (needed.some((sc) => !granted.includes(sc))) return { ok: false, reason: "missing_scope" };
+    }
+    const allowed = safeArray(grant.allowed_actions);
+    if (!allowed.includes(tool.kind)) return { ok: false, reason: tool.kind === "write" ? "write_not_permitted" : "tool_not_permitted" };
+    if (!this.instanceConnected(inst)) return { ok: false, reason: "not_connected" };
+    return { ok: true, instanceId: inst.id, mode: tool.kind === "write" ? "approval" : "auto" };
+  }
+
+  /** Health bookkeeping after a real call: failures of the connection itself degrade, then take it down. */
+  private noteHealth(instanceId: string | null, ok: boolean, c?: Classified) {
+    if (!instanceId) return;
+    if (ok) {
+      this.ctx.db.run(
+        "UPDATE connector_installations SET health_status = 'HEALTHY', consecutive_failures = 0, last_error = NULL, last_error_class = NULL, last_health_at = ? WHERE id = ?",
+        now(), instanceId,
+      );
+      return;
+    }
+    if (!c || !HEALTH_CLASSES.includes(c.cls)) return;
+    this.ctx.db.run(
+      `UPDATE connector_installations SET consecutive_failures = consecutive_failures + 1,
+         health_status = CASE WHEN consecutive_failures + 1 >= 3 THEN 'DOWN' ELSE 'DEGRADED' END,
+         last_error = ?, last_error_class = ?, last_health_at = ? WHERE id = ?`,
+      c.message.slice(0, 300), c.cls, now(), instanceId,
     );
-    const up = new Map<string, boolean>();
-    const connected = (id: string) => {
-      if (!up.has(id)) up.set(id, this.availability(id).connected);
-      return up.get(id)!;
-    };
-    return TOOLS.filter((t) => {
-      if (ALWAYS_ON.has(t.name)) return hq || UNIT_INTERNAL.has(t.name);
-      if (!installed.has(t.connector)) return false;
-      const g = grants.get(t.connector);
-      return !!g && g.includes(t.kind) && connected(t.connector);
-    });
   }
 
   specs(tools: ToolDef[]): ToolSpec[] {
@@ -164,22 +253,29 @@ export class ConnectorHub {
     const llm = this.deps.llm();
     const ag = this.ctx.db.get<{ department_id: string; business_unit_id: string }>("SELECT department_id, business_unit_id FROM agents WHERE id = ?", agentId);
     const dep = ag?.department_id ?? null;
+    const unit = ag?.business_unit_id ?? "none";
     return {
-      ctx: this.ctx, agentId, departmentId: dep, unitId: ag?.business_unit_id ?? "none", taskId, correlationId, google: this.google, http: this.http,
-      tokens: { slack: this.cfg.slackToken, notion: this.cfg.notionToken },
+      ctx: this.ctx, agentId, departmentId: dep, unitId: unit, taskId, correlationId, google: this.google,
+      // every provider call has a deadline; credentials come from the instance serving the agent's unit
+      http: fetchWithTimeout(this.http, this.rel.toolTimeoutMs),
+      tokens: { slack: this.tokenFor(this.instanceFor(unit, "slack"), "slack"), notion: this.tokenFor(this.instanceFor(unit, "notion"), "notion") },
       llm: llm ? { searchWeb: llm.searchWeb?.bind(llm), mode: llm.mode } : null,
       telegram: this.deps.telegram() ?? null, embedder: embedderOf(llm), approver,
     };
   }
 
-  private record(e: { runId: string; tool: ToolDef; input: unknown; status: string; taskId: string | null; agentId: string; approvalId?: string | null; output?: unknown; error?: string | null; idempotencyKey?: string }) {
+  private record(e: {
+    runId: string; tool: ToolDef; input: unknown; status: string; taskId: string | null; agentId: string; approvalId?: string | null; output?: unknown;
+    error?: string | null; idempotencyKey?: string; instanceId?: string | null; attempts?: number; errorClass?: string | null;
+  }) {
     const id = uid("tex");
     this.ctx.db.run(
-      `INSERT INTO tool_executions (id, run_id, tool, connector_id, input, output, status, error, started_at, finished_at, approval_id, agent_id, task_id, idempotency_key)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO tool_executions (id, run_id, tool, connector_id, input, output, status, error, started_at, finished_at, approval_id, agent_id, task_id, idempotency_key,
+         instance_id, attempts, error_class)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       id, e.runId, e.tool.name, e.tool.connector, clip(JSON.stringify(e.input)), e.output === undefined ? null : clip(JSON.stringify(e.output)),
       e.status, e.error ?? null, now(), e.status === "pending_approval" || e.status === "running" ? null : now(), e.approvalId ?? null, e.agentId, e.taskId,
-      e.idempotencyKey ?? null,
+      e.idempotencyKey ?? null, e.instanceId ?? null, e.attempts ?? 1, e.errorClass ?? null,
     );
     return id;
   }
@@ -204,9 +300,11 @@ export class ConnectorHub {
    */
   async invoke(c: { taskId: string | null; agentId: string; runId: string; correlationId: string }, call: ToolCall): Promise<Record<string, unknown>> {
     const tool = toolByName(call.name);
-    if (!tool || !this.toolsFor(c.agentId).some((t) => t.name === tool.name)) {
-      if (tool) this.record({ ...c, tool, input: call.args, status: "denied", error: "not permitted" });
-      return { error: "Bu vosita sizga ruxsat etilmagan yoki ulanmagan" };
+    const auth = this.authorizeTool(c.agentId, c.taskId, call.name);
+    if (!tool || !auth.ok) {
+      const reason = auth.ok ? "unknown_tool" : auth.reason;
+      if (tool) this.record({ ...c, tool, input: call.args, status: "denied", error: `not permitted: ${reason}`, errorClass: "permission" });
+      return { error: "Bu vosita sizga ruxsat etilmagan yoki ulanmagan", reason };
     }
     const parsed = tool.schema.safeParse(call.args ?? {});
     if (!parsed.success) {
@@ -231,20 +329,29 @@ export class ConnectorHub {
           "INSERT INTO approvals (id, task_id, agent_id, action, payload, status, requested_at) VALUES (?,?,?,?,?, 'PENDING', ?)",
           approvalId, c.taskId, c.agentId, `tool:${tool.name}`, JSON.stringify({ tool: tool.name, connector: tool.connector, summary, args }), now(),
         );
-        this.record({ ...c, tool, input: args, status: "pending_approval", approvalId, idempotencyKey });
+        this.record({ ...c, tool, input: args, status: "pending_approval", approvalId, idempotencyKey, instanceId: auth.instanceId });
         audit(this.ctx.db, { type: "agent", id: c.agentId }, "tool.propose", { type: "approval", id: approvalId }, { tool: tool.name, summary });
       });
       this.ctx.bus.emit("approval.requested", { taskId: c.taskId, agentId: c.agentId }, { approvalId, action: `tool:${tool.name}`, title: summary });
       return { status: "pending_approval", approvalId, note: "Amal odam tasdiqlashini kutmoqda. Bajarildi deb yozma — 'tasdiqqa yuborildi' de." };
     }
+    // reads: rate-limited per instance, deadline per call, retried only on transient failures
+    if (auth.instanceId && !this.limiter.take(auth.instanceId)) {
+      this.record({ ...c, tool, input: args, status: "failed", error: "rate limit", errorClass: "rate_limited", instanceId: auth.instanceId, attempts: 0 });
+      return { error: "Connector chaqiruvlari limiti: birozdan keyin qayta urinib ko'ring", reason: "rate_limited" };
+    }
     try {
-      const out = await tool.run(this.env(c.agentId, c.taskId, c.correlationId), args);
-      this.record({ ...c, tool, input: args, status: "succeeded", output: out });
+      const env = this.env(c.agentId, c.taskId, c.correlationId);
+      const { value: out, attempts } = await withRetry(() => tool.run(env, args), this.rel.readRetry, this.rel.sleep);
+      this.record({ ...c, tool, input: args, status: "succeeded", output: out, instanceId: auth.instanceId, attempts });
+      this.noteHealth(auth.instanceId, true);
       return out;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.record({ ...c, tool, input: args, status: "failed", error: msg });
-      return { error: msg };
+      const cl = (e as { classified?: Classified }).classified ?? classify(e);
+      const attempts = (e as { attempts?: number }).attempts ?? 1;
+      this.record({ ...c, tool, input: args, status: "failed", error: cl.message, errorClass: cl.cls, instanceId: auth.instanceId, attempts });
+      this.noteHealth(auth.instanceId, false, cl);
+      return { error: cl.message, reason: cl.cls };
     }
   }
 
@@ -262,6 +369,9 @@ export class ConnectorHub {
     const exec = this.ctx.db.get<{ id: string; tool: string; input: string }>("SELECT id, tool, input FROM tool_executions WHERE approval_id = ?", approvalId);
     const tool = exec && toolByName(exec.tool);
     if (!exec || !tool) throw notFound("Amal");
+    // permissions may have changed while the request waited: authorise again at execution time
+    const auth = decision === "approve" && a.agent_id ? this.authorizeTool(a.agent_id, a.task_id, tool.name) : null;
+    if (auth && !auth.ok) throw conflict("not_permitted_now", `Amalni endi bajarib bo'lmaydi: ${auth.reason}`);
     const claimed = this.ctx.db.run(
       "UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, reason = ?, decided_via = 'web' WHERE id = ? AND status = 'PENDING'",
       decision === "approve" ? "APPROVED" : "REJECTED", user.id, now(), reason ?? null, approvalId,
@@ -274,14 +384,21 @@ export class ConnectorHub {
       return this.execution(exec.id);
     }
     this.ctx.db.run("UPDATE tool_executions SET status = 'running' WHERE id = ?", exec.id);
+    const instanceId = auth && auth.ok ? auth.instanceId : null;
+    // a write runs exactly once — never retried. If its outcome cannot be known (deadline, network), it is
+    // recorded as "unknown" for a person to check in the external system.
     try {
       const out = await tool.run(this.env(a.agent_id ?? "", a.task_id, approvalId, user), JSON.parse(exec.input));
-      this.ctx.db.run("UPDATE tool_executions SET status = 'succeeded', output = ?, finished_at = ? WHERE id = ?", clip(JSON.stringify(out)), now(), exec.id);
+      this.ctx.db.run("UPDATE tool_executions SET status = 'succeeded', output = ?, finished_at = ?, instance_id = ? WHERE id = ?", clip(JSON.stringify(out)), now(), instanceId, exec.id);
       audit(this.ctx.db, { type: "user", id: user.id }, "tool.execute", { type: "tool_execution", id: exec.id }, { tool: tool.name, ok: true });
+      this.noteHealth(instanceId, true);
     } catch (e) {
-      const msg = e instanceof ConnectorError || e instanceof Error ? e.message : String(e);
-      this.ctx.db.run("UPDATE tool_executions SET status = 'failed', error = ?, finished_at = ? WHERE id = ?", msg, now(), exec.id);
-      audit(this.ctx.db, { type: "user", id: user.id }, "tool.execute", { type: "tool_execution", id: exec.id }, { tool: tool.name, ok: false, error: msg });
+      const cl = classify(e);
+      const status = cl.cls === "timeout" || cl.cls === "network" ? "unknown" : "failed";
+      const msg = status === "unknown" ? `natija noma'lum (${cl.cls}): tashqi tizimda tekshiring — qayta yuborilmaydi` : cl.message;
+      this.ctx.db.run("UPDATE tool_executions SET status = ?, error = ?, error_class = ?, finished_at = ?, instance_id = ? WHERE id = ?", status, msg, cl.cls, now(), instanceId, exec.id);
+      audit(this.ctx.db, { type: "user", id: user.id }, "tool.execute", { type: "tool_execution", id: exec.id }, { tool: tool.name, ok: false, error: msg, errorClass: cl.cls });
+      this.noteHealth(instanceId, false, cl);
     }
     this.ctx.bus.emit("connector.activity", { taskId: a.task_id, agentId: a.agent_id }, { connector: tool.connector, tool: tool.name, status: "executed" });
     return this.execution(exec.id);
@@ -327,6 +444,62 @@ export class ConnectorHub {
     } catch (e) {
       return this.finishVerify(id, false, e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /**
+   * Health check of one instance, recorded in connector_runs: Slack/Notion with the instance's own credential,
+   * HQ instances of the other connectors with the existing live checks, Gemini through the AI provider.
+   */
+  async checkInstance(instanceId: string): Promise<{ ok: boolean; detail: string; errorClass: string | null }> {
+    const inst = this.ctx.db.get<InstanceRow>("SELECT id, connector_id, scope_level, business_unit_id, status, enabled FROM connector_installations WHERE id = ?", instanceId);
+    if (!inst) throw notFound("Connector");
+    const def = definitionOf(inst.connector_id);
+    if (!def || def.status !== "AVAILABLE" || !def.healthCheck) throw badRequest("Bu connector uchun tekshiruv mavjud emas");
+    const runId = uid("crun");
+    const started = Date.now();
+    this.ctx.db.run("INSERT INTO connector_runs (id, instance_id, kind, status, started_at) VALUES (?, ?, 'HEALTH', 'RUNNING', ?)", runId, instanceId, now());
+    let ok = false;
+    let detail = "";
+    let cls: string | null = null;
+    try {
+      const http = fetchWithTimeout(this.http, this.rel.toolTimeoutMs);
+      if (inst.connector_id === "slack" || inst.connector_id === "notion") {
+        const token = this.tokenFor(inst, inst.connector_id);
+        if (!token) throw new ConnectorError("kalit yo'q", 0);
+        const r = inst.connector_id === "slack"
+          ? await http("https://slack.com/api/auth.test", { method: "POST", headers: { authorization: `Bearer ${token}` } })
+          : await http("https://api.notion.com/v1/users/me", { headers: { authorization: `Bearer ${token}`, "notion-version": "2022-06-28" } });
+        const d = (await r.json().catch(() => ({}))) as { ok?: boolean; team?: string; error?: string; name?: string; message?: string };
+        ok = inst.connector_id === "slack" ? !!d.ok : r.ok;
+        detail = ok ? `${def.name}: ${d.team ?? d.name ?? "ulangan"}` : `${def.name}: ${d.error ?? d.message ?? r.status}`;
+        if (!ok) cls = r.status === 429 ? "rate_limited" : r.status >= 500 ? "provider" : "auth";
+      } else if (inst.connector_id === "gemini") {
+        const llm = this.deps.llm();
+        if (!llm || llm.provider !== "gemini") throw new ConnectorError("Gemini sozlanmagan", 0);
+        const h = await llm.health();
+        ok = h.ok;
+        detail = h.ok ? `Gemini: ${h.model}` : `Gemini: ${h.detail ?? "xato"}`;
+        if (!ok) cls = /key|ruxsat|auth/i.test(h.detail ?? "") ? "auth" : "provider";
+      } else if (inst.business_unit_id === "hq") {
+        const r = await this.verify(inst.connector_id);
+        ok = r.ok;
+        detail = r.detail;
+        if (!ok) cls = "auth";
+      } else throw new ConnectorError("bu connectorning kaliti faqat HQ serverida", 0);
+    } catch (e) {
+      const c = classify(e);
+      ok = false;
+      detail = c.message;
+      cls = c.cls;
+    }
+    this.ctx.db.tx(() => {
+      this.ctx.db.run("UPDATE connector_runs SET status = ?, error_class = ?, error = ?, finished_at = ?, duration_ms = ? WHERE id = ?",
+        ok ? "SUCCEEDED" : "FAILED", cls, ok ? null : detail.slice(0, 300), now(), Date.now() - started, runId);
+      this.ctx.db.run("UPDATE connector_installations SET status = ?, updated_at = ? WHERE id = ?", ok ? "connected" : "error", now(), instanceId);
+      if (ok) this.noteHealth(instanceId, true);
+      else this.noteHealth(instanceId, false, { cls: (cls ?? "provider") as Classified["cls"], retryable: false, message: detail });
+    });
+    return { ok, detail, errorClass: cls };
   }
 
   private finishVerify(id: string, ok: boolean, detail: string) {

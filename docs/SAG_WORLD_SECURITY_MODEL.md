@@ -224,3 +224,11 @@ injection found.
 | Connectors | leads see metadata; director grants installed connectors to own agents | SAG_BRANCH: see metadata; platform admins install credential-free connectors | never; no agreement class opens connectors; credentials never in any DTO |
 | Tasks (write) | members by role | — | only via an active READ_WRITE agreement on `tasks` (DETAIL) |
 | HQ memory | — | HQ agents only | never reaches unit agents (runner, chat) |
+
+## 10. Integration Hub (W2.1, 2026-10-30)
+
+Agent tool calls pass one gate in order — identity, task unit, assignment, grant, scopes, read/write, connection —
+then reads run, writes wait for approval and are re-authorised when approved. Credentials: encrypted per instance,
+never returned or logged; managed by the owning side only (HQ brain:manage / the unit's director / platform admins
+for shared instances). Shared region/group instances reach only explicitly assigned SAG-owned units. Details:
+[W2.1 report](reports/2026-10-30-w2-1-integration-hub-core.md).

@@ -20,15 +20,15 @@ export const credentialScopeOf = (connectorId: string): CredentialScope =>
  * Connectors a non-HQ unit may have installed today: only those that need no per-unit credential (per-unit
  * credentials for Google, Slack, Notion… are not supported yet — nothing is faked).
  */
-export const UNIT_INSTALLABLE: readonly string[] = ["web-search"];
+export const UNIT_INSTALLABLE: readonly string[] = ["web-search", "slack", "notion"]; // the latter with the unit's own key (Integration Hub)
 
 /** HQ owns every catalog connector (idempotent; used by the seed and on start). */
 export function ensureHqInstallations(db: Db) {
   const t = now();
   for (const c of db.all<{ id: string; status: string }>("SELECT id, status FROM connectors"))
     db.run(
-      `INSERT OR IGNORE INTO connector_installations (id, business_unit_id, connector_id, status, credential_scope, created_at, updated_at)
-       VALUES (?, 'hq', ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO connector_installations (id, scope_level, scope_node_id, business_unit_id, connector_id, status, credential_scope, created_at, updated_at)
+       VALUES (?, 'UNIT', 'hq', 'hq', ?, ?, ?, ?, ?)`,
       `ci_hq_${c.id}`, c.id, c.status, credentialScopeOf(c.id), t, t,
     );
 }
@@ -77,9 +77,10 @@ export function installUnitConnector(ctx: Ctx, u: AuthUser, unitId: string, conn
   const t = now();
   ctx.db.tx(() => {
     ctx.db.run(
-      `INSERT INTO connector_installations (id, business_unit_id, connector_id, status, credential_scope, created_by, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?)`,
-      id, unitId, connectorId, c.status, credentialScopeOf(connectorId), u.id, t, t,
+      `INSERT INTO connector_installations (id, scope_level, scope_node_id, business_unit_id, connector_id, status, credential_scope, created_by, created_at, updated_at)
+       VALUES (?, 'UNIT', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, unitId, unitId, connectorId, connectorId === "web-search" ? c.status : "disconnected",
+      connectorId === "slack" || connectorId === "notion" ? "SECRET_STORE" : credentialScopeOf(connectorId), u.id, t, t,
     );
     // the unit's departments may use it (agents still need an explicit grant)
     for (const d of ctx.db.all<{ id: string }>("SELECT id FROM departments WHERE business_unit_id = ?", unitId))

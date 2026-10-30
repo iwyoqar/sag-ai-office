@@ -471,3 +471,11 @@ Where the code differs from the proposal above, the code is authoritative:
 | Connectors | `connector_installations(business_unit_id, connector_id, enabled, status, credential_scope NONE/SERVER_ENV/SECRET_STORE, last_health_at, last_error)` — no credential columns; trigger: an agent grant needs an enabled installation in the agent's unit |
 | Agreements | `data_sharing_agreements.access` READ/READ_WRITE; classes now also `budget`, `knowledge` |
 | Execution (W0) | `tasks.lease_epoch`, `agent_runs.worker_id/lease_epoch/end_reason`, `worker_heartbeats`, `tool_executions` status `unknown` + `idempotency_key`, `login_throttle`, `backup_runs` (migrations 011–014) |
+
+### 8.1 Integration Hub (migration 016, 2026-10-30)
+
+`connector_installations` now has `scope_level` UNIT/REGION/GROUP + `scope_node_id` (unit column only for UNIT),
+`config`, `health_status`, `consecutive_failures`, `last_error_class`; `connector_instance_assignments` (shared →
+SAG-owned units below the scope, trigger-enforced); `connector_credentials` (AES-256-GCM, AAD-bound, ACTIVE /
+ROTATED / REVOKED / EXPIRED, fingerprint, expiry); `connector_runs` (HEALTH/SYNC); `tool_executions.instance_id,
+attempts, error_class`. Definitions are code (`connectors/registry.ts`), not tables.

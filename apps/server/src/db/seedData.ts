@@ -72,6 +72,11 @@ export const CONNECTORS: { id: string; name: string; kind: "oauth" | "api-key" |
   { id: "recruiting", name: "Recruiting", kind: "api-key" },
   { id: "github", name: "GitHub", kind: "oauth" },
   { id: "monitoring", name: "Monitoring", kind: "api-key" },
+  // prepared for W2 (definitions in connectors/registry.ts); not connected until configured
+  { id: "gemini", name: "Google Gemini", kind: "api-key" },
+  { id: "anthropic", name: "Anthropic Claude", kind: "api-key" },
+  { id: "bitrix24", name: "Bitrix24", kind: "oauth" },
+  { id: "sap", name: "SAP", kind: "api-key" },
   { id: "web-search", name: "Web Search", kind: "internal" },
   { id: "internal-api", name: "Ichki API", kind: "internal" },
   { id: "mcp", name: "Custom MCP", kind: "mcp" },

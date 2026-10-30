@@ -726,3 +726,9 @@ pre.args { font-family: var(--mono); font-size: 11.5px; background: #f8fafc; bor
   .unit-panel { inset: auto 0 0 0; width: auto; max-height: 55%; border-radius: var(--radius) var(--radius) 0 0; }
   .network-legend { right: 16px; }
 }
+
+/* Integration Hub */
+.integration-hub h3 { margin: 18px 0 6px; }
+.integration-hub .inline-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.integration-hub .inline-form input { min-width: 220px; }
+.integration-hub code { font: 11px var(--mono); }

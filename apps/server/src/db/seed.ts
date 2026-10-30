@@ -40,7 +40,7 @@ export async function seed(db: Db, opts: { adminPassword?: string } = {}): Promi
 
     for (const f of FLOORS) db.run("INSERT INTO floors (id, level, title) VALUES (?, ?, ?)", f.id, f.level, f.title);
     for (const c of CONNECTORS)
-      db.run("INSERT INTO connectors (id, name, kind, created_at) VALUES (?, ?, ?, ?)", c.id, c.name, c.kind, t);
+      db.run("INSERT OR IGNORE INTO connectors (id, name, kind, created_at) VALUES (?, ?, ?, ?)", c.id, c.name, c.kind, t); // some come from migrations
     ensureHqInstallations(db); // every connector belongs to HQ until a unit gets its own installation
 
     DEPARTMENTS.forEach((d, i) => {

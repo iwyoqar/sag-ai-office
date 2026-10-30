@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import type { AgentDto, ConnectorDto } from "@sag/shared";
 import { api, ApiError } from "../api/client";
 import { useOffice } from "../api/office";
+import { IntegrationHub } from "./IntegrationHub";
 
-type Tab = "company" | "instructions" | "knowledge" | "memory" | "approvals" | "agents" | "connectors" | "users";
+type Tab = "company" | "instructions" | "knowledge" | "memory" | "approvals" | "agents" | "connectors" | "integrations" | "users";
 const TABS: [Tab, string][] = [
   ["company", "Kompaniya"], ["instructions", "Ko'rsatmalar"], ["knowledge", "Bilimlar"], ["memory", "Xotira"],
-  ["approvals", "Tasdiqlar"], ["agents", "Agentlar"], ["connectors", "Connectorlar"], ["users", "Foydalanuvchilar"],
+  ["approvals", "Tasdiqlar"], ["agents", "Agentlar"], ["connectors", "Connectorlar"], ["integrations", "Integration Hub"], ["users", "Foydalanuvchilar"],
 ];
 
 interface Instruction { id: string; scope: string; scopeId: string | null; title: string; content: string; version: number; isActive: boolean; createdAt: string }
@@ -71,6 +72,7 @@ export function BrainPanel({ onClose, initialTab = "company" }: { onClose: () =>
           {tab === "approvals" && <ApprovalsTab />}
           {tab === "agents" && <AgentsTab />}
           {tab === "connectors" && <ConnectorsTab />}
+          {tab === "integrations" && <IntegrationHub isAdmin={can("users:manage")} />}
           {tab === "users" && <UsersTab />}
         </div>
       </div>

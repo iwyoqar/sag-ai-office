@@ -285,6 +285,12 @@ security model §8 is resolved and verified.**
 | W1: `unit_budgets` link to AI usage, FX rate table, per-unit connector credentials, UI for the new APIs | ⏳ pending |
 | Real Gemini verification of unit AI Directors | ⏳ pending — local key rejected by Google |
 
+## W2.1 Integration Hub Core (2026-10-30) — status
+
+✅ registry, scoped instances, credential vault, ordered tool authorization, reliability, health runs, Integration
+Hub API + HQ UI; ⏳ provider implementations (Anthropic, Bitrix24, SAP after discovery), sync jobs, per-instance OAuth
+flows, unit-side UI — [report](reports/2026-10-30-w2-1-integration-hub-core.md). W2.2 waits for review.
+
 ## W1 — Organisation tree and ownership
 
 `legal_entities`, `org_nodes` (GROUP/REGION/UNIT, business type, functions), triggers for tree rules,

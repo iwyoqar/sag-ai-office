@@ -2,9 +2,10 @@
 // approving agent actions goes through /api/approvals/:id/decide (tasks:manage).
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { type Deps, parse, requirePerm } from "../app.js";
+import { type Deps, parse, requirePerm, requireUser } from "../app.js";
 import { audit, redact } from "../lib/audit.js";
 import { canSeeTask, has, taskRef } from "../domain/access.js";
+import { assignInstance, auditHistory, catalog, checkHealth, createSharedInstance, listInstances, revokeCredential, runsOf, setCredential } from "../connectors/integrationHub.js";
 import { badRequest } from "../lib/errors.js";
 
 export const connectorRoutes = (d: Deps) => async (app: FastifyInstance) => {
@@ -47,6 +48,40 @@ export const connectorRoutes = (d: Deps) => async (app: FastifyInstance) => {
       .map((e) => (payloads ? { ...e, input: redact(e.input), output: redact(e.output) } : { ...e, input: null, output: null, payloadHidden: true }));
     return { items };
   });
+
+  // ---- Integration Hub (registry, instances by scope, credentials, health, audit); checks in connectors/integrationHub.ts
+  const IId = z.object({ id: z.string().min(1).max(80) });
+  app.get("/api/integrations/catalog", async (req) => {
+    requireUser(req);
+    return { connectors: catalog() };
+  });
+  app.get("/api/integrations/instances", async (req) => ({ instances: listInstances(d, hub, requireUser(req)) }));
+  app.post("/api/integrations/instances", async (req, reply) => {
+    const body = parse(z.object({ scopeNodeId: z.string().min(1).max(80), connectorId: z.string().min(1).max(40) }).strict(), req.body);
+    reply.status(201);
+    return { instance: createSharedInstance(d, hub, requireUser(req), body) };
+  });
+  app.put("/api/integrations/instances/:id/assignments/:unitId", async (req) => {
+    const p = parse(z.object({ id: z.string().min(1).max(80), unitId: z.string().min(1).max(80) }), req.params);
+    return { instance: assignInstance(d, hub, requireUser(req), p.id, p.unitId, true) };
+  });
+  app.delete("/api/integrations/instances/:id/assignments/:unitId", async (req) => {
+    const p = parse(z.object({ id: z.string().min(1).max(80), unitId: z.string().min(1).max(80) }), req.params);
+    return { instance: assignInstance(d, hub, requireUser(req), p.id, p.unitId, false) };
+  });
+  app.put("/api/integrations/instances/:id/credentials", async (req) => {
+    const body = parse(z.object({
+      method: z.enum(["API_KEY", "OAUTH2", "WEBHOOK_SECRET", "SERVICE_ACCOUNT"]), secret: z.string().min(8).max(4000), expiresAt: z.string().datetime().nullish(),
+    }).strict(), req.body);
+    return { instance: setCredential(d, hub, requireUser(req), parse(IId, req.params).id, body) };
+  });
+  app.post("/api/integrations/instances/:id/credentials/:credentialId/revoke", async (req) => {
+    const p = parse(z.object({ id: z.string().min(1).max(80), credentialId: z.string().min(1).max(80) }), req.params);
+    return { instance: revokeCredential(d, hub, requireUser(req), p.id, p.credentialId) };
+  });
+  app.post("/api/integrations/instances/:id/health", async (req) => checkHealth(d, hub, requireUser(req), parse(IId, req.params).id));
+  app.get("/api/integrations/instances/:id/runs", async (req) => ({ runs: runsOf(d, requireUser(req), parse(IId, req.params).id) }));
+  app.get("/api/integrations/audit", async (req) => ({ items: auditHistory(d, hub, requireUser(req)) }));
 
   // ---- Google OAuth (one company account for Gmail, Drive, Sheets, Calendar)
   app.get("/api/connectors/google/start", async (req, reply) => {

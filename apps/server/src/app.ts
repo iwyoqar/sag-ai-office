@@ -24,7 +24,7 @@ import { touchActivity } from "./domain/employees.js";
 import type { TelegramBot } from "./telegram/bot.js";
 import type { LlmSetup } from "./llm/index.js";
 import type { AgentRunner } from "./agents/runner.js";
-import { ConnectorHub, type ConnectorConfig } from "./connectors/hub.js";
+import { ConnectorHub, type ConnectorConfig, type HubReliability } from "./connectors/hub.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { randomUUID } from "node:crypto";
 import { checkOrigin, parseOrigins } from "./lib/origin.js";
@@ -32,7 +32,7 @@ import { checkOrigin, parseOrigins } from "./lib/origin.js";
 export const SESSION_COOKIE = "sag_session";
 
 /** The only routes accounts of non-HQ units (stores) may call. */
-const UNIT_ACCOUNT_ROUTES = ["/api/auth/", "/api/units", "/api/agreements/", "/api/notifications", "/api/health"];
+const UNIT_ACCOUNT_ROUTES = ["/api/auth/", "/api/units", "/api/agreements/", "/api/notifications", "/api/health", "/api/integrations/"];
 
 /** HQ routes addressing one row by `:id`, and how to find that row's unit. */
 const HQ_OWNED_BY_ID: [string, string][] = [
@@ -66,6 +66,8 @@ export interface AppOptions {
   connectors?: ConnectorConfig;
   /** HTTP client for connector calls (tests inject a fake) */
   http?: typeof fetch;
+  /** connector call timeouts / retries / rate limit (tests shorten them) */
+  connectorReliability?: Partial<HubReliability>;
   /** origins allowed to send state-changing requests (CSRF protection); default: the connectors' public URL */
   allowedOrigins?: string[];
 }
@@ -114,7 +116,7 @@ export async function buildApp(opts: AppOptions) {
     llm: opts.llm ?? { client: null, pricing: { inputPerM: 0, outputPerM: 0 }, reason: "LLM sozlanmagan" },
   } as Deps;
   deps.connectors = new ConnectorHub(deps, opts.connectors ?? { publicUrl: "http://localhost:5173", google: {} }, {
-    llm: () => deps.llm.client, telegram: () => deps.telegram, http: opts.http,
+    llm: () => deps.llm.client, telegram: () => deps.telegram, http: opts.http, reliability: opts.connectorReliability,
   });
 
   await app.register(cookie);

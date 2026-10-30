@@ -10,7 +10,7 @@ import { redact } from "../src/lib/audit.js";
 describe("database & migrations", () => {
   it("applies migrations once and is idempotent", () => {
     const db = new Db(":memory:");
-    expect(db.migrate()).toEqual(["001_init.sql", "002_agent_workstation.sql", "003_runtime.sql", "004_brain_telegram.sql", "005_schedule_users.sql", "006_embeddings.sql", "007_people_workflow.sql", "008_employee_desk.sql", "009_connector_actions.sql", "010_org_tree.sql", "011_sensitive_permissions.sql", "012_execution_reliability.sql", "013_login_throttle.sql", "014_backups.sql", "015_w1_foundation.sql"]);
+    expect(db.migrate()).toEqual(["001_init.sql", "002_agent_workstation.sql", "003_runtime.sql", "004_brain_telegram.sql", "005_schedule_users.sql", "006_embeddings.sql", "007_people_workflow.sql", "008_employee_desk.sql", "009_connector_actions.sql", "010_org_tree.sql", "011_sensitive_permissions.sql", "012_execution_reliability.sql", "013_login_throttle.sql", "014_backups.sql", "015_w1_foundation.sql", "016_integration_hub.sql"]);
     expect(db.migrate()).toEqual([]);
   });
 
@@ -25,7 +25,7 @@ describe("database & migrations", () => {
     expect(n("floors")).toBe(7);
     expect(n("departments")).toBe(12);
     expect(n("agents")).toBe(46);
-    expect(n("connectors")).toBe(19);
+    expect(n("connectors")).toBe(23); // 19 + gemini, anthropic, bitrix24, sap (W2.1 catalog; not connected)
     // honest initial state: nothing connected, every agent idle, no tasks
     expect(db.get<{ n: number }>("SELECT COUNT(*) n FROM connectors WHERE status <> 'disconnected'")!.n).toBe(0);
     expect(db.get<{ n: number }>("SELECT COUNT(*) n FROM agents WHERE status <> 'IDLE'")!.n).toBe(0);
