@@ -1,14 +1,16 @@
 // W4 agent marketplace, HQ first (docs/superpowers/specs/2026-10-30-agent-marketplace-design.md): templates with
 // immutable approved versions, per-department hiring limits, and the hire checks. Hard checks reject a request; soft
 // checks send a head's request to the admin (AUTO policy: everything passing hires at once).
-import type { HireCheck, HireOutcome, HiringLimitDto, TemplateDto, TemplateTool, TemplateVersionDto } from "@sag/shared";
+import type { HireCheck, HireOutcome, HireRequestDto, HiringLimitDto, TemplateDto, TemplateTool, TemplateVersionDto } from "@sag/shared";
 import { json, now } from "../db/db.js";
 import type { AuthUser } from "../lib/auth.js";
 import { audit } from "../lib/audit.js";
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors.js";
-import { slug } from "../lib/ids.js";
+import { slug, uid } from "../lib/ids.js";
 import { has } from "./access.js";
+import { createAgent } from "./agents.js";
 import type { Ctx } from "./context.js";
+import { notify } from "./notifications.js";
 import { riskOf } from "./templatesFromAgents.js";
 
 /** most PENDING requests a department may have at once */
@@ -227,7 +229,7 @@ const fmt = (minor: number) => `${Math.round(minor / 100).toLocaleString("ru-RU"
  * soft check means the admin decides; the admin's own hire needs only the hard checks (soft ones need an override).
  */
 export function checkHire(
-  ctx: Ctx, i: { templateId: string; version?: number; departmentId: string; requester: "admin" | "head" },
+  ctx: Ctx, i: { templateId: string; version?: number; departmentId: string; requester: "admin" | "head"; excludeRequestId?: string },
 ): { checks: HireCheck[]; outcome: HireOutcome; grants: TemplateTool[] } {
   const t = templateRow(ctx, i.templateId);
   const version = i.version ?? t.current_version ?? 0;
@@ -252,7 +254,10 @@ export function checkHire(
   add("tools_within", true, true,
     `beriladi: ${grants.map((g) => g.connectorId).join(", ") || "hech biri"}${dropped.length ? `; bo'limga ulanmagan, berilmaydi: ${dropped.join(", ")}` : ""}`);
 
-  const pending = ctx.db.get<{ n: number }>("SELECT COUNT(*) n FROM agent_hire_requests WHERE department_id = ? AND status = 'PENDING'", i.departmentId)!.n;
+  // at decision time the request being decided does not count against its own department
+  const pending = ctx.db.get<{ n: number }>(
+    "SELECT COUNT(*) n FROM agent_hire_requests WHERE department_id = ? AND status = 'PENDING' AND id <> ?", i.departmentId, i.excludeRequestId ?? "",
+  )!.n;
   add("pending_cap", true, pending < PENDING_CAP, `kutilayotgan so'rovlar: ${pending}/${PENDING_CAP}`);
 
   const lim = limitRow(ctx, i.departmentId);
@@ -275,4 +280,168 @@ export function checkHire(
   const softFail = checks.some((c) => !c.hard && !c.ok);
   const outcome: HireOutcome = hardFail ? "reject" : softFail && i.requester === "head" ? "pending" : "hire";
   return { checks, outcome, grants };
+}
+
+// ---------------------------------------------------------------- hire requests
+
+interface RequestRow {
+  id: string; template_id: string; template_version: number; department_id: string; requested_by_id: string; justification: string;
+  checks: string; status: HireRequestDto["status"]; decided_via: "user" | "policy" | null; decided_by: string | null;
+  decision_reason: string | null; override: number; agent_id: string | null; created_at: string; decided_at: string | null;
+}
+
+function toRequest(ctx: Ctx, r: RequestRow): HireRequestDto {
+  return {
+    id: r.id, templateId: r.template_id, templateVersion: r.template_version,
+    templateName: ctx.db.get<{ name: string }>("SELECT name FROM agent_templates WHERE id = ?", r.template_id)?.name ?? r.template_id,
+    departmentId: r.department_id,
+    requestedBy: { id: r.requested_by_id, name: ctx.db.get<{ display_name: string }>("SELECT display_name FROM users WHERE id = ?", r.requested_by_id)?.display_name ?? "—" },
+    justification: r.justification, checks: json(r.checks, []), status: r.status, decidedVia: r.decided_via, decidedBy: r.decided_by,
+    decisionReason: r.decision_reason, override: !!r.override, agentId: r.agent_id, createdAt: r.created_at, decidedAt: r.decided_at,
+  };
+}
+
+function requestRow(ctx: Ctx, id: string): RequestRow {
+  const r = ctx.db.get<RequestRow>("SELECT * FROM agent_hire_requests WHERE id = ?", id);
+  if (!r) throw notFound("So'rov");
+  return r;
+}
+
+const failed = (checks: HireCheck[], hard: boolean) => checks.filter((c) => c.hard === hard && !c.ok);
+const reasonOf = (checks: HireCheck[]) => failed(checks, true).map((c) => `${c.id}: ${c.detail}`).join("; ");
+
+function admins(ctx: Ctx): string[] {
+  return ctx.db.all<{ id: string }>(
+    `SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN role_permissions rp ON rp.role_id = ur.role_id
+     WHERE rp.permission_id = 'users:manage' AND u.status = 'active' AND u.home_unit_id = 'hq'`,
+  ).map((r) => r.id);
+}
+
+/** The agent of an approved request, from the request's template version (same transaction as the decision). */
+function hireFrom(ctx: Ctx, u: AuthUser, r: RequestRow, grants: TemplateTool[]): string {
+  const t = templateRow(ctx, r.template_id);
+  const v = versionRow(ctx, r.template_id, r.template_version)!;
+  return createAgent(ctx, {
+    name: t.name, role: v.role, departmentId: r.department_id, model: v.model, skills: json(v.skills, []), responsibilities: v.responsibilities,
+    instructions: v.instructions, maxTokensPerTask: v.max_tokens_per_task, grants, template: { id: t.id, version: v.version },
+  }, actor(u)).id;
+}
+
+function tellRequester(ctx: Ctx, r: RequestRow, approved: boolean, reason: string | null) {
+  const name = ctx.db.get<{ name: string }>("SELECT name FROM agent_templates WHERE id = ?", r.template_id)?.name ?? r.template_id;
+  notify(ctx, {
+    userId: r.requested_by_id, kind: "hire.decided", dedupeKey: `hire.decided:${r.id}`,
+    title: approved ? `Agent yollandi: ${name}` : `Yollash rad etildi: ${name}`, body: reason ?? "",
+  });
+}
+
+/**
+ * A hire request. The admin hires into any department (soft-limit failures need `override`); a department head into
+ * their own departments under the AUTO policy; nobody else — AI agents have no path to this function.
+ */
+export function requestHire(ctx: Ctx, u: AuthUser, i: { templateId: string; departmentId: string; justification: string; override?: boolean }): HireRequestDto {
+  const admin = isAdmin(u);
+  if (!admin && !headDepartments(ctx, u.id).includes(i.departmentId)) throw forbidden("Faqat o'z bo'limingizga agent so'ray olasiz");
+  const justification = i.justification.trim();
+  if (!justification) throw badRequest("Sabab yozilishi kerak");
+  const t = templateRow(ctx, i.templateId);
+  const c = checkHire(ctx, { templateId: t.id, departmentId: i.departmentId, requester: admin ? "admin" : "head" });
+  if (admin && c.outcome === "hire" && failed(c.checks, false).length && !i.override)
+    throw conflict("override_required", `Limitdan tashqari: ${failed(c.checks, false).map((x) => x.detail).join("; ")}`);
+  const id = uid("hire");
+  const tm = now();
+  ctx.db.tx(() => {
+    ctx.db.run(
+      `INSERT INTO agent_hire_requests (id, template_id, template_version, department_id, requested_by_type, requested_by_id, justification,
+         policy_at_request, checks, status, created_at)
+       VALUES (?, ?, ?, ?, 'user', ?, ?, 'AUTO', ?, 'PENDING', ?)`,
+      id, t.id, t.current_version ?? 0, i.departmentId, u.id, justification, JSON.stringify(c.checks), tm,
+    );
+    if (c.outcome === "reject") {
+      ctx.db.run("UPDATE agent_hire_requests SET status = 'REJECTED', decided_via = 'policy', decision_reason = ?, decided_at = ? WHERE id = ?", reasonOf(c.checks), tm, id);
+    } else if (c.outcome === "hire") {
+      const agentId = hireFrom(ctx, u, requestRow(ctx, id), c.grants);
+      ctx.db.run(
+        "UPDATE agent_hire_requests SET status = 'APPROVED', decided_via = ?, decided_by = ?, override = ?, agent_id = ?, decided_at = ? WHERE id = ?",
+        admin ? "user" : "policy", admin ? u.id : null, admin && i.override ? 1 : 0, agentId, tm, id,
+      );
+    } else {
+      for (const a of admins(ctx))
+        notify(ctx, { userId: a, kind: "hire.pending", dedupeKey: `hire.pending:${id}:${a}`, title: `Agent so'rovi: ${t.name}`, body: justification });
+    }
+    audit(ctx.db, actor(u), "marketplace.hire.request", { type: "agent_hire_request", id }, { templateId: t.id, departmentId: i.departmentId, outcome: c.outcome });
+  });
+  return toRequest(ctx, requestRow(ctx, id));
+}
+
+/** Admin decision. The checks run again now; a request is decided once (the conditional update), so one agent at most. */
+export function approveRequest(ctx: Ctx, u: AuthUser, id: string, override: boolean): HireRequestDto {
+  requireAdmin(u);
+  const r = requestRow(ctx, id);
+  if (r.status !== "PENDING") throw conflict("already_decided", "So'rov allaqachon hal qilingan");
+  const c = checkHire(ctx, { templateId: r.template_id, version: r.template_version, departmentId: r.department_id, requester: "admin", excludeRequestId: r.id });
+  const tm = now();
+  if (c.outcome === "reject") {
+    ctx.db.tx(() => {
+      const done = ctx.db.run(
+        "UPDATE agent_hire_requests SET status = 'REJECTED', decided_via = 'user', decided_by = ?, decision_reason = ?, checks = ?, decided_at = ? WHERE id = ? AND status = 'PENDING'",
+        u.id, reasonOf(c.checks), JSON.stringify(c.checks), tm, id,
+      );
+      if (!done.changes) throw conflict("already_decided", "So'rov allaqachon hal qilingan");
+      tellRequester(ctx, r, false, reasonOf(c.checks));
+      audit(ctx.db, actor(u), "marketplace.hire.reject", { type: "agent_hire_request", id }, { reason: "checks" });
+    });
+    return toRequest(ctx, requestRow(ctx, id));
+  }
+  const soft = failed(c.checks, false);
+  if (soft.length && !override) throw conflict("override_required", `Limitdan tashqari: ${soft.map((x) => x.detail).join("; ")}`);
+  ctx.db.tx(() => {
+    const done = ctx.db.run(
+      "UPDATE agent_hire_requests SET status = 'APPROVED', decided_via = 'user', decided_by = ?, override = ?, checks = ?, decided_at = ? WHERE id = ? AND status = 'PENDING'",
+      u.id, soft.length ? 1 : 0, JSON.stringify(c.checks), tm, id,
+    );
+    if (!done.changes) throw conflict("already_decided", "So'rov allaqachon hal qilingan");
+    const agentId = hireFrom(ctx, u, r, c.grants);
+    ctx.db.run("UPDATE agent_hire_requests SET agent_id = ? WHERE id = ?", agentId, id);
+    tellRequester(ctx, r, true, null);
+    audit(ctx.db, actor(u), "marketplace.hire.approve", { type: "agent_hire_request", id }, { agentId, override: !!soft.length });
+  });
+  return toRequest(ctx, requestRow(ctx, id));
+}
+
+export function rejectRequest(ctx: Ctx, u: AuthUser, id: string, reason: string): HireRequestDto {
+  requireAdmin(u);
+  if (!reason.trim()) throw badRequest("Rad etish sababi kerak");
+  const r = requestRow(ctx, id);
+  ctx.db.tx(() => {
+    const done = ctx.db.run(
+      "UPDATE agent_hire_requests SET status = 'REJECTED', decided_via = 'user', decided_by = ?, decision_reason = ?, decided_at = ? WHERE id = ? AND status = 'PENDING'",
+      u.id, reason.trim(), now(), id,
+    );
+    if (!done.changes) throw conflict("already_decided", "So'rov allaqachon hal qilingan");
+    tellRequester(ctx, r, false, reason.trim());
+    audit(ctx.db, actor(u), "marketplace.hire.reject", { type: "agent_hire_request", id }, { reason: reason.trim() });
+  });
+  return toRequest(ctx, requestRow(ctx, id));
+}
+
+export function cancelRequest(ctx: Ctx, u: AuthUser, id: string): HireRequestDto {
+  const r = requestRow(ctx, id);
+  if (r.requested_by_id !== u.id) throw forbidden();
+  const done = ctx.db.run("UPDATE agent_hire_requests SET status = 'CANCELLED', decided_at = ? WHERE id = ? AND status = 'PENDING'", now(), id);
+  if (!done.changes) throw conflict("already_decided", "So'rov allaqachon hal qilingan");
+  audit(ctx.db, actor(u), "marketplace.hire.cancel", { type: "agent_hire_request", id });
+  return toRequest(ctx, requestRow(ctx, id));
+}
+
+/** Admin: every request; a head: those of their departments. Pending first, newest first. */
+export function listRequests(ctx: Ctx, u: AuthUser): HireRequestDto[] {
+  const own = isAdmin(u) ? null : headDepartments(ctx, u.id);
+  if (own && !own.length) return [];
+  const rows = ctx.db.all<RequestRow>(
+    `SELECT * FROM agent_hire_requests ${own ? `WHERE department_id IN (${own.map(() => "?").join(",")})` : ""}
+     ORDER BY CASE status WHEN 'PENDING' THEN 0 ELSE 1 END, created_at DESC LIMIT 200`,
+    ...(own ?? []),
+  );
+  return rows.map((r) => toRequest(ctx, r));
 }

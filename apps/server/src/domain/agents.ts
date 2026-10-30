@@ -1,4 +1,4 @@
-import type { AgentLifecycle, AgentStatus } from "@sag/shared";
+import type { AgentLifecycle, AgentStatus, TemplateTool } from "@sag/shared";
 import { OPEN_TASK_STATUSES } from "@sag/shared";
 import { json, now } from "../db/db.js";
 import { type Actor, audit } from "../lib/audit.js";
@@ -113,6 +113,8 @@ export interface AgentInput {
   name: string; role: string; departmentId: string; model?: string | null; skills?: string[];
   responsibilities?: string; instructions?: string; connectorIds?: string[];
   maxTokensPerTask?: number | null; maxCostPerTaskUsd?: number | null;
+  /** marketplace hires: grants with their actions (replaces connectorIds), and the template version hired from */
+  grants?: TemplateTool[]; template?: { id: string; version: number };
 }
 
 function checkConnectors(ctx: Ctx, departmentId: string, ids: string[]) {
@@ -125,19 +127,21 @@ function checkConnectors(ctx: Ctx, departmentId: string, ids: string[]) {
 export function createAgent(ctx: Ctx, input: AgentInput, actor: Actor): AgentDto {
   const dep = getDepartment(ctx, input.departmentId);
   if (!dep.isActive) throw badRequest("Bo'lim faol emas");
-  checkConnectors(ctx, dep.id, input.connectorIds ?? []);
+  const grants = input.grants ?? (input.connectorIds ?? []).map((c) => ({ connectorId: c, actions: ["read" as const] }));
+  checkConnectors(ctx, dep.id, grants.map((g) => g.connectorId));
   const t = now();
   let id = `${dep.id}-${slug(input.name) || "agent"}`;
   if (ctx.db.get("SELECT id FROM agents WHERE id = ?", id)) id = uid(dep.id);
   ctx.db.tx(() => {
     ctx.db.run(
-      `INSERT INTO agents (id, name, role, department_id, workstation, model, skills, responsibilities, max_tokens_per_task, max_cost_per_task_usd, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO agents (id, name, role, department_id, workstation, model, skills, responsibilities, max_tokens_per_task, max_cost_per_task_usd,
+         template_id, template_version, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       id, input.name, input.role, dep.id, nextWorkstation(ctx, dep.id), input.model ?? null, JSON.stringify(input.skills ?? []), input.responsibilities ?? "",
-      input.maxTokensPerTask ?? null, input.maxCostPerTaskUsd ?? null, t, t,
+      input.maxTokensPerTask ?? null, input.maxCostPerTaskUsd ?? null, input.template?.id ?? null, input.template?.version ?? null, t, t,
     );
-    for (const c of input.connectorIds ?? [])
-      ctx.db.run("INSERT INTO agent_connector_permissions (agent_id, connector_id, allowed_actions) VALUES (?, ?, '[\"read\"]')", id, c);
+    for (const g of grants)
+      ctx.db.run("INSERT INTO agent_connector_permissions (agent_id, connector_id, allowed_actions) VALUES (?, ?, ?)", id, g.connectorId, JSON.stringify(g.actions));
     if (input.instructions?.trim())
       ctx.db.run(
         "INSERT INTO instructions (id, scope, scope_id, version, title, content, created_by, created_at) VALUES (?, 'AGENT', ?, 1, 'Agent ko''rsatmasi', ?, ?, ?)",

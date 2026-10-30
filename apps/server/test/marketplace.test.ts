@@ -4,7 +4,8 @@ import type { TemplateTool } from "@sag/shared";
 import { addUser, makeApp } from "./helpers.js";
 import { loadUser } from "../src/lib/auth.js";
 import {
-  addVersion, approveVersion, checkHire, createTemplate, getLimits, retireTemplate, setLimit, type VersionInput,
+  addVersion, approveRequest, approveVersion, checkHire, createTemplate, getLimits, listRequests, rejectRequest, requestHire,
+  retireTemplate, setLimit, type VersionInput,
 } from "../src/domain/marketplace.js";
 import { ensureAgentTemplates, groupAgents, type SourceAgent } from "../src/domain/templatesFromAgents.js";
 
@@ -168,5 +169,109 @@ describe("templates and limits", () => {
     expect(() => setLimit(m.deps, m.head(), "marketing", { maxAgents: 1 })).toThrow();
     expect(getLimits(m.deps, m.head()).map((l) => l.departmentId)).toEqual(["marketing"]);
     expect(getLimits(m.deps, m.admin).length).toBeGreaterThan(5);
+  });
+});
+
+// ---------------------------------------------------------------- hiring
+
+const agentsIn = (db: Awaited<ReturnType<typeof market>>["db"], dep: string) =>
+  db.get<{ n: number }>("SELECT COUNT(*) n FROM agents WHERE department_id = ? AND lifecycle <> 'ARCHIVED'", dep)!.n;
+const notes = (db: Awaited<ReturnType<typeof market>>["db"], userId: string, kind: string) =>
+  db.get<{ n: number }>("SELECT COUNT(*) n FROM notifications WHERE user_id = ? AND kind = ?", userId, kind)!.n;
+
+describe("hiring", () => {
+  it("AUTO: a head's fully passing request hires at once", async () => {
+    const m = await market();
+    const [c] = m.depConnectors("marketing");
+    const id = m.approved({ tools: [{ connectorId: c, actions: ["read"] }] });
+    const expected = checkHire(m.deps, { templateId: id, departmentId: "marketing", requester: "head" }).grants;
+    const r = requestHire(m.deps, m.head(), { templateId: id, departmentId: "marketing", justification: "Kontent ko'paydi" });
+    expect(r).toMatchObject({ status: "APPROVED", decidedVia: "policy", override: false });
+    const a = m.db.get<{ template_id: string; template_version: number; workstation: number | null; role: string }>(
+      "SELECT template_id, template_version, workstation, role FROM agents WHERE id = ?", r.agentId,
+    )!;
+    expect(a).toMatchObject({ template_id: id, template_version: 1, role: "Kontent menejer" });
+    expect(a.workstation).not.toBeNull();
+    const grants = m.db.all<{ connector_id: string; allowed_actions: string }>("SELECT connector_id, allowed_actions FROM agent_connector_permissions WHERE agent_id = ?", r.agentId)
+      .map((g) => ({ connectorId: g.connector_id, actions: JSON.parse(g.allowed_actions) }));
+    expect(grants).toEqual(expected);
+    expect(m.db.get<{ content: string }>("SELECT content FROM instructions WHERE scope = 'AGENT' AND scope_id = ?", r.agentId)!.content).toBe("Qisqa yoz");
+  });
+
+  it("soft failure → PENDING; admin approval re-runs checks and needs override", async () => {
+    const m = await market();
+    const id = m.approved();
+    setLimit(m.deps, m.admin, "marketing", { maxAgents: agentsIn(m.db, "marketing") });
+    const r = requestHire(m.deps, m.head(), { templateId: id, departmentId: "marketing", justification: "Kerak" });
+    expect(r.status).toBe("PENDING");
+    expect(notes(m.db, m.admin.id, "hire.pending")).toBe(1);
+    expect(() => approveRequest(m.deps, m.admin, r.id, false)).toThrow(/override|limit/i);
+    const before = agentsIn(m.db, "marketing");
+    const ok = approveRequest(m.deps, m.admin, r.id, true);
+    expect(ok).toMatchObject({ status: "APPROVED", decidedVia: "user", override: true });
+    expect(agentsIn(m.db, "marketing")).toBe(before + 1);
+    expect(notes(m.db, m.headId, "hire.decided")).toBe(1);
+  });
+
+  it("hard failure at decision time rejects", async () => {
+    const m = await market();
+    const id = m.approved();
+    setLimit(m.deps, m.admin, "marketing", { autoTemplates: [] });
+    const r = requestHire(m.deps, m.head(), { templateId: id, departmentId: "marketing", justification: "Kerak" });
+    expect(r.status).toBe("PENDING");
+    retireTemplate(m.deps, m.admin, id);
+    const before = agentsIn(m.db, "marketing");
+    const out = approveRequest(m.deps, m.admin, r.id, true);
+    expect(out.status).toBe("REJECTED");
+    expect(out.decisionReason).toContain("eskirgan");
+    expect(agentsIn(m.db, "marketing")).toBe(before);
+  });
+
+  it("new approved version while pending → rejected as stale", async () => {
+    const m = await market();
+    const id = m.approved();
+    setLimit(m.deps, m.admin, "marketing", { autoTemplates: [] });
+    const r = requestHire(m.deps, m.head(), { templateId: id, departmentId: "marketing", justification: "Kerak" });
+    addVersion(m.deps, m.admin, id, V({ role: "Yangi rol" }));
+    approveVersion(m.deps, m.admin, id, 2);
+    const out = approveRequest(m.deps, m.admin, r.id, true);
+    expect(out.status).toBe("REJECTED");
+    expect(out.decisionReason).toContain("yangilangan");
+    expect(notes(m.db, m.headId, "hire.decided")).toBe(1);
+  });
+
+  it("concurrent approvals create one agent", async () => {
+    const m = await market();
+    const id = m.approved();
+    setLimit(m.deps, m.admin, "marketing", { autoTemplates: [] });
+    const r = requestHire(m.deps, m.head(), { templateId: id, departmentId: "marketing", justification: "Kerak" });
+    const before = agentsIn(m.db, "marketing");
+    approveRequest(m.deps, m.admin, r.id, true);
+    expect(() => approveRequest(m.deps, m.admin, r.id, true)).toThrow(/already|hal qilingan/i);
+    expect(agentsIn(m.db, "marketing")).toBe(before + 1);
+  });
+
+  it("head of two departments requests for both, not a third", async () => {
+    const m = await market();
+    m.db.run("UPDATE departments SET head_user_id = ? WHERE id = 'sales'", m.headId);
+    const id = m.approved({}, []);
+    expect(requestHire(m.deps, m.head(), { templateId: id, departmentId: "marketing", justification: "Kerak" }).status).not.toBe("REJECTED");
+    expect(requestHire(m.deps, m.head(), { templateId: id, departmentId: "sales", justification: "Kerak" }).status).not.toBe("REJECTED");
+    expect(() => requestHire(m.deps, m.head(), { templateId: id, departmentId: "procurement", justification: "Kerak" })).toThrow();
+    // an ordinary employee cannot hire anywhere
+    const emp = loadUser(m.db, (await addUser(m.db, "oddiy", "employee")).id)!;
+    expect(() => requestHire(m.deps, emp, { templateId: id, departmentId: "marketing", justification: "Kerak" })).toThrow();
+  });
+
+  it("rejectRequest needs a reason and notifies the requester", async () => {
+    const m = await market();
+    const id = m.approved();
+    setLimit(m.deps, m.admin, "marketing", { autoTemplates: [] });
+    const r = requestHire(m.deps, m.head(), { templateId: id, departmentId: "marketing", justification: "Kerak" });
+    expect(() => rejectRequest(m.deps, m.admin, r.id, "  ")).toThrow();
+    const out = rejectRequest(m.deps, m.admin, r.id, "Hozir byudjet yo'q");
+    expect(out).toMatchObject({ status: "REJECTED", decisionReason: "Hozir byudjet yo'q", decidedVia: "user" });
+    expect(notes(m.db, m.headId, "hire.decided")).toBe(1);
+    expect(listRequests(m.deps, m.head()).map((x) => x.id)).toContain(r.id);
   });
 });
