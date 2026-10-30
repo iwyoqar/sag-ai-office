@@ -271,8 +271,10 @@ export function checkHire(
     lim.monthly_budget_minor == null ? `oylik narx ${fmt(cost)} (byudjet limiti yo'q)`
       : `${fmt(spent)} + ${fmt(cost)} / ${fmt(lim.monthly_budget_minor)}`);
 
-  add("auto_listed", false, json<string[]>(lim.auto_templates, []).includes(t.id),
-    json<string[]>(lim.auto_templates, []).includes(t.id) ? "bo'lim o'zi yollay oladigan andoza" : "bo'limning avto-ro'yxatida yo'q");
+  // the AUTO list says what a head may hire alone; it does not bind the admin
+  const listed = json<string[]>(lim.auto_templates, []).includes(t.id);
+  add("auto_listed", false, listed || i.requester === "admin",
+    listed ? "bo'lim o'zi yollay oladigan andoza" : i.requester === "admin" ? "avto-ro'yxat admin uchun talab qilinmaydi" : "bo'limning avto-ro'yxatida yo'q");
 
   const risk = v?.risk_level ?? "LOW";
   add("risk", false, risk !== "HIGH", risk === "HIGH" ? "yozish huquqli tool'lar bor (HIGH)" : `xavf: ${risk}`);

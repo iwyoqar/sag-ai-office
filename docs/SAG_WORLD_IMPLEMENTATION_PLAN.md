@@ -327,6 +327,21 @@ tools); AUTO with pre-approved list, APPROVAL (default) with approval card, REST
 Acceptance: each policy × each failing check rejected with a recorded reason; validator re-runs at decision time;
 no hire grants tools outside template ∩ unit installations; no second director; hired agents cannot hire.
 
+**Status (2026-10-30): HQ marketplace ✅** — [spec](superpowers/specs/2026-10-30-agent-marketplace-design.md),
+[plan](superpowers/plans/2026-10-30-agent-marketplace.md).
+- Templates with immutable approved versions, seeded from the 46 HQ agents.
+- Hiring policy: AUTO for department heads. Hard checks reject; soft checks (agent count, monthly budget in UZS,
+  AUTO list, risk) send the request to the admin.
+- The admin can override soft checks. Checks re-run at decision time, and one agent at most per request.
+- Archive-all for the seeded agents.
+- The Marketplace UI.
+
+Still ⏳:
+- store units;
+- the AI Director's `request_hire` tool;
+- Telegram approval cards;
+- real AI spend against budgets.
+
 ## W5 — Cross-unit requests
 
 `unit_requests`, events, routes, links; the five kinds with schemas; human accept where required; requester task

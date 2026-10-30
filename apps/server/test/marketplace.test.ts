@@ -118,6 +118,16 @@ describe("checks", () => {
     expect(r.outcome).toBe("reject");
   });
 
+  it("the AUTO list binds heads only: the admin hires an unlisted template without an override", async () => {
+    const m = await market();
+    const id = m.approved();
+    setLimit(m.deps, m.admin, "marketing", { autoTemplates: [] });
+    const c = checkHire(m.deps, { templateId: id, departmentId: "marketing", requester: "admin" });
+    expect(c.checks.find((x) => x.id === "auto_listed")!.ok).toBe(true);
+    const r = requestHire(m.deps, m.admin, { templateId: id, departmentId: "marketing", justification: "Admin yollaydi" });
+    expect(r).toMatchObject({ status: "APPROVED", override: false });
+  });
+
   it("max_agents 0 sends every head request to the admin; null never blocks", async () => {
     const m = await market();
     const id = m.approved();
