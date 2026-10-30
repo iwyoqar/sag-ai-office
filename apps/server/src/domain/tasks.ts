@@ -373,6 +373,11 @@ export function recoverExpiredLeases(ctx: Ctx): string[] {
       "UPDATE tasks SET status = 'QUEUED', lease_owner = NULL, lease_until = NULL, stage = 'Qayta navbatga qo''yildi (lease tugadi)', updated_at = ? WHERE id = ? AND status = 'IN_PROGRESS'",
       t, r.id,
     );
+    // the worker that held the lease is gone: its in-flight AI call will never finish, so close it in the log
+    ctx.db.run(
+      "UPDATE agent_runs SET status = 'failed', error = 'uzildi (ishchi jarayon to''xtadi)', finished_at = ? WHERE task_id = ? AND status = 'running'",
+      t, r.id,
+    );
     ctx.bus.emit("task.status", { taskId: r.id, agentId: r.agent_id, departmentId: r.department_id }, { from: "IN_PROGRESS", to: "QUEUED", reason: "lease expired" }, null);
   }
   return rows.map((r) => r.id);

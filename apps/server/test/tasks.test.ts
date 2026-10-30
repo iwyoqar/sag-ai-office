@@ -170,7 +170,10 @@ describe("worker claim (parallel safety)", () => {
     const { deps } = await makeApp();
     const t = createTask(deps, { title: "x", agentId: "it-aziz" }, SYSTEM);
     claimNextTask(deps, "w", -1000); // already expired
+    // the crashed worker left an AI call open in the log
+    deps.db.run("INSERT INTO agent_runs (id, task_id, agent_id, correlation_id, model, status, started_at) VALUES ('run_x', ?, 'it-aziz', 'c', 'm', 'running', ?)", t.id, new Date().toISOString());
     expect(recoverExpiredLeases(deps)).toEqual([t.id]);
     expect(deps.db.get<{ status: string }>("SELECT status FROM tasks WHERE id = ?", t.id)!.status).toBe("QUEUED");
+    expect(deps.db.get("SELECT status FROM agent_runs WHERE id = 'run_x'")).toEqual({ status: "failed" });
   });
 });

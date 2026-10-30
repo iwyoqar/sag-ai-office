@@ -127,3 +127,20 @@ A task or profile the caller may not see answers **404** (no existence leak); a 
 | POST | `/work/:id/{assign,accept,decline,start,progress,submit,approve,request-changes,block,unblock,cancel,comments,attachments}` | workflow actions |
 | GET | `/work/:id/attachments/:attId` | always `application/octet-stream` download |
 | GET / POST | `/notifications`, `/notifications/read` | own notifications only |
+
+## Connectors & agent actions (2026-10-30)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/connectors/status` | real state per connector, tools (read/write), setup still needed; Google account |
+| POST | `/connectors/:id/verify` | live credential check (`brain:manage`) |
+| GET | `/connectors/activity` | agent action log (tool, agent, task, status) |
+| GET | `/connectors/google/start` | redirect to Google consent (`brain:manage`, needs `SECRETS_KEY`) |
+| GET | `/connectors/google/callback` | OAuth callback; stores the refresh token encrypted |
+| DELETE | `/connectors/google` | disconnect |
+| PUT | `/agents/:id/connectors` | `{ connectorIds, writeIds? }` — read for all listed, write only for `writeIds` |
+| POST | `/approvals/:id/decide` | for `tool:*` approvals: approve runs the action once and returns `{ execution }` |
+
+Read tools run immediately; write tools (send e-mail, post message, append rows, create event/doc/page, create an
+employee task) create an approval and run only after a person with `tasks:manage` approves that exact call.
+Telegram `/approve` decides result approvals only; agent actions are approved in the web app.

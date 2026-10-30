@@ -16,7 +16,7 @@ Status legend: ✅ done & verified · 🟡 partial · ⬜ not started
 | 3 — All floor interiors | extend the validated kit to B, 1–4, 6 with department layouts | ✅ | generated per-floor plans (`zonePlan`) with department signature furniture; `?simple` keeps the old zone view |
 | 4 — Backend & agent runtime | DB, auth, agents, tasks, lifecycle, SSE, AI runner (Gemini; provider interface ready for Claude), usage, chat, task UI | ✅ | [backend](reports/2026-10-29-core-backend.md) · [runtime](reports/2026-10-29-agent-runtime.md) |
 | 5 — Orchestrator & collaboration | decomposition, DAG, parallel runs, messages, aggregation | ✅ | Director plans → subtasks → handoffs → final; approvals; task limits (tokens, cost, time, AI calls, subtasks) with UI; handoffs drawn as 3D arcs |
-| 6 — The Brain | knowledge + RAG, instructions, agent mgmt UI, connectors UI | ✅ (external connectors need credentials) | PDF/DOCX/XLSX/CSV/TXT/MD ingest, versioning, department-scoped hybrid search (BM25 + Gemini embeddings, RRF, full-text fallback), instructions, memory approval, users & roles, connectors registry |
+| 6 — The Brain | knowledge + RAG, instructions, agent mgmt UI, connectors UI, agent actions | ✅ | company profile + knowledge from the SAG Holding presentation and the factory report (`docs/company`); agent tool calling (Gemini functions) with per-call approval for write actions; internal tools, web search, Telegram post; Gmail/Drive/Sheets/Calendar/Slack/Notion ready, active once credentials are set; CRM/ERP/accounting/ads etc. wait for the product choice — [report](reports/2026-10-30-phase6-brain.md) |
 | 7 — Telegram | Bot API, group, commands, idempotency, notifications, approvals | ✅ | long polling (dev) or webhook with secret header (prod); commands, approvals, notifications, admin/allowed IDs in The Brain |
 | 8 — Calendar & analytics | routines scheduler, calendar views, usage | ✅ | RRULE routines (Asia/Tashkent), server-side scheduler, month/week/day calendar, stats |
 | 8b — Human employees & workflow | employee accounts, org hierarchy, scoped/delegable permissions, human task lifecycle with review, subtasks + parent aggregation, workload indicator, notifications, People UI, employees in 3D | ✅ | [plan](HUMAN_EMPLOYEES_PLAN.md) · [report](reports/2026-10-30-human-employees.md) · [workload](WORKLOAD.md) |
@@ -62,7 +62,7 @@ line-of-sight smoothing; agents walk between approach points and sit/stand with 
 seeded in roster order, next free index on hire/transfer, freed on archive.
 
 ## Still open (outside Phase 9)
-- Gmail / Drive / Sheets / Calendar / Slack / Notion / CRM / ERP connectors: registry and UI exist; each needs the company's OAuth app or API credentials before it can be wired.
+- Connector credentials: Google OAuth client + `SECRETS_KEY`, Slack and Notion tokens (code ready); CRM/ERP/accounting/ads/analytics/recruiting: product choice needed (e.g. Bitrix24, amoCRM, 1C, SAP).
 - Company profile text ("Kompaniya haqida") and Telegram admin user IDs: waiting for the owner.
 - People: personal Telegram notices, calendar/availability (see the 2026-10-30 report).
 
