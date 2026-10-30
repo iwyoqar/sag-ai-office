@@ -14,6 +14,8 @@ export interface ToolEnv {
   ctx: Ctx;
   agentId: string;
   departmentId: string | null;
+  /** the agent's business unit: every internal read is limited to it */
+  unitId: string;
   taskId: string | null;
   correlationId: string;
   google: GoogleAuth;
@@ -56,7 +58,9 @@ const searchKnowledgeTool = tool({
   schema: z.object({ query: z.string().trim().min(2).max(300) }),
   summary: (a) => `Bilimlar bazasidan qidirish: “${a.query}”`,
   async run(env, a) {
-    const { hits, mode } = await retrieve(env.ctx, env.embedder, a.query, { departmentId: env.departmentId, limit: 5 });
+    const { hits, mode } = await retrieve(env.ctx, env.embedder, a.query, {
+      unitId: env.unitId, departmentId: env.unitId === "hq" ? env.departmentId : undefined, limit: 5,
+    });
     return { mode, results: hits.map((h) => ({ source: h.title, text: clip(h.content, 900) })) };
   },
 });
@@ -410,5 +414,7 @@ export const TOOLS: ToolDef[] = [
 
 /** Internal read tools every agent has (they only read company data the agent may already see, or propose). */
 export const ALWAYS_ON = new Set(["search_company_knowledge", "list_company_people", "propose_company_memory"]);
+/** internal tools agents of other units get: their own unit's documents (people and HQ memory stay HQ's) */
+export const UNIT_INTERNAL = new Set(["search_company_knowledge"]);
 
 export const toolByName = (name: string) => TOOLS.find((t) => t.name === name);

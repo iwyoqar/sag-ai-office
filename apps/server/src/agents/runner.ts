@@ -505,15 +505,21 @@ export class AgentRunner {
   }
 
   // ---------------------------------------------------------------------------
-  /** Company documents (only what the agent's department may see) + approved memory for this task. */
+  /**
+   * Documents of the task's own business unit (knowledge/scope.ts: HQ → HQ, branch → own + HQ documents shared with
+   * branches, franchise → own only) for the agent's department, plus approved memory (HQ's only — other units have
+   * no memory store yet).
+   */
   private async ground(task: TaskDto, extraQuery?: string): Promise<{ grounding: Grounding; hits: KnowledgeHit[] }> {
-    // Company documents and memory are HQ's; agents of other business units work without them (no unit knowledge base yet).
-    if (task.businessUnitId !== "hq") return { hits: [], grounding: {} };
-    const dept = this.ctx.db.get<{ department_id: string }>("SELECT department_id FROM agents WHERE id = ?", task.agentId)?.department_id ?? null;
+    const a = this.ctx.db.get<{ department_id: string; business_unit_id: string }>("SELECT department_id, business_unit_id FROM agents WHERE id = ?", task.agentId);
+    // the agent works for one unit; a task outside it (should not exist — DB triggers) gets no documents at all
+    if (!a || a.business_unit_id !== task.businessUnitId) return { hits: [], grounding: {} };
+    const hq = task.businessUnitId === "hq";
     const { hits } = await retrieve(this.ctx, embedderOf(this.llm), `${extraQuery ?? task.title} ${task.description}`, {
-      departmentId: dept, limit: 5, onError: (e) => this.o.log?.("semantic search fell back to full-text", { err: (e as Error).message }),
+      unitId: task.businessUnitId, departmentId: hq ? a.department_id : undefined, limit: 5,
+      onError: (e) => this.o.log?.("semantic search fell back to full-text", { err: (e as Error).message }),
     });
-    return { hits, grounding: { docs: hits.map((h) => ({ title: h.title, content: h.content })), memory: approvedMemory(this.ctx, dept) } };
+    return { hits, grounding: { docs: hits.map((h) => ({ title: h.title, content: h.content })), ...(hq ? { memory: approvedMemory(this.ctx, a.department_id) } : {}) } };
   }
 
   private priorResults(task: TaskDto): PriorResult[] {

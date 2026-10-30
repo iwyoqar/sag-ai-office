@@ -11,7 +11,8 @@ import { uid } from "../lib/ids.js";
 import { embedderOf } from "../knowledge/semantic.js";
 import { ConnectorError, GoogleAuth } from "./google.js";
 import { SecretStore, parseKey } from "./secrets.js";
-import { ALWAYS_ON, TOOLS, toolByName, type ToolDef, type ToolEnv } from "./tools.js";
+import { ALWAYS_ON, TOOLS, UNIT_INTERNAL, toolByName, type ToolDef, type ToolEnv } from "./tools.js";
+import { ensureHqInstallations } from "./installations.js";
 
 export interface ConnectorConfig {
   /** public base URL of the web app (OAuth redirect goes to <publicUrl>/api/connectors/google/callback) */
@@ -99,6 +100,7 @@ export class ConnectorHub {
 
   /** Mirror the real state into the connectors table (shown everywhere in the UI). Telegram keeps its own check. */
   sync() {
+    ensureHqInstallations(this.ctx.db);
     for (const c of this.status()) {
       if (c.id === "telegram" || !c.implemented) continue;
       this.ctx.db.run(
@@ -107,17 +109,29 @@ export class ConnectorHub {
         now(), c.connected ? null : c.reason, c.id,
       );
     }
+    // credentials are server-wide today, so every unit's installation of a connector shares its health
+    this.ctx.db.run(
+      `UPDATE connector_installations SET status = (SELECT c.status FROM connectors c WHERE c.id = connector_id),
+         last_error = (SELECT c.last_error FROM connectors c WHERE c.id = connector_id), last_health_at = ?`,
+      now(),
+    );
   }
 
   // ---------------------------------------------------------------- per agent
 
-  /** Tools this agent may use right now: always-on internal reads + granted connectors that are connected. */
+  /**
+   * Tools this agent may use right now: internal reads (HQ: documents, people, memory; other units: their own
+   * documents only) + granted connectors that are installed and enabled in the agent's own unit and connected.
+   */
   toolsFor(agentId: string): ToolDef[] {
     const a = this.ctx.db.get<{ department_id: string; lifecycle: string; business_unit_id: string }>("SELECT department_id, lifecycle, business_unit_id FROM agents WHERE id = ?", agentId);
     if (!a || a.lifecycle !== "ACTIVE") return [];
-    // Connectors and the internal tools (company documents, people, memory) belong to HQ. Agents of other units get
-    // none until per-unit connector installations exist (SAG World W2).
-    if (a.business_unit_id !== "hq") return [];
+    const hq = a.business_unit_id === "hq";
+    const installed = new Set(
+      this.ctx.db.all<{ connector_id: string }>(
+        "SELECT connector_id FROM connector_installations WHERE business_unit_id = ? AND enabled = 1", a.business_unit_id,
+      ).map((r) => r.connector_id),
+    );
     const grants = new Map(
       this.ctx.db.all<{ connector_id: string; allowed_actions: string }>(
         `SELECT p.connector_id, p.allowed_actions FROM agent_connector_permissions p
@@ -131,7 +145,8 @@ export class ConnectorHub {
       return up.get(id)!;
     };
     return TOOLS.filter((t) => {
-      if (ALWAYS_ON.has(t.name)) return true;
+      if (ALWAYS_ON.has(t.name)) return hq || UNIT_INTERNAL.has(t.name);
+      if (!installed.has(t.connector)) return false;
       const g = grants.get(t.connector);
       return !!g && g.includes(t.kind) && connected(t.connector);
     });
@@ -147,9 +162,10 @@ export class ConnectorHub {
 
   private env(agentId: string, taskId: string | null, correlationId: string, approver?: AuthUser): ToolEnv {
     const llm = this.deps.llm();
-    const dep = this.ctx.db.get<{ department_id: string }>("SELECT department_id FROM agents WHERE id = ?", agentId)?.department_id ?? null;
+    const ag = this.ctx.db.get<{ department_id: string; business_unit_id: string }>("SELECT department_id, business_unit_id FROM agents WHERE id = ?", agentId);
+    const dep = ag?.department_id ?? null;
     return {
-      ctx: this.ctx, agentId, departmentId: dep, taskId, correlationId, google: this.google, http: this.http,
+      ctx: this.ctx, agentId, departmentId: dep, unitId: ag?.business_unit_id ?? "none", taskId, correlationId, google: this.google, http: this.http,
       tokens: { slack: this.cfg.slackToken, notion: this.cfg.notionToken },
       llm: llm ? { searchWeb: llm.searchWeb?.bind(llm), mode: llm.mode } : null,
       telegram: this.deps.telegram() ?? null, embedder: embedderOf(llm), approver,

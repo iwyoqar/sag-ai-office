@@ -2,7 +2,21 @@ import { DEFAULT_ROLE_PERMISSIONS, PERMISSIONS, ROLES } from "@sag/shared";
 import { type Db, now } from "./db.js";
 import { AGENTS, CONNECTORS, DEPARTMENTS, FLOORS, GLOBAL_INSTRUCTIONS } from "./seedData.js";
 import { hashPassword } from "../lib/passwords.js";
+import { ensureHqInstallations } from "../connectors/installations.js";
 import { slug, token, uid } from "../lib/ids.js";
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+/**
+ * A generated first-boot admin password goes to a file next to the database (data/ is git-ignored, owner-only
+ * permissions where the OS supports them) — never to logs or stdout, which hosts keep and share.
+ */
+export function writeInitialAdminPassword(databasePath: string, password: string): string {
+  const file = join(dirname(databasePath), "initial-admin-password.txt");
+  const text = ["login: admin", `password: ${password}`, "", "Change it after the first sign-in, then delete this file.", ""].join("\n");
+  writeFileSync(file, text, { mode: 0o600 });
+  return file;
+}
 
 export interface SeedResult {
   seeded: boolean;
@@ -27,6 +41,7 @@ export async function seed(db: Db, opts: { adminPassword?: string } = {}): Promi
     for (const f of FLOORS) db.run("INSERT INTO floors (id, level, title) VALUES (?, ?, ?)", f.id, f.level, f.title);
     for (const c of CONNECTORS)
       db.run("INSERT INTO connectors (id, name, kind, created_at) VALUES (?, ?, ?, ?)", c.id, c.name, c.kind, t);
+    ensureHqInstallations(db); // every connector belongs to HQ until a unit gets its own installation
 
     DEPARTMENTS.forEach((d, i) => {
       db.run(

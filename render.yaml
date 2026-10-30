@@ -28,6 +28,9 @@ services:
       # client IP for login throttling/audit: trust only Render's load balancer (one hop), never every sender
       - key: TRUSTED_PROXIES
         value: "1"
+      # the site's origin: OAuth redirects and the CSRF Origin check (state-changing requests must come from here)
+      - key: PUBLIC_URL
+        value: https://sag-ai-office.vercel.app
       - key: LOG_LEVEL
         value: info
       - key: LLM_PROVIDER

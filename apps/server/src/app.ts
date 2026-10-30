@@ -27,6 +27,7 @@ import type { AgentRunner } from "./agents/runner.js";
 import { ConnectorHub, type ConnectorConfig } from "./connectors/hub.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { randomUUID } from "node:crypto";
+import { checkOrigin, parseOrigins } from "./lib/origin.js";
 
 export const SESSION_COOKIE = "sag_session";
 
@@ -65,6 +66,8 @@ export interface AppOptions {
   connectors?: ConnectorConfig;
   /** HTTP client for connector calls (tests inject a fake) */
   http?: typeof fetch;
+  /** origins allowed to send state-changing requests (CSRF protection); default: the connectors' public URL */
+  allowedOrigins?: string[];
 }
 
 export interface Deps extends Ctx {
@@ -123,6 +126,16 @@ export async function buildApp(opts: AppOptions) {
     if (req.user) touchActivity(deps, req.user.id);
     // Company-wide routes are HQ's. Accounts of other units (stores) work only through their unit routes.
     if (req.user && req.user.homeUnitId !== HQ_UNIT && !UNIT_ACCOUNT_ROUTES.some((p) => req.url.startsWith(p))) throw forbidden();
+  });
+  // CSRF: state-changing requests only from the app's own origin (lib/origin.ts). Runs before any handler.
+  const origins = parseOrigins(opts.allowedOrigins ?? [opts.connectors?.publicUrl ?? "http://localhost:5173"]);
+  app.addHook("onRequest", async (req) => {
+    const h = (n: string) => { const v = req.headers[n]; return Array.isArray(v) ? v[0] : v; };
+    const r = checkOrigin({ method: req.method, url: req.url, origin: h("origin"), referer: h("referer"), secFetchSite: h("sec-fetch-site") }, origins);
+    if (!r.ok) {
+      req.log.warn({ reason: r.reason, origin: h("origin") ?? null }, "cross-origin request refused");
+      throw new HttpError(403, "bad_origin", "So'rov ilovaning o'z sahifasidan kelmadi");
+    }
   });
   // On HQ routes an id that belongs to another unit does not exist (no cross-unit reads or writes by id).
   app.addHook("preHandler", async (req) => {

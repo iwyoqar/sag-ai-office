@@ -89,11 +89,11 @@ describe("knowledge base", () => {
     const v2 = await ingestDocument(deps, { filename: "narxlar.md", data: enc("Gilam Lux narxi 159 dollar."), departmentId: null }, admin);
     expect(v2.version).toBe(2);
     expect(listDocuments(deps)).toHaveLength(1);
-    const hits = searchKnowledge(deps, "Gilam Lux narxi");
+    const hits = searchKnowledge(deps, "Gilam Lux narxi", { unitId: "hq" });
     expect(hits).toHaveLength(1);
     expect(hits[0].content).toContain("159"); // old version no longer searchable
     removeDocument(deps, v2.id, admin);
-    expect(searchKnowledge(deps, "Gilam Lux")).toHaveLength(0);
+    expect(searchKnowledge(deps, "Gilam Lux", { unitId: "hq" })).toHaveLength(0);
     expect(deps.db.get<{ n: number }>("SELECT COUNT(*) n FROM knowledge_documents")!.n).toBe(2); // history kept
   });
 
@@ -101,8 +101,8 @@ describe("knowledge base", () => {
     const { deps } = await makeApp();
     await ingestDocument(deps, { filename: "maosh.txt", data: enc("Maosh jadvali: maxfiy byudjet"), departmentId: "finance" }, admin);
     await ingestDocument(deps, { filename: "brand.txt", data: enc("Brend uslubi: byudjet tejamkor ohang"), departmentId: null }, admin);
-    expect(searchKnowledge(deps, "byudjet", { departmentId: "marketing" }).map((h) => h.title)).toEqual(["brand"]);
-    expect(searchKnowledge(deps, "byudjet", { departmentId: "finance" })).toHaveLength(2);
+    expect(searchKnowledge(deps, "byudjet", { unitId: "hq", departmentId: "marketing" }).map((h) => h.title)).toEqual(["brand"]);
+    expect(searchKnowledge(deps, "byudjet", { unitId: "hq", departmentId: "finance" })).toHaveLength(2);
   });
 
   it("semantic search: embeds chunks, fuses with BM25, respects scope, falls back on failure", async () => {
@@ -116,15 +116,15 @@ describe("knowledge base", () => {
     expect(knowledgeStatus(deps, embedder.model).semantic).toMatchObject({ embedded: 2, pending: 0 });
 
     // "uslubi ohang" has no exact FTS overlap with "samimiy" but shares words semantically (mock = bag of words)
-    const r = await retrieve(deps, embedder, "brend ohang uslubi", { departmentId: "marketing" });
+    const r = await retrieve(deps, embedder, "brend ohang uslubi", { unitId: "hq", departmentId: "marketing" });
     expect(r.mode).toBe("hybrid");
     expect(r.hits.map((h) => h.title)).toEqual(["brand"]); // finance doc never leaks to marketing
-    const fin = await retrieve(deps, embedder, "maxfiy byudjet", { departmentId: "finance" });
+    const fin = await retrieve(deps, embedder, "maxfiy byudjet", { unitId: "hq", departmentId: "finance" });
     expect(fin.hits[0].title).toBe("maosh");
 
     const broken: Embedder = { model: embedder.model, embed: async () => { throw new Error("429"); } };
     const errors: unknown[] = [];
-    const fb = await retrieve(deps, broken, "tejamkor ohang", { departmentId: null, onError: (e) => errors.push(e) });
+    const fb = await retrieve(deps, broken, "tejamkor ohang", { unitId: "hq", departmentId: null, onError: (e) => errors.push(e) });
     expect(fb.mode).toBe("fulltext");
     expect(fb.hits.map((h) => h.title)).toEqual(["brand"]);
     expect(errors).toHaveLength(1);
@@ -144,7 +144,7 @@ describe("knowledge base", () => {
       headers: { cookie: `${cookie.name}=${cookie.value}`, "content-type": `multipart/form-data; boundary=${boundary}` },
     });
     expect(up.statusCode).toBe(201);
-    expect(JSON.parse(up.body).document).toMatchObject({ departmentId: "marketing", title: "kontent" });
+    expect(JSON.parse(up.body).document).toMatchObject({ unitId: "hq", departmentId: "marketing", title: "kontent" });
     const bad = await app.inject({
       method: "POST", url: "/api/knowledge", payload: body("virus.exe", "MZ"),
       headers: { cookie: `${cookie.name}=${cookie.value}`, "content-type": `multipart/form-data; boundary=${boundary}` },

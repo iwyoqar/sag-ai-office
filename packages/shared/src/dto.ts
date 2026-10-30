@@ -118,7 +118,11 @@ export interface TaskDto {
 export type BusinessType = "SAG_BRANCH" | "INDEPENDENT_DEALER" | "SUBSIDIARY";
 export type OwnershipModel = "SAG_OWNED" | "FRANCHISE" | "INDEPENDENT" | "GROUP_OWNED";
 export type UnitRole = "unit_director" | "unit_manager" | "unit_staff";
-export type DataClass = "people_counts" | "employees" | "tasks" | "kpi" | "ai_usage";
+export type DataClass = "people_counts" | "employees" | "tasks" | "kpi" | "ai_usage" | "budget" | "knowledge";
+
+/** What a business unit does — independent of its ownership type (a franchise may be RETAIL and DEALER). */
+export const BUSINESS_FUNCTIONS = ["RETAIL", "WAREHOUSE", "FACTORY", "OFFICE", "LOGISTICS", "DEALER", "HEADQUARTERS"] as const;
+export type BusinessFunction = (typeof BUSINESS_FUNCTIONS)[number];
 export type ShareLevel = "AGGREGATE" | "DETAIL";
 
 /** Network-level classification of a unit: never contains confidential unit data. */
@@ -130,6 +134,7 @@ export interface UnitCardDto {
   geo: { lat: number; lng: number } | null;
   address: string | null;
   isHeadOffice: boolean;
+  functions: BusinessFunction[];
 }
 
 export interface NetworkDto {
@@ -169,8 +174,36 @@ export interface UnitOverviewDto {
   restricted: string[];
 }
 
+export type AgreementAccess = "READ" | "READ_WRITE";
+export type AgreementStatus = "PENDING" | "SCHEDULED" | "ACTIVE" | "EXPIRED" | "REVOKED";
 export interface AgreementDto {
   id: string; unitId: string; granteeNodeId: string; dataClasses: DataClass[]; level: ShareLevel;
-  validFrom: string; validTo: string | null; contractRef: string; active: boolean;
+  /** READ_WRITE is only meaningful for tasks (the grantee may assign work into the unit) */
+  access: AgreementAccess;
+  validFrom: string; validTo: string | null; contractRef: string; active: boolean; status: AgreementStatus;
   approvedAt: string | null; revokedAt: string | null; createdAt: string;
+}
+
+// ---------- unit budgets (UZS, integer minor units; amounts travel as decimal strings) ----------
+export type BudgetCategory = "OPERATIONS" | "AI" | "MARKETING" | "PAYROLL" | "INVENTORY" | "OTHER";
+export type BudgetStatus = "DRAFT" | "SUBMITTED" | "APPROVED" | "REJECTED" | "CLOSED";
+export interface BudgetDto {
+  id: string; unitId: string; period: string; category: BudgetCategory; currency: "UZS"; status: BudgetStatus;
+  /** exact amounts as decimal strings in UZS ("1250000.00"); never floating-point numbers */
+  allocated: string; spent: string; remaining: string;
+  note: string; createdBy: string; submittedAt: string | null; decidedBy: string | null; decidedAt: string | null; decisionReason: string | null;
+}
+export interface BudgetEntryDto {
+  id: string; budgetId: string; amount: string; originalAmount: string; originalCurrency: string;
+  fxRate: string | null; fxRateDate: string | null; fxSource: string | null; description: string; occurredOn: string;
+  recordedBy: string; createdAt: string;
+}
+/** aggregate view (AGGREGATE sharing): totals only */
+export interface BudgetSummaryDto { period: string; category: BudgetCategory; status: BudgetStatus; allocated: string; spent: string; remaining: string }
+
+// ---------- connectors per unit (credentials are never part of any DTO) ----------
+export interface ConnectorInstallationDto {
+  id: string; unitId: string; connectorId: string; name: string; enabled: boolean;
+  status: "disconnected" | "connected" | "error"; credentialScope: "NONE" | "SERVER_ENV" | "SECRET_STORE";
+  lastHealthAt: string | null; lastError: string | null;
 }

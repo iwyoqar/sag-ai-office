@@ -21,6 +21,8 @@ export const config = {
   trustProxy: trustedProxiesFrom(process.env),
   adminPassword: process.env.ADMIN_PASSWORD || undefined,
   logLevel: process.env.LOG_LEVEL ?? "info",
+  /** extra origins allowed to send state-changing requests (CSRF), comma-separated; PUBLIC_URL is always allowed */
+  allowedOrigins: [process.env.PUBLIC_URL || "http://localhost:5173", ...(process.env.ALLOWED_ORIGINS ?? "").split(",")].map((s) => s.trim()).filter(Boolean),
   llm: {
     /** gemini | mock (mock = test double, clearly labelled) */
     provider: (process.env.LLM_PROVIDER ?? "gemini").toLowerCase(),

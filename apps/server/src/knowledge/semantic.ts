@@ -4,6 +4,7 @@ import type { Ctx } from "../domain/context.js";
 import { now } from "../db/db.js";
 import type { LlmClient } from "../llm/types.js";
 import { searchKnowledge, type KnowledgeHit } from "./service.js";
+import { unitDocScope } from "./scope.js";
 
 export interface Embedder {
   model: string;
@@ -104,22 +105,25 @@ export async function retrieve(
   ctx: Ctx,
   embedder: Embedder | null,
   text: string,
-  opts: { departmentId?: string | null; limit?: number; timeoutMs?: number; onError?: (e: unknown) => void } = {},
+  /** unitId is required: every search runs inside one unit's namespace (knowledge/scope.ts) */
+  opts: { unitId: string; departmentId?: string | null; limit?: number; timeoutMs?: number; onError?: (e: unknown) => void },
 ): Promise<{ hits: KnowledgeHit[]; mode: SearchMode }> {
   const limit = opts.limit ?? 6;
-  const lexical = searchKnowledge(ctx, text, { departmentId: opts.departmentId, limit: limit * 3 });
+  const lexical = searchKnowledge(ctx, text, { unitId: opts.unitId, departmentId: opts.departmentId, limit: limit * 3 });
   if (!embedder || !text.trim()) return { hits: lexical.slice(0, limit), mode: "fulltext" };
   let semantic: KnowledgeHit[];
   try {
     const q = await queryVector(embedder, text, opts.timeoutMs ?? 8000);
     const scope = opts.departmentId === undefined ? "" : "AND COALESCE(d.department_id, '') IN ('', ?)";
+    const unit = unitDocScope(ctx, opts.unitId);
     const params: string[] = [embedder.model];
     if (opts.departmentId !== undefined) params.push(opts.departmentId ?? "");
+    params.push(...unit.params);
     const rows = ctx.db.all<{ chunkId: string; documentId: string; title: string; content: string; vector: Uint8Array }>(
       `SELECT c.id chunkId, c.document_id documentId, d.title, c.content, e.vector
        FROM knowledge_embeddings e JOIN knowledge_chunks c ON c.id = e.chunk_id
        JOIN knowledge_documents d ON d.id = c.document_id AND d.is_active = 1
-       WHERE e.model = ? ${scope}`,
+       WHERE e.model = ? ${scope} AND ${unit.sql}`,
       ...params,
     );
     semantic = rows

@@ -155,6 +155,26 @@ describe("worker lifecycle: stop, restart, crash", () => {
     expect(getTask(deps, dead.id).status).toBe("DONE");
   });
 
+  it("a second worker starting next to a live one leaves its leased work alone; duplicate claims get nothing", async () => {
+    const { deps } = await makeApp();
+    const llm = new MockLlm(untilAborted);
+    // a realistic heartbeat: "dead" means silent for 3 beats, which a busy test machine must not fake
+    const a = new AgentRunner(deps, llm, pricing, { ...base, heartbeatMs: 1000 });
+    a.start();
+    const t = createTask(deps, { title: "Band", agentId: "it-aziz" }, SYSTEM);
+    a.tick();
+    await vi.waitFor(() => expect(llm.calls).toHaveLength(1));
+    const b = new AgentRunner(deps, new MockLlm("## B"), pricing, { ...base, heartbeatMs: 1000 });
+    b.start(); // startup recovery must not treat the live worker as dead
+    expect(getTask(deps, t.id).status).toBe("IN_PROGRESS");
+    expect(b.tick()).toHaveLength(0); // the agent is busy and its task is leased
+    expect(claimNextTask(deps, "w-intruder", 60_000)).toBeNull(); // a raw duplicate claim gets nothing either
+    expect(runsOf(deps, t.id)).toHaveLength(1);
+    await b.stop();
+    await a.stop();
+    expect(getTask(deps, t.id).status).toBe("QUEUED"); // handed back by the graceful stop, ready for the next worker
+  });
+
   it("a task that keeps crashing its worker fails after its attempts instead of looping", async () => {
     const { deps } = await makeApp();
     const t = createTask(deps, { title: "Zaharli vazifa", agentId: "it-aziz", maxAttempts: 2 }, SYSTEM);

@@ -64,8 +64,9 @@ export const runtimeRoutes = (d: Deps) => async (app: FastifyInstance) => {
       "Katta hajmli ish so'ralsa, uni vazifa (task) sifatida yaratishni tavsiya qil.",
     ]);
     // Company documents (only this agent's department scope) and approved memory, passed as data.
-    const { hits } = await retrieve(d, embedderOf(d.llm.client), message, { departmentId: agent.department_id, limit: 4 });
-    const mem = approvedMemory(d, agent.department_id, 8);
+    const unitId = d.db.get<{ u: string }>("SELECT business_unit_id u FROM agents WHERE id = ?", id)!.u;
+    const { hits } = await retrieve(d, embedderOf(d.llm.client), message, { unitId, departmentId: unitId === "hq" ? agent.department_id : undefined, limit: 4 });
+    const mem = unitId === "hq" ? approvedMemory(d, agent.department_id, 8) : []; // HQ memory never reaches other units
     const grounding = [
       ...mem.map((m) => `<context type="kompaniya xotirasi">[${m.kind}] ${m.content.replace(/<\/?(context|document)>/gi, "")}</context>`),
       ...hits.map((h) => `<document source="${h.title.replace(/"/g, "'")}">${h.content.replace(/<\/?(context|document)>/gi, "")}</document>`),

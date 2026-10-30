@@ -112,3 +112,49 @@ describe("scheduler", () => {
     expect((await api.delete(`/api/routines/${r.id}`)).status).toBe(200);
   });
 });
+
+describe("routine runs are atomic", () => {
+  it("nested transactions are savepoints: a caught inner failure leaves none of its writes", async () => {
+    const { db } = await makeApp();
+    db.tx(() => {
+      db.run("INSERT INTO settings (key, value, updated_at) VALUES ('outer', '1', 'x')");
+      try {
+        db.tx(() => {
+          db.run("INSERT INTO settings (key, value, updated_at) VALUES ('inner', '1', 'x')");
+          throw new Error("inner failed half-way");
+        });
+      } catch { /* the caller handles it */ }
+    });
+    expect(db.get("SELECT 1 FROM settings WHERE key = 'outer'")).toBeTruthy();
+    expect(db.get("SELECT 1 FROM settings WHERE key = 'inner'")).toBeUndefined();
+  });
+
+  it("a task that cannot be created is recorded as a failed run, with no task and no half-written rows", async () => {
+    const { deps, db } = await makeApp();
+    const r = createRoutine(deps, { name: "Kunlik hisobot", agentId: "finance-nilufar", rrule: "FREQ=DAILY;BYHOUR=9" }, SYSTEM, new Date("2026-10-29T00:00:00Z"));
+    db.run("UPDATE agents SET lifecycle = 'PAUSED' WHERE id = 'finance-nilufar'");
+    const tasksBefore = db.get<{ n: number }>("SELECT COUNT(*) n FROM tasks")!.n;
+    const run = runOccurrence(deps, r.id, new Date("2026-10-30T04:00:00Z"))!;
+    expect(run).toMatchObject({ status: "failed", taskId: null });
+    expect(run.error).toContain("paused");
+    expect(db.get<{ n: number }>("SELECT COUNT(*) n FROM tasks")!.n).toBe(tasksBefore);
+    expect(db.get<{ last_run_at: string }>("SELECT last_run_at FROM routines WHERE id = ?", r.id)!.last_run_at).toBe("2026-10-30T04:00:00.000Z");
+    expect(runOccurrence(deps, r.id, new Date("2026-10-30T04:00:00Z"))).toBeNull(); // the occurrence is not re-run
+  });
+
+  it("a crash between claiming and running an occurrence undoes the claim: nothing skipped, nothing doubled", async () => {
+    const { deps, db } = await makeApp();
+    const r = createRoutine(deps, { name: "Haftalik", agentId: "marketing-javohir", rrule: "FREQ=DAILY;BYHOUR=9" }, SYSTEM, new Date("2026-10-29T00:00:00Z"));
+    const due = db.get<{ next_run_at: string }>("SELECT next_run_at FROM routines WHERE id = ?", r.id)!.next_run_at;
+    const at = new Date(Date.parse(due) + 60_000);
+    // simulate the process failing while writing the run
+    db.raw.exec("CREATE TEMP TRIGGER boom BEFORE INSERT ON routine_runs BEGIN SELECT RAISE(ABORT, 'simulated crash'); END");
+    expect(() => schedulerTick(deps, at)).toThrow(/simulated crash/);
+    expect(db.get<{ next_run_at: string }>("SELECT next_run_at FROM routines WHERE id = ?", r.id)!.next_run_at).toBe(due); // claim undone
+    expect(db.get("SELECT 1 FROM tasks WHERE title = 'Haftalik'")).toBeUndefined();
+    db.raw.exec("DROP TRIGGER boom");
+    expect(schedulerTick(deps, at).routines).toBe(1);
+    expect(schedulerTick(deps, at).routines).toBe(0);
+    expect(db.get<{ n: number }>("SELECT COUNT(*) n FROM tasks WHERE title = 'Haftalik'")!.n).toBe(1);
+  });
+});

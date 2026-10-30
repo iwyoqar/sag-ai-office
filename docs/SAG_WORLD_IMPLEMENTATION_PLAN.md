@@ -273,6 +273,18 @@ security model §8 is resolved and verified.**
 
 ---
 
+## Sprint "W0 completion + W1 foundation" (2026-10-30) — status
+
+[Report](reports/2026-10-30-w0-completion-w1-foundation.md). Not committed / not deployed at the time of writing.
+
+| Item | Status |
+|---|---|
+| W0: CSRF/Origin, secrets in logs, routine atomicity, stress root cause, reliability re-check | ✅ |
+| W1: org tree, ownership, import, directors, AI Directors (from the store import) | ✅ |
+| W1: unit functions, unit budgets, unit knowledge bases, unit connector installations, agreements READ/READ_WRITE + status | ✅ |
+| W1: `unit_budgets` link to AI usage, FX rate table, per-unit connector credentials, UI for the new APIs | ⏳ pending |
+| Real Gemini verification of unit AI Directors | ⏳ pending — local key rejected by Google |
+
 ## W1 — Organisation tree and ownership
 
 `legal_entities`, `org_nodes` (GROUP/REGION/UNIT, business type, functions), triggers for tree rules,

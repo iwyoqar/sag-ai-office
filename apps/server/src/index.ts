@@ -9,6 +9,8 @@ import { TelegramBot } from "./telegram/bot.js";
 import { Scheduler } from "./schedule/service.js";
 import { BackupJob, snapshotTo } from "./backup/backup.js";
 import { backupSettingsFrom } from "./backup/config.js";
+import { loggerOptions, secretValues } from "./lib/redact.js";
+import { writeInitialAdminPassword } from "./db/seed.js";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -37,19 +39,19 @@ const { app, deps } = await buildApp({
   sessionTtlHours: config.sessionTtlHours,
   cookieSecure: config.cookieSecure,
   trustProxy: config.trustProxy,
-  logger: { level: config.logLevel, redact: ["req.headers.cookie", "req.headers.authorization", "req.headers[\"x-goog-api-key\"]"] },
+  allowedOrigins: config.allowedOrigins,
+  logger: loggerOptions(config.logLevel, secretValues(config)),
 });
 
 if (applied.length) app.log.info({ applied, backup: preMigration }, "migrations applied");
 // a write transaction holding the single SQLite write lock this long delays every other writer
 db.onSlowTx = (ms) => app.log.warn({ ms }, "slow write transaction");
 if (seeded.admin) {
-  // Printed once, at first boot only. Change it after logging in.
-  app.log.warn(
-    seeded.admin.generated
-      ? `Initial admin created. Login: admin  Password: ${seeded.admin.password}  (shown only once)`
-      : "Initial admin created with ADMIN_PASSWORD from .env",
-  );
+  // Never in the log (hosts keep logs): a generated password goes to a local file only the operator reads.
+  if (seeded.admin.generated) {
+    const file = writeInitialAdminPassword(config.databasePath, seeded.admin.password);
+    app.log.warn({ file }, "Initial admin created with a generated password — read it from this file, sign in, change it, delete the file");
+  } else app.log.warn("Initial admin created with ADMIN_PASSWORD from the environment");
 }
 
 // Work left IN_PROGRESS by a crash goes back to the queue once its lease expires (the runner also recovers tasks

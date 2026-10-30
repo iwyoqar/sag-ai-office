@@ -115,3 +115,11 @@ Katta task → Claude'ga structured output (JSON schema) bilan dekompozitsiya: `
 
 ## 9. Bosqichlar
 Phase 0 audit → 1 3D frontend → 2 core backend → 3 Claude API → 4 orchestrator → 5 Brain → 6 dashboard/calendar → 7 connectors → 8 integration/production. Har bosqich oxirida build + test + `docs/PHASE_N_REPORT.md`.
+
+## 10. SAG World holati (2026-10-30)
+
+Tashkilot daraxti GROUP → REGION → UNIT (22 do'kon + `hq`), har bir unitda bitta inson direktor va bitta AI Director.
+Unit funksiyalari (RETAIL, WAREHOUSE, FACTORY, OFFICE, LOGISTICS, DEALER, HEADQUARTERS), UZS'da butun sonli budjetlar,
+unitning o'z bilimlar bazasi (RAG SQL darajasida unit bilan cheklangan), unit connector o'rnatmalari (kalitlar faqat
+serverda) va ma'lumot almashish shartnomalari (READ/READ_WRITE) amalga oshirilgan. Batafsil:
+[SAG World arxitekturasi](SAG_WORLD_ARCHITECTURE.md), [hisobot](reports/2026-10-30-w0-completion-w1-foundation.md).

@@ -153,23 +153,30 @@ export function deleteRoutine(ctx: Ctx, id: string, actor: Actor) {
 export function runOccurrence(ctx: Ctx, routineId: string, scheduledFor: Date, actor: Actor = SYSTEM): RunDto | null {
   const r = row(ctx, routineId);
   const runId = uid("rr");
-  const inserted = ctx.db.run(
-    "INSERT OR IGNORE INTO routine_runs (id, routine_id, scheduled_for, status, started_at) VALUES (?,?,?, 'running', ?)",
-    runId, routineId, scheduledFor.toISOString(), now(),
-  );
-  if (!inserted.changes) return null;
-  try {
-    const t = createTask(ctx, {
-      title: r.name, description: r.description, departmentId: r.department_id, agentId: r.agent_id,
-      priority: r.priority, requiresApproval: !!r.requires_approval,
-    }, actor);
-    ctx.db.run("UPDATE routine_runs SET task_id = ? WHERE id = ?", t.id, runId);
-  } catch (e) {
-    ctx.db.run("UPDATE routine_runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?", (e as Error).message, now(), runId);
-  }
-  ctx.db.run("UPDATE routines SET last_run_at = ? WHERE id = ?", scheduledFor.toISOString(), routineId);
-  audit(ctx.db, actor, "routine.run", { type: "routine", id: routineId }, { scheduledFor: scheduledFor.toISOString() });
-  return runs(ctx, routineId, 50).find((x) => x.id === runId) ?? null;
+  // One transaction: the run record, its task (or the recorded failure), last_run_at and the audit entry are
+  // written together or not at all — a crash can no longer leave a "running" run without a task.
+  return ctx.db.tx(() => {
+    const inserted = ctx.db.run(
+      "INSERT OR IGNORE INTO routine_runs (id, routine_id, scheduled_for, status, started_at) VALUES (?,?,?, 'running', ?)",
+      runId, routineId, scheduledFor.toISOString(), now(),
+    );
+    if (!inserted.changes) return null;
+    try {
+      // savepoint: a task creation that fails half-way leaves nothing behind
+      ctx.db.tx(() => {
+        const t = createTask(ctx, {
+          title: r.name, description: r.description, departmentId: r.department_id, agentId: r.agent_id,
+          priority: r.priority, requiresApproval: !!r.requires_approval,
+        }, actor);
+        ctx.db.run("UPDATE routine_runs SET task_id = ? WHERE id = ?", t.id, runId);
+      });
+    } catch (e) {
+      ctx.db.run("UPDATE routine_runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?", (e as Error).message, now(), runId);
+    }
+    ctx.db.run("UPDATE routines SET last_run_at = ? WHERE id = ?", scheduledFor.toISOString(), routineId);
+    audit(ctx.db, actor, "routine.run", { type: "routine", id: routineId }, { scheduledFor: scheduledFor.toISOString() });
+    return runs(ctx, routineId, 50).find((x) => x.id === runId) ?? null;
+  });
 }
 
 /**
@@ -198,10 +205,13 @@ export function schedulerTick(ctx: Ctx, at = new Date()): { routines: number; ta
   );
   for (const r of due) {
     const next = nextOccurrence(r.rrule, at, r.timezone, new Date(r.created_at)).toISOString();
-    // claim this occurrence by advancing next_run_at atomically; a concurrent scheduler loses here
-    const claimed = ctx.db.run("UPDATE routines SET next_run_at = ? WHERE id = ? AND next_run_at = ?", next, r.id, r.next_run_at);
-    if (!claimed.changes) continue;
-    if (runOccurrence(ctx, r.id, new Date(r.next_run_at!))) fired++;
+    // claim this occurrence by advancing next_run_at — in the same transaction as the run itself: a crash in
+    // between can neither skip the occurrence (claim undone) nor fire it twice (a concurrent scheduler loses here)
+    const ran = ctx.db.tx(() => {
+      const claimed = ctx.db.run("UPDATE routines SET next_run_at = ? WHERE id = ? AND next_run_at = ?", next, r.id, r.next_run_at);
+      return claimed.changes ? runOccurrence(ctx, r.id, new Date(r.next_run_at!)) : null;
+    });
+    if (ran) fired++;
   }
 
   let released = 0;

@@ -197,13 +197,13 @@ working tree (not yet committed or deployed) · ⏳ open.
 | M | Approval list exposed tool payloads | ✅ approvers see all; others only their visible tasks' requests, payload hidden without `tool_io:read` |
 | M | Stats readable company-wide incl. cost | ✅ counts over visible tasks only; tokens/cost need `budget:read` |
 | M | Connector activity log exposed every agent's tool I/O | ✅ scoped by task visibility; payloads need `tool_io:read`; secret-looking fields always redacted |
-| M | No CSRF token / Origin check | ⏳ not in this W0 scope |
+| M | No CSRF token / Origin check | ✅ Origin/Referer/Sec-Fetch-Site check on every state-changing request (`lib/origin.ts`); webhook exempt; tested |
 | M | scrypt N=2^14 (below current OWASP guidance) | ⏳ not changed (production parameters intentionally untouched) |
-| M | Generated admin password logged when `ADMIN_PASSWORD` empty | ⏳ open |
+| M | Generated admin password logged when `ADMIN_PASSWORD` empty | ✅ written to `data/initial-admin-password.txt` only; every log line scrubbed of configured secret values (`lib/redact.ts`) |
 | M | `render.yaml` lacks `PUBLIC_URL`, `SECRETS_KEY`, `GOOGLE_*`, `BACKUP_*` | ⏳ owner adds them in Render (documented in DEPLOY.md) |
 | L | Approved tool execution interrupted by a crash stayed `running` forever | ✅ marked `unknown` at startup, never auto-retried; identical pending write actions de-duplicated by idempotency key |
 | L | Shutdown not bounded; no fatal-error handlers | ✅ bounded (20 s), idempotent; `uncaughtException`/`unhandledRejection` handled |
-| L | Routine run and its task not in one transaction | ⏳ open (low risk; "Run now" duplicate fixed in Phase A) |
+| L | Routine run and its task not in one transaction | ✅ one transaction; nested `db.tx` = SAVEPOINT; scheduler claim + run atomic |
 | L | SSE stayed open after logout/deactivation | ✅ closed at the next heartbeat |
 | L | Health check did not check DB/queue/backup | ✅ `/api/ready` (states and ages only) |
 | L | An `async` body passed to `db.tx` would commit before its awaits | ✅ refused and rolled back (`test/db.test.ts`) |
@@ -213,3 +213,14 @@ login path, status-guarded atomic task transitions, approval claimed atomically 
 idempotent scheduler/notifications/Telegram updates, transactional migrations with FK check, log/audit redaction,
 upload limits and zip-bomb guards, forced attachment downloads, constant-time Telegram webhook secret, no SQL
 injection found.
+
+## 9. Unit-level rules as implemented (2026-10-30)
+
+| Data | Own unit | HQ group level | Anyone else |
+|---|---|---|---|
+| Budgets | director: draft, submit, record (+ approve for franchise/subsidiary, audited `selfApproved`); manager: record, view; staff: none | SAG_BRANCH: view; HQ director approves (never the submitter); HQ's own budgets: HQ directors with separation of duties | only via an active agreement with `budget` (AGGREGATE = totals, DETAIL = entries); never write |
+| Knowledge | members read; director/manager add/remove | SAG_BRANCH: read; HQ shares chosen HQ documents to branches (`BRANCHES`) | via `knowledge` agreement (read) |
+| RAG (agents, people) | own unit only — franchise: own; branch: own + HQ `BRANCHES`; HQ: HQ (SQL, `knowledge/scope.ts`) | — | — |
+| Connectors | leads see metadata; director grants installed connectors to own agents | SAG_BRANCH: see metadata; platform admins install credential-free connectors | never; no agreement class opens connectors; credentials never in any DTO |
+| Tasks (write) | members by role | — | only via an active READ_WRITE agreement on `tasks` (DETAIL) |
+| HQ memory | — | HQ agents only | never reaches unit agents (runner, chat) |

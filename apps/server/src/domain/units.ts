@@ -12,9 +12,10 @@
 //   access to a franchise's confidential data.
 // - The unit card (name, region, ownership type, status) is network classification, visible to HQ accounts and to
 //   the unit's own members; other units' accounts do not see it.
-import type {
-  AgreementDto, BusinessType, DataClass, NetworkDto, OwnershipModel, ShareLevel, UnitAccessDto, UnitCardDto,
-  UnitOverviewDto, UnitPersonDto, UnitRole, UnitTaskDto,
+import {
+  type AgreementAccess, type AgreementDto, type AgreementStatus, BUSINESS_FUNCTIONS, type BusinessFunction, type BusinessType,
+  type DataClass, type NetworkDto, type OwnershipModel, type ShareLevel, type UnitAccessDto, type UnitCardDto,
+  type UnitOverviewDto, type UnitPersonDto, type UnitRole, type UnitTaskDto,
 } from "@sag/shared";
 import { json, now } from "../db/db.js";
 import { type Actor, SYSTEM, audit } from "../lib/audit.js";
@@ -29,7 +30,7 @@ import { checkPassword } from "./users.js";
 
 export const HQ_UNIT = "hq";
 export const GROUP_NODE = "sag-group";
-export const DATA_CLASSES: readonly DataClass[] = ["people_counts", "employees", "tasks", "kpi", "ai_usage"];
+export const DATA_CLASSES: readonly DataClass[] = ["people_counts", "employees", "tasks", "kpi", "ai_usage", "budget", "knowledge"];
 export const UNIT_ROLES: readonly UnitRole[] = ["unit_director", "unit_manager", "unit_staff"];
 /** marker stored in password_hash for accounts that have not set a password yet (never a valid hash) */
 export const NO_PASSWORD = "!pending-activation";
@@ -39,7 +40,7 @@ interface NodeRow {
   id: string; level: "GROUP" | "REGION" | "UNIT"; parent_id: string | null; path: string; name: string; code: string;
   business_type: BusinessType | null; ownership_model: OwnershipModel | null; source_brand: string | null;
   source_marker: "HD" | "F" | null; source_label: string | null; status: string; address: string | null; geo: string | null;
-  human_director_user_id: string | null; provision_key: string | null;
+  human_director_user_id: string | null; provision_key: string | null; functions: string;
 }
 
 const nodeRow = (ctx: Ctx, id: string) => ctx.db.get<NodeRow>("SELECT * FROM org_nodes WHERE id = ?", id);
@@ -84,20 +85,22 @@ export interface UnitAccess extends UnitAccessDto {
   unitId: string;
   /** may see the unit card at all */
   card: boolean;
+  /** data classes an agreement lets this outside party also change (READ_WRITE); members write by their role */
+  writable: Partial<Record<DataClass, boolean>>;
 }
 
 /** What `u` may see and do in `unitId`. Throws 404 when the unit is invisible to `u` (never reveals existence). */
 export function unitAccess(ctx: Ctx, u: AuthUser, unitId: string): UnitAccess {
   const n = nodeRow(ctx, unitId);
   if (!n || n.level !== "UNIT") throw notFound("Biznes bo'lim");
-  const base = { unitId, card: false, memberRole: null, classes: {}, manageStructure: false, canManageEmployees: false, canAssignTasks: false };
+  const base = { unitId, card: false, memberRole: null, classes: {}, writable: {}, manageStructure: false, canManageEmployees: false, canAssignTasks: false };
 
   if (u.homeUnitId === unitId && unitId !== HQ_UNIT) {
     const role = memberRoleIn(ctx, u.id, unitId);
     const lead = role === "unit_director" || role === "unit_manager";
     return {
       ...base, card: true, memberRole: role,
-      classes: lead ? { ...ALL_DETAIL } : { tasks: "DETAIL" },
+      classes: lead ? { ...ALL_DETAIL } : { tasks: "DETAIL", knowledge: "DETAIL" },
       canManageEmployees: role === "unit_director",
       canAssignTasks: lead,
     };
@@ -112,30 +115,44 @@ export function unitAccess(ctx: Ctx, u: AuthUser, unitId: string): UnitAccess {
     );
     if (viaTree) Object.assign(classes, ALL_DETAIL);
   }
+  const writable: Partial<Record<DataClass, boolean>> = {};
   const grantees = granteeNodes(ctx, u);
   if (grantees.length) {
     const t = now();
-    for (const a of ctx.db.all<{ data_classes: string; level: ShareLevel }>(
-      `SELECT data_classes, level FROM data_sharing_agreements
+    for (const a of ctx.db.all<{ data_classes: string; level: ShareLevel; access: AgreementAccess }>(
+      `SELECT data_classes, level, access FROM data_sharing_agreements
        WHERE unit_id = ? AND grantee_node_id IN (${grantees.map(() => "?").join(",")}) AND ${ACTIVE_AGREEMENT}`,
       unitId, ...grantees, t, t,
     ))
-      for (const c of json<DataClass[]>(a.data_classes, []))
-        if (DATA_CLASSES.includes(c) && rank(a.level) > rank(classes[c])) classes[c] = a.level;
+      for (const c of json<DataClass[]>(a.data_classes, [])) {
+        if (!DATA_CLASSES.includes(c)) continue;
+        if (rank(a.level) > rank(classes[c])) classes[c] = a.level;
+        if (a.access === "READ_WRITE" && a.level === "DETAIL" && WRITABLE_BY_AGREEMENT.includes(c)) writable[c] = true;
+      }
   }
   const card = isHq(u) || Object.keys(classes).length > 0;
   if (!card) throw notFound("Biznes bo'lim");
   // HQ itself is served by the company-wide routes; here it only appears as a card
-  return { ...base, card, classes: unitId === HQ_UNIT ? {} : classes, manageStructure: isPlatformAdmin(u) && unitId !== HQ_UNIT };
+  const own = unitId === HQ_UNIT ? {} : classes;
+  return {
+    ...base, card, classes: own, writable: unitId === HQ_UNIT ? {} : writable,
+    // an outside party assigns work into the unit only through an active READ_WRITE tasks agreement
+    canAssignTasks: unitId !== HQ_UNIT && rank(own.tasks) >= 2 && !!writable.tasks,
+    manageStructure: isPlatformAdmin(u) && unitId !== HQ_UNIT,
+  };
 }
 
-const can = (a: UnitAccess, c: DataClass, level: ShareLevel = "AGGREGATE") => rank(a.classes[c]) >= rank(level);
+export const can = (a: UnitAccess, c: DataClass, level: ShareLevel = "AGGREGATE") => rank(a.classes[c]) >= rank(level);
+
+/** Only these classes can be written by an outside party, and only through a READ_WRITE DETAIL agreement. */
+const WRITABLE_BY_AGREEMENT: readonly DataClass[] = ["tasks"];
 
 function toCard(n: NodeRow, region: NodeRow | undefined): UnitCardDto {
   return {
     id: n.id, name: n.name, code: n.code, regionId: n.parent_id ?? "", regionName: region?.name ?? "",
     businessType: n.business_type!, ownershipModel: n.ownership_model, sourceBrand: n.source_brand, sourceMarker: n.source_marker,
     status: n.status, geo: json<{ lat: number; lng: number } | null>(n.geo, null), address: n.address, isHeadOffice: n.id === HQ_UNIT,
+    functions: json<BusinessFunction[]>(n.functions, []),
   };
 }
 
@@ -249,6 +266,29 @@ export function unitOverview(ctx: Ctx, u: AuthUser, unitId: string): UnitOvervie
       )?.c ?? 0;
   } else restricted.push("kpi");
   return out;
+}
+
+// ---------- unit functions ----------
+
+/**
+ * What a unit does (RETAIL, WAREHOUSE, …). Structure, so HQ platform administrators set it; it never changes the
+ * unit's business type or ownership. HEADQUARTERS belongs to the head office only (the database enforces it too).
+ */
+export function setUnitFunctions(ctx: Ctx, u: AuthUser, unitId: string, functions: string[]): UnitCardDto {
+  const n = unitRow(ctx, unitId);
+  if (!isPlatformAdmin(u)) throw forbidden();
+  const list = [...new Set(functions)];
+  if (!list.length) throw badRequest("Kamida bitta funksiya kerak");
+  const bad = list.filter((f) => !(BUSINESS_FUNCTIONS as readonly string[]).includes(f));
+  if (bad.length) throw badRequest(`Noma'lum funksiya: ${bad.join(", ")}`);
+  if ((unitId === HQ_UNIT) !== list.includes("HEADQUARTERS")) throw badRequest("HEADQUARTERS faqat bosh ofisga tegishli");
+  const before = json<string[]>(n.functions, []);
+  ctx.db.tx(() => {
+    ctx.db.run("UPDATE org_nodes SET functions = ?, updated_at = ? WHERE id = ?", JSON.stringify(list), now(), unitId);
+    audit(ctx.db, { type: "user", id: u.id }, "unit.functions", { type: "unit", id: unitId }, { before, after: list });
+  });
+  const updated = unitRow(ctx, unitId);
+  return toCard(updated, updated.parent_id ? nodeRow(ctx, updated.parent_id) : undefined);
 }
 
 // ---------- provisioning (import) ----------
@@ -550,22 +590,24 @@ export function moveUnitTask(ctx: Ctx, u: AuthUser, unitId: string, taskId: stri
 // ---------- data-sharing agreements ----------
 
 interface AgreementRow {
-  id: string; unit_id: string; grantee_node_id: string; data_classes: string; level: ShareLevel; valid_from: string; valid_to: string | null;
+  id: string; unit_id: string; grantee_node_id: string; data_classes: string; level: ShareLevel; access: AgreementAccess; valid_from: string; valid_to: string | null;
   contract_ref: string; signed_by_owner: string; approved_by: string | null; approved_at: string | null; revoked_at: string | null; created_at: string;
 }
 function toAgreement(r: AgreementRow): AgreementDto {
   const t = now();
+  const status: AgreementStatus = r.revoked_at ? "REVOKED" : !r.approved_at ? "PENDING" : r.valid_to && r.valid_to <= t ? "EXPIRED"
+    : r.valid_from > t ? "SCHEDULED" : "ACTIVE";
   return {
-    id: r.id, unitId: r.unit_id, granteeNodeId: r.grantee_node_id, dataClasses: json(r.data_classes, []), level: r.level,
+    id: r.id, unitId: r.unit_id, granteeNodeId: r.grantee_node_id, dataClasses: json(r.data_classes, []), level: r.level, access: r.access,
     validFrom: r.valid_from, validTo: r.valid_to, contractRef: r.contract_ref, approvedAt: r.approved_at, revokedAt: r.revoked_at,
-    createdAt: r.created_at, active: !!r.approved_at && !r.revoked_at && r.valid_from <= t && (!r.valid_to || r.valid_to > t),
+    createdAt: r.created_at, active: status === "ACTIVE", status,
   };
 }
 
 /** The owning unit's director proposes sharing; it takes effect only when the grantee side approves. */
 export function proposeAgreement(
   ctx: Ctx, u: AuthUser, unitId: string,
-  i: { granteeNodeId: string; dataClasses: DataClass[]; level: ShareLevel; contractRef: string; validFrom?: string; validTo?: string | null },
+  i: { granteeNodeId: string; dataClasses: DataClass[]; level: ShareLevel; access?: AgreementAccess; contractRef: string; validFrom?: string; validTo?: string | null },
 ): AgreementDto {
   const a = unitAccess(ctx, u, unitId);
   if (a.memberRole !== "unit_director") throw forbidden("Faqat bo'lim direktori ma'lumot ulashishni taklif qila oladi");
@@ -573,13 +615,18 @@ export function proposeAgreement(
   if (!g || g.id === unitId) throw badRequest("Qabul qiluvchi noto'g'ri");
   const classes = [...new Set(i.dataClasses)];
   if (!classes.length || classes.some((c) => !DATA_CLASSES.includes(c))) throw badRequest("Ma'lumot turlari noto'g'ri");
+  const access = i.access ?? "READ";
+  if (access === "READ_WRITE" && (i.level !== "DETAIL" || !classes.some((c) => WRITABLE_BY_AGREEMENT.includes(c))))
+    throw badRequest("Yozish huquqi faqat DETAIL darajada va faqat vazifalar (tasks) uchun beriladi");
+  const validFrom = i.validFrom ?? now();
+  if (i.validTo && i.validTo <= validFrom) throw badRequest("Amal qilish muddati boshlanishidan keyin tugashi kerak");
   const id = uid("dsa");
   ctx.db.run(
-    `INSERT INTO data_sharing_agreements (id, unit_id, grantee_node_id, data_classes, level, valid_from, valid_to, contract_ref, signed_by_owner, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    id, unitId, g.id, JSON.stringify(classes), i.level, i.validFrom ?? now(), i.validTo ?? null, i.contractRef, u.id, now(),
+    `INSERT INTO data_sharing_agreements (id, unit_id, grantee_node_id, data_classes, level, access, valid_from, valid_to, contract_ref, signed_by_owner, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    id, unitId, g.id, JSON.stringify(classes), i.level, access, validFrom, i.validTo ?? null, i.contractRef, u.id, now(),
   );
-  audit(ctx.db, { type: "user", id: u.id }, "agreement.propose", { type: "agreement", id }, { unitId, grantee: g.id, classes, level: i.level });
+  audit(ctx.db, { type: "user", id: u.id }, "agreement.propose", { type: "agreement", id }, { unitId, grantee: g.id, classes, level: i.level, access });
   return toAgreement(ctx.db.get<AgreementRow>("SELECT * FROM data_sharing_agreements WHERE id = ?", id)!);
 }
 

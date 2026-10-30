@@ -287,8 +287,9 @@ describe("unit isolation", () => {
     const { db, deps, admin, director, unit } = await setup();
     const f = await director("Sag Rudakiy", "rudakiy.dir");
     const ai = db.get<{ id: string }>("SELECT id FROM agents WHERE business_unit_id = ? AND is_primary_director = 1", f.unitId)!;
-    // the AI Director gets no HQ tools (documents, people, memory, connectors)
-    expect(deps.connectors.toolsFor(ai.id)).toEqual([]);
+    // the AI Director gets no HQ tools (people, memory, connectors) — only the search of its own unit's knowledge
+    // base, which is bounded to that unit in SQL (W1; see test/w1.test.ts)
+    expect(deps.connectors.toolsFor(ai.id).map((t) => t.name)).toEqual(["search_company_knowledge"]);
     // HQ cannot hand work to a franchise AI Director through company routes
     const t = await admin.post("/api/tasks", { title: "Read their books", agentId: ai.id });
     expect(t.status).toBe(400);

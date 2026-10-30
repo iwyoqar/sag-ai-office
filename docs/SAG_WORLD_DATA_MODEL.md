@@ -456,3 +456,18 @@ Safety: the migration runner takes an automatic `VACUUM INTO` backup before appl
 (W0.6); every migration is tested on a fresh DB and on a copy of the current dev DB (row counts equal, all rows in
 `hq`, empty `foreign_key_check`, full test suite unchanged). Rollback = stop the service and restore the
 pre-migration backup (documented, drilled in W0.6). No down-migrations for data-reshaping steps.
+
+## 8. As implemented (migrations 010–015, 2026-10-30)
+
+Where the code differs from the proposal above, the code is authoritative:
+
+| Topic | Implemented |
+|---|---|
+| Cross-unit references | SQLite triggers (`cross_unit: …`) instead of composite foreign keys — SQLite cannot add table constraints by ALTER |
+| `org_nodes.functions` | JSON array validated by triggers (known names, distinct, 1–7 for units, none for GROUP/REGION, HEADQUARTERS only on `hq`) — no separate table |
+| `legal_entities` | `org_nodes.legal_entity_id` optional (franchise legal entities not known yet) |
+| Money | `currencies(code, minor_units)`; `unit_budgets(business_unit_id, period 'YYYY-MM', category, allocated_minor INTEGER, currency 'UZS', status DRAFT/SUBMITTED/APPROVED/REJECTED/CLOSED, submitted/decided by/at, reason)`; `unit_budget_entries(amount_minor UZS, original_amount_minor, original_currency, fx_rate_e8, fx_rate_date, fx_source, …)` with CHECKs (`typeof = 'integer'`, rate required iff currency ≠ UZS) and a same-unit trigger. No `fx_rates` table yet: the rate is stored with each entry |
+| Knowledge | `knowledge_documents.business_unit_id` (default `hq`), `visibility` UNIT/BRANCHES (BRANCHES only for HQ documents), `source_label`; triggers keep department and visibility consistent with the unit |
+| Connectors | `connector_installations(business_unit_id, connector_id, enabled, status, credential_scope NONE/SERVER_ENV/SECRET_STORE, last_health_at, last_error)` — no credential columns; trigger: an agent grant needs an enabled installation in the agent's unit |
+| Agreements | `data_sharing_agreements.access` READ/READ_WRITE; classes now also `budget`, `knowledge` |
+| Execution (W0) | `tasks.lease_epoch`, `agent_runs.worker_id/lease_epoch/end_reason`, `worker_heartbeats`, `tool_executions` status `unknown` + `idempotency_key`, `login_throttle`, `backup_runs` (migrations 011–014) |

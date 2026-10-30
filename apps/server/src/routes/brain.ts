@@ -12,6 +12,7 @@ import { audit } from "../lib/audit.js";
 import { badRequest, forbidden, notFound } from "../lib/errors.js";
 import type { AuthUser } from "../lib/auth.js";
 import { canSeeTask, has, taskDepartments, taskRef } from "../domain/access.js";
+import { setHqDocumentVisibility } from "../domain/unitKnowledge.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 const ScopeQ = z.object({
@@ -67,6 +68,13 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
     return { document: doc };
   });
 
+  // HQ shares a company-level document with SAG-owned branches (never with franchise units)
+  app.patch("/api/knowledge/:id/visibility", async (req) => {
+    const u = requirePerm(req, "brain:manage");
+    const body = parse(z.object({ visibility: z.enum(["UNIT", "BRANCHES"]) }).strict(), req.body);
+    return { document: setHqDocumentVisibility(d, u, parse(Id, req.params).id, body.visibility) };
+  });
+
   app.delete("/api/knowledge/:id", async (req) => {
     const u = requirePerm(req, "brain:manage");
     removeDocument(d, parse(Id, req.params).id, actorOf(u));
@@ -83,7 +91,7 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
       if (departmentId === undefined) departmentId = u.departmentId;
       if (departmentId && !knowledgeDepts(u).has(departmentId)) throw forbidden();
     }
-    return retrieve(d, embedder, q.q, { departmentId, limit: 10 });
+    return retrieve(d, embedder, q.q, { unitId: "hq", departmentId, limit: 10 });
   });
 
   // ---------------------------------------------------------------- instructions

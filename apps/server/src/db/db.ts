@@ -53,9 +53,32 @@ export class Db {
     return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) };
   }
 
-  /** Runs fn in a write transaction; nested calls join the outer one. fn must be synchronous. */
+  /**
+   * Runs fn in a write transaction. fn must be synchronous. A nested call runs in a SAVEPOINT inside the outer
+   * transaction: if it throws, only its own writes are undone (and the error propagates), so a caller that catches
+   * a nested failure never commits half of it.
+   */
   tx<T>(fn: () => T): T {
-    if (this.depth > 0) return fn();
+    if (this.depth > 0) {
+      const sp = `sp_${this.depth}`;
+      this.raw.exec(`SAVEPOINT ${sp}`);
+      this.depth++;
+      try {
+        const out = fn();
+        if (out instanceof Promise) {
+          out.catch(() => {});
+          throw new Error("Db.tx: the transaction body must be synchronous (no await inside a transaction)");
+        }
+        this.raw.exec(`RELEASE ${sp}`);
+        return out;
+      } catch (e) {
+        this.raw.exec(`ROLLBACK TO ${sp}`);
+        this.raw.exec(`RELEASE ${sp}`);
+        throw e;
+      } finally {
+        this.depth--;
+      }
+    }
     this.raw.exec("BEGIN IMMEDIATE");
     this.depth++;
     const started = Date.now();

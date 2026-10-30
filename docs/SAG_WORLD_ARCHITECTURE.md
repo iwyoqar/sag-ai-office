@@ -4,6 +4,23 @@ Status: **proposal, revised with the owner's decisions of 2026-10-30, awaiting r
 implemented unless it says "exists today". Companion documents: [data model](SAG_WORLD_DATA_MODEL.md) ·
 [security model](SAG_WORLD_SECURITY_MODEL.md) · [implementation plan](SAG_WORLD_IMPLEMENTATION_PLAN.md).
 
+## Implementation status (2026-10-30)
+
+Implemented and tested (see [W0 report](W0_PRODUCTION_HARDENING_REPORT.md), [store import](reports/2026-10-30-store-network-import.md),
+[W0 completion + W1](reports/2026-10-30-w0-completion-w1-foundation.md)):
+
+| Area | State |
+|---|---|
+| Org tree GROUP → REGION → UNIT, 22 imported stores + `hq`, one human director and one AI Director per unit | ✅ |
+| Business types and ownership (SAG_BRANCH / INDEPENDENT_DEALER; SUBSIDIARY supported, none imported) | ✅ |
+| Unit functions — implemented set: RETAIL, WAREHOUSE, FACTORY, OFFICE, LOGISTICS, DEALER, HEADQUARTERS (§4's "WHOLESALE/SERVICE" were not adopted) | ✅ |
+| Unit isolation of tasks, employees, events, audit; data-sharing agreements (classes, AGGREGATE/DETAIL, READ/READ_WRITE, validity, status) | ✅ |
+| Unit budgets in UZS minor units with original-currency entries and per-entry FX rate | ✅ (no FX table, no AI-usage → budget link yet) |
+| Unit knowledge bases with SQL-bounded RAG; HQ → branches sharing | ✅ |
+| Connector installations per unit (credential-free connectors only; credentials server-side) | ✅ partial — per-unit credentials pending |
+| Hiring (AUTO/APPROVAL/RESTRICTED execution), marketplace, UnitRequests, KPIs, budget gate in the runner | ⬜ not started (W3–W6) |
+| SAP | ⬜ discovery only |
+
 ## 0. Confirmed decisions (owner, 2026-10-30)
 
 | # | Decision | Consequence in this design |
