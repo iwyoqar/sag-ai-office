@@ -8,7 +8,7 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
   onTasks?: () => void; tasksOpen?: boolean; system?: SystemStatus | null; onBrain?: () => void; onCalendar?: () => void; onAccount?: () => void;
   onPeople?: () => void; onOpenWork?: (id: string) => void; onNetwork?: () => void;
 }) {
-  const { user, live, auth, logout } = useOffice();
+  const { user, live, auth, logout, unitAccount } = useOffice();
   return (
     <header className="topbar">
       <div className="brand">
@@ -51,12 +51,12 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
             </button>
           )}
           {onOpenWork && <NotificationsBell onOpenTask={onOpenWork} />}
-          <span
+          {!unitAccount && <span
             className={`backend ${live ? "on" : "off"}`}
             title={live ? "Real vaqt oqimi ulangan (SSE)" : "Real vaqt oqimi uzildi — qayta ulanmoqda"}
           >
             <i /> {live ? "Live" : "Qayta ulanmoqda…"}
-          </span>
+          </span>}
           <button className="user crumb" title={`${user?.roles.join(", ")} — hisob va parol`} onClick={onAccount}>{user?.displayName}</button>
           <button className="crumb" onClick={() => void logout()}>Chiqish</button>
         </div>

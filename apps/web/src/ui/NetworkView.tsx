@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { NetworkDto, UnitCardDto, UnitOverviewDto, UnitPersonDto } from "@sag/shared";
 import { api } from "../api/client";
-import { NetworkScene } from "../scene/network/NetworkScene";
+import { NetworkScene, type StoreOccupant } from "../scene/network/NetworkScene";
 import { webglAvailable } from "../scene/SceneController";
 
 const OWNERSHIP: Record<string, string> = { SAG_OWNED: "SAG do'koni (HD)", FRANCHISE: "Franshiza (F)", INDEPENDENT: "Mustaqil diler", GROUP_OWNED: "Guruh korxonasi" };
@@ -10,6 +10,15 @@ const STATUS: Record<string, string> = {
   ASSIGNED: "Berilgan", ACCEPTED: "Qabul qilingan", IN_PROGRESS: "Jarayonda", IN_REVIEW: "Tekshiruvda", DONE: "Bajarildi",
   CHANGES_REQUESTED: "Qayta ishlash", CANCELLED: "Bekor", QUEUED: "Navbatda", BACKLOG: "Kutmoqda", FAILED: "Xato", WAITING_APPROVAL: "Tasdiq kutmoqda",
 };
+/** Who stands in the opened store: active people this viewer may see, plus the store's AI Director. */
+function occupantsOf(o: UnitOverviewDto): StoreOccupant[] {
+  const people: StoreOccupant[] = (o.employees ?? [])
+    .filter((p) => p.status === "active" && p.activation === "ACTIVE")
+    .map((p) => ({ id: p.id, name: p.displayName, role: p.role ? ROLE[p.role] : "Xodim", kind: "human" }));
+  if (o.aiDirector && o.aiDirector.lifecycle !== "ARCHIVED") people.push({ id: o.aiDirector.id, name: o.aiDirector.name.replace(/ — .*/, ""), role: "AI", kind: "ai" });
+  return people;
+}
+
 const RESTRICTED: Record<string, string> = {
   employees: "xodimlar", tasks: "vazifalar", kpi: "ko'rsatkichlar", director_identity: "direktor shaxsi",
 };
@@ -83,18 +92,29 @@ export function NetworkView({ onClose, unitAccount }: { onClose?: () => void; un
           <div className="muted">{tip.u.regionName} · {tip.u.isHeadOffice ? "Bosh ofis" : OWNERSHIP[tip.u.ownershipModel ?? ""]}</div>
         </div>
       )}
-      {selected && <UnitPanel unitId={selected} onClose={unitAccount ? undefined : () => setSelected(null)} />}
+      {selected && (
+        <UnitPanel
+          unitId={selected}
+          onClose={unitAccount ? undefined : () => setSelected(null)}
+          onLoaded={(o) => scene.current?.setOccupants(o.unit.id, occupantsOf(o))}
+        />
+      )}
     </div>
   );
 }
 
-function UnitPanel({ unitId, onClose }: { unitId: string; onClose?: () => void }) {
+function UnitPanel({ unitId, onClose, onLoaded }: { unitId: string; onClose?: () => void; onLoaded: (o: UnitOverviewDto) => void }) {
+  const loaded = useRef(onLoaded);
+  loaded.current = onLoaded;
   const [o, setO] = useState<UnitOverviewDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [secret, setSecret] = useState<{ who: string; username: string; token: string; expiresAt: string } | null>(null);
   const load = useCallback(() => {
     setError(null);
-    api.get<{ overview: UnitOverviewDto }>(`/api/units/${unitId}`).then((r) => setO(r.overview)).catch((e) => setError(e.message));
+    api.get<{ overview: UnitOverviewDto }>(`/api/units/${unitId}`).then((r) => {
+      setO(r.overview);
+      loaded.current(r.overview);
+    }).catch((e) => setError(e.message));
   }, [unitId]);
   useEffect(() => {
     setO(null);
@@ -130,6 +150,12 @@ function UnitPanel({ unitId, onClose }: { unitId: string; onClose?: () => void }
       </dl>
 
       {u.isHeadOffice && <p className="hint">Bosh ofis ma'lumotlari kampusdagi SAG Headquarters binosida.</p>}
+      {!u.isHeadOffice && (
+        <p className="hint">
+          Binoda: {occupantsOf(o).filter((p) => p.kind === "human").length} xodim{o.aiDirector ? " va AI Direktor" : ""}.
+          {o.employees ? " Faollashtirilmagan hisoblar binoda ko'rinmaydi." : " Xodimlar sizga ko'rinmaydi."}
+        </p>
+      )}
 
       {o.kpis && (
         <section>
