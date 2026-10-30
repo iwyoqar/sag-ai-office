@@ -5,6 +5,7 @@ import { hashPassword } from "../lib/passwords.js";
 import { ensureHqInstallations } from "../connectors/installations.js";
 import { slug, token, uid } from "../lib/ids.js";
 import { writeFileSync } from "node:fs";
+import { ensureAgentTemplates } from "../domain/templatesFromAgents.js";
 import { dirname, join } from "node:path";
 
 /**
@@ -25,7 +26,10 @@ export interface SeedResult {
 
 /** Idempotent: does nothing if the organisation already exists. */
 export async function seed(db: Db, opts: { adminPassword?: string } = {}): Promise<SeedResult> {
-  if (db.get("SELECT id FROM floors LIMIT 1")) return { seeded: false };
+  if (db.get("SELECT id FROM floors LIMIT 1")) {
+    ensureAgentTemplates(db); // marketplace catalog for databases seeded before migration 017
+    return { seeded: false };
+  }
   const t = now();
   const generated = !opts.adminPassword;
   const password = opts.adminPassword ?? token(12);
@@ -75,5 +79,6 @@ export async function seed(db: Db, opts: { adminPassword?: string } = {}): Promi
     );
   });
 
+  ensureAgentTemplates(db);
   return { seeded: true, admin: { username: "admin", password, generated } };
 }
