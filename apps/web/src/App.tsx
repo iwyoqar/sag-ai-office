@@ -24,7 +24,9 @@ import { BuildingPanel, BuildingTip, CampusBuildings } from "./ui/CampusPanels";
 import { Loader } from "./ui/Loader";
 import { Login } from "./ui/Login";
 import { FallbackBuilding } from "./ui/FallbackBuilding";
-import { NetworkView } from "./ui/NetworkView";
+import { NetworkView, UnitPanel, occupantsOf } from "./ui/NetworkView";
+import { api } from "./api/client";
+import type { NetworkDto } from "@sag/shared";
 
 const BUILDING_IDS = BUILDINGS.map((b) => b.id);
 const LABELS_KEY = "sag.campusLabels";
@@ -64,7 +66,8 @@ export function App() {
   const [employeeId, setEmployeeId] = useState<string | null>(null);
   const [workId, setWorkId] = useState<string | null>(null);
   const [newWork, setNewWork] = useState<{ assigneeId?: string } | null>(null);
-  const [networkOpen, setNetworkOpen] = useState(false);
+  /** a store of the network opened on the campus */
+  const [storeId, setStoreId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!has3d || !host.current) {
@@ -89,6 +92,7 @@ export function App() {
       onHoverAgent: (id, x, y) => setAgentTip(id ? { id, x, y } : null),
       onHoverBuilding: (info, x, y) => setBuildingTip(info ? { info, x, y } : null),
       onSelectBuilding: (id) => dispatch({ type: "selectBuilding", buildingId: id }),
+      onSelectStore: (id) => setStoreId(id),
     });
     ctrl.current = c;
     c.setLabelsVisible(readLabelsPref());
@@ -114,11 +118,31 @@ export function App() {
     setBuildingTip(null);
     if (view.mode === "floor" && view.floorId) void c.openFloor(view.floorId);
     else if (view.mode === "overview") void c.showOffice();
-    else if (view.mode === "campus") void c.showCampus();
+    else if (view.mode === "campus") {
+      if (storesNext.current) void c.showStores();
+      else void c.showCampus();
+      storesNext.current = false;
+    }
     else if (view.mode === "building" && view.buildingId) void c.focusBuilding(view.buildingId);
   }, [view.mode, view.floorId, view.buildingId]);
 
   useEffect(() => ctrl.current?.selectAgent(view.agentId), [view.agentId]);
+
+  // The SAG store network stands beside the campus (HQ accounts; store accounts get their own store view).
+  useEffect(() => {
+    if (auth !== "authenticated" || unitAccount || !office) return;
+    let alive = true;
+    api.get<{ network: NetworkDto }>("/api/units").then((r) => alive && ctrl.current?.setNetwork(r.network)).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [auth, unitAccount, !!office]);
+  useEffect(() => {
+    if (storeId) void ctrl.current?.focusStore(storeId);
+    else ctrl.current?.closeStore();
+  }, [storeId]);
+  // any other navigation closes the open store
+  useEffect(() => setStoreId(null), [view.mode, view.floorId, view.buildingId]);
 
   // Agent→agent handoffs from the backend stay visible in 3D for a short while.
   const links = useRef<{ from: string; to: string; at: number }[]>([]);
@@ -150,19 +174,39 @@ export function App() {
   }, [auth]);
 
   const back = useCallback(() => dispatch({ type: "back" }), []);
+  /** "Do'konlar": one flight to the store district (from the campus, or via the campus transition from elsewhere) */
+  const storesNext = useRef(false);
+  const showStores = () => {
+    setStoreId(null);
+    if (view.mode === "campus") void ctrl.current?.showStores();
+    else {
+      storesNext.current = true;
+      dispatch({ type: "showCampus" });
+    }
+  };
   const taskIdRef = useRef<string | null>(null);
   taskIdRef.current = taskId;
   const brainRef = useRef(false);
   brainRef.current = brainOpen;
   const calRef = useRef(false);
   calRef.current = calendarOpen;
+  const storeRef = useRef<string | null>(null);
+  storeRef.current = storeId;
+  /** closing a store (✕ / Esc) flies back out to the store district */
+  const leaveStore = () => {
+    setStoreId(null);
+    void ctrl.current?.showStores();
+  };
+  const leaveStoreRef = useRef(leaveStore);
+  leaveStoreRef.current = leaveStore;
   const layers = useRef({ work: false, emp: false, people: false, newWork: false });
   layers.current = { work: !!workId, emp: !!employeeId, people: peopleOpen, newWork: !!newWork };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       // close the topmost layer first
-      if (layers.current.newWork) setNewWork(null);
+      if (storeRef.current) leaveStoreRef.current();
+      else if (layers.current.newWork) setNewWork(null);
       else if (layers.current.work) setWorkId(null);
       else if (layers.current.emp) setEmployeeId(null);
       else if (taskIdRef.current) setTaskId(null);
@@ -203,22 +247,27 @@ export function App() {
         onCalendar={ready ? () => setCalendarOpen(true) : undefined}
         onAccount={() => setAccountOpen(true)}
         onPeople={ready ? () => setPeopleOpen(true) : undefined}
-        onNetwork={ready ? () => setNetworkOpen(true) : undefined}
+        onNetwork={ready ? showStores : undefined}
         onOpenWork={ready ? setWorkId : undefined}
         system={ready ? system : null}
       />
 
       {view.mode !== "intro" && auth === "anonymous" && <Login />}
       {view.mode !== "intro" && auth === "authenticated" && unitAccount && <NetworkView unitAccount />}
-      {ready && networkOpen && <NetworkView unitAccount={false} onClose={() => setNetworkOpen(false)} />}
       {view.mode !== "intro" && auth === "authenticated" && !office && !unitAccount && (
         <div className="center-note">{error ? `Ma'lumot yuklanmadi: ${error}` : "Ofis ma'lumotlari yuklanmoqda…"}</div>
       )}
 
       {ready && (
         <>
-          <FloorRail current={view.floorId} hovered={view.hoveredFloorId} onSelect={select} />
-          {view.mode === "floor" && floor ? (
+          {!storeId && <FloorRail current={view.floorId} hovered={view.hoveredFloorId} onSelect={select} />}
+          {storeId ? (
+            <UnitPanel
+              unitId={storeId}
+              onClose={leaveStore}
+              onLoaded={(o) => ctrl.current?.setStoreOccupants(o.unit.id, occupantsOf(o))}
+            />
+          ) : view.mode === "floor" && floor ? (
             <FloorPanel floor={floor} onBack={back} onAgent={(id) => dispatch({ type: "selectAgent", agentId: id })} selectedAgent={view.agentId} />
           ) : view.mode === "building" && focused ? (
             <BuildingPanel
@@ -237,7 +286,7 @@ export function App() {
       )}
 
       {ready && hoverFloor && view.mode === "overview" && <HoverCard floor={hoverFloor} x={hoverPos.x} y={hoverPos.y} stats={today.data} />}
-      {ready && inCampus && buildingTip && <BuildingTip info={buildingTip.info} x={buildingTip.x} y={buildingTip.y} />}
+      {ready && inCampus && !storeId && buildingTip && <BuildingTip info={buildingTip.info} x={buildingTip.x} y={buildingTip.y} />}
       {ready && agentTip && view.mode === "floor" && !view.agentId && <AgentTip agentId={agentTip.id} x={agentTip.x} y={agentTip.y} />}
       {ready && tasksOpen && <TaskPanel onClose={() => setTasksOpen(false)} onOpen={setTaskId} system={system} />}
       {ready && brainOpen && <BrainPanel onClose={() => setBrainOpen(false)} />}

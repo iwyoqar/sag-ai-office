@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
-import type { FloorDto } from "@sag/shared";
+import type { FloorDto, NetworkDto } from "@sag/shared";
 import { agentsOfFloor, peopleOfFloor, type Office } from "../api/office";
 import { ATTIC, FL, PLINTH, PODIUM, X0, X1, Z0, Z1, floorRange, outline } from "./buildingGeometry";
 import { CloudBank } from "./clouds";
@@ -11,7 +11,8 @@ import { OfficeFloor } from "./office/OfficeFloor";
 import { planFor } from "./office/plan";
 import { Tweens, ease, lerp } from "./tween";
 import { CampusScene, type CampusBuildingInfo } from "./campus/CampusScene";
-import { CAMPUS_BOUNDS } from "./campus/layout";
+import { CAMPUS_BOUNDS, STORE_DISTRICT } from "./campus/layout";
+import { StoreDistrict, type StoreOccupant } from "./network/district";
 
 export interface SceneEvents {
   onProgress(p: number): void;
@@ -26,7 +27,12 @@ export interface SceneEvents {
   onHoverAgent(agentId: string | null, x: number, y: number): void;
   onHoverBuilding(info: CampusBuildingInfo | null, x: number, y: number): void;
   onSelectBuilding(id: string): void;
+  /** a store of the SAG network (district beside the campus) was clicked */
+  onSelectStore(unitId: string): void;
 }
+
+/** The store district lies across the M37 road from the campus (schematic layout, not real positions). */
+const DISTRICT_ORIGIN = new THREE.Vector3(STORE_DISTRICT.x0 + 20, 0, STORE_DISTRICT.z0 + 48);
 
 export type SceneMode = "intro" | "campus" | "building" | "overview" | "floor";
 
@@ -81,6 +87,8 @@ export class SceneController {
   private basementGround!: THREE.Mesh;
   private outerGround!: THREE.Mesh;
   private campus: CampusScene;
+  private district = new StoreDistrict();
+  private hoveredStore: string | null = null;
   private zones: FloorZone[] = [];
   private interiors = new Map<string, Interior>();
   private clouds: CloudBank | null = null;
@@ -138,7 +146,7 @@ export class SceneController {
 
     this.setupEnvironment();
     this.campus = new CampusScene();
-    this.scene.add(this.campus.root);
+    this.scene.add(this.campus.root, this.district.root);
     this.campus.setActive(false);
     this.setupIntro();
     this.resize();
@@ -262,6 +270,7 @@ export class SceneController {
   private applyDioramaVisibility(hidden: boolean) {
     if (this.building) this.building.visible = !hidden;
     this.campus.root.visible = !hidden;
+    this.district.root.visible = !hidden;
     this.shadowCatcher.visible = hidden;
     if (hidden) {
       this.outerGround.visible = false;
@@ -566,12 +575,13 @@ export class SceneController {
     }
   }
 
-  /** Keep the orbit target on the campus so panning never drifts into empty land. */
+  /** Keep the orbit target on the campus (and the store district) so panning never drifts into empty land. */
   private clampTarget() {
     if (this.mode !== "campus" && this.mode !== "building") return;
     const t = this.controls.target;
-    t.x = THREE.MathUtils.clamp(t.x, CAMPUS_BOUNDS.x0, CAMPUS_BOUNDS.x1);
-    t.z = THREE.MathUtils.clamp(t.z, CAMPUS_BOUNDS.z0, CAMPUS_BOUNDS.z1);
+    const d = this.district.bounds;
+    t.x = THREE.MathUtils.clamp(t.x, Math.min(CAMPUS_BOUNDS.x0, d.isEmpty() ? Infinity : d.min.x), Math.max(CAMPUS_BOUNDS.x1, d.isEmpty() ? -Infinity : d.max.x));
+    t.z = THREE.MathUtils.clamp(t.z, CAMPUS_BOUNDS.z0, Math.max(CAMPUS_BOUNDS.z1, d.isEmpty() ? -Infinity : d.max.z));
     t.y = THREE.MathUtils.clamp(t.y, 0, 30);
   }
 
@@ -618,9 +628,57 @@ export class SceneController {
     for (const z of this.zones) z.group.visible = on;
   }
 
+  // ---- store district ------------------------------------------------------
+  /** The SAG store network the viewer may see, as buildings beside the campus. */
+  setNetwork(net: NetworkDto) {
+    this.district.setNetwork(net, DISTRICT_ORIGIN);
+    this.invalidate();
+  }
+
+  /** Fly to the store district as a whole. */
+  async showStores() {
+    if (this.mode === "intro" || this.district.bounds.isEmpty()) return;
+    this.leaveFloor();
+    this.district.close();
+    this.mode = "campus";
+    this.focusedBuilding = null;
+    this.campus.setActive(true);
+    this.applyLimits("campus");
+    const target = this.district.bounds.getCenter(new THREE.Vector3());
+    const size = this.district.bounds.getSize(new THREE.Vector3());
+    const dist = this.fitDistance(size.x * 0.95, size.z * 0.75 + 30);
+    await this.flyTo(this.spherical(target, dist, 12, 50), target, 1400);
+  }
+
+  /** Fly into a store and open it as a cut-away with the people inside. */
+  async focusStore(unitId: string) {
+    if (this.mode === "intro") return;
+    this.leaveFloor();
+    const view = this.district.open(unitId);
+    if (!view) return;
+    this.mode = "building";
+    this.focusedBuilding = null;
+    this.campus.setActive(true);
+    this.campus.setHovered(null);
+    this.applyLimits("building");
+    this.controls.minDistance = 6;
+    await this.flyTo(view.pos, view.target, 1300);
+  }
+
+  setStoreOccupants(unitId: string, people: StoreOccupant[]) {
+    this.district.setOccupants(unitId, people);
+    this.invalidate();
+  }
+
+  closeStore() {
+    this.district.close();
+    this.invalidate();
+  }
+
   async showCampus() {
     if (this.mode === "intro") return;
     this.leaveFloor();
+    this.district.close();
     this.mode = "campus";
     this.focusedBuilding = null;
     this.setHovered(null);
@@ -635,6 +693,7 @@ export class SceneController {
   async focusBuilding(id: string) {
     if (this.mode === "intro" || !this.campus.targets.has(id)) return;
     this.leaveFloor();
+    this.district.close();
     this.mode = "building";
     this.focusedBuilding = id;
     this.setZonesVisible(false);
@@ -650,6 +709,7 @@ export class SceneController {
   async showOffice() {
     if (this.mode === "intro") this.tweens.finishAll();
     if (this.mode === "floor") return this.closeFloor();
+    this.district.close();
     this.mode = "overview";
     this.focusedBuilding = null;
     this.campus.setActive(false);
@@ -837,15 +897,29 @@ export class SceneController {
   private pick() {
     this.raycaster.setFromCamera(this.pointer, this.camera);
     if (this.mode === "campus" || this.mode === "building") {
-      const hit = this.raycaster.intersectObjects(this.campus.pickables, false)[0];
-      const id = (hit?.object.userData.buildingId as string) ?? null;
+      // campus buildings and stores share one ray: whichever is nearest wins
+      const hit = this.raycaster.intersectObjects([...this.campus.pickables, ...this.district.pickables], false)[0];
+      // the opened store is a cut-away: its (hidden) shell must not catch the pointer
+      const shell = this.district.unitAt(hit);
+      const store = shell === this.district.openStore ? null : shell;
+      if (store !== this.hoveredStore) {
+        this.hoveredStore = store;
+        this.district.setHovered(store);
+        this.invalidate();
+      }
+      // store shells carry a buildingId too (campus modules); only real campus buildings count here
+      const id = shell ? null : ((hit?.object.userData.buildingId as string) ?? null);
       if (id !== this.hoveredBuilding) {
         this.hoveredBuilding = id;
         this.campus.setHovered(id ?? this.focusedBuilding);
-        this.renderer.domElement.style.cursor = id ? "pointer" : "";
         this.invalidate();
       }
-      this.ev.onHoverBuilding(id ? this.campus.targets.get(id)!.info : null, this.pointerClient.x, this.pointerClient.y);
+      this.renderer.domElement.style.cursor = id || store ? "pointer" : "";
+      const card = store ? this.district.card(store) : undefined;
+      const info: CampusBuildingInfo | null = card
+        ? { id: card.id, name: card.name, interaction: "inspect", category: `${card.regionName} · ${card.isHeadOffice ? "Bosh ofis" : card.ownershipModel === "SAG_OWNED" ? "HD · SAG do'koni" : "F · Franshiza do'koni"}` }
+        : id ? this.campus.targets.get(id)!.info : null;
+      this.ev.onHoverBuilding(info, this.pointerClient.x, this.pointerClient.y);
     } else if (this.mode === "overview") {
       const hit = this.raycaster.intersectObjects(this.zones.flatMap((z) => z.meshes), false)[0];
       const id = (hit?.object.userData.floorId as string) ?? null;
@@ -879,6 +953,8 @@ export class SceneController {
     el.addEventListener("pointerleave", () => {
       this.setHovered(null);
       this.hoveredBuilding = null;
+      this.hoveredStore = null;
+      this.district.setHovered(null);
       this.campus.setHovered(this.focusedBuilding);
       this.ev.onHover(null, 0, 0);
       this.ev.onHoverAgent(null, 0, 0);
@@ -890,7 +966,8 @@ export class SceneController {
       this.downAt = null;
       setPointer(e);
       this.pick();
-      if ((this.mode === "campus" || this.mode === "building") && this.hoveredBuilding) this.ev.onSelectBuilding(this.hoveredBuilding);
+      if ((this.mode === "campus" || this.mode === "building") && this.hoveredStore) this.ev.onSelectStore(this.hoveredStore);
+      else if ((this.mode === "campus" || this.mode === "building") && this.hoveredBuilding) this.ev.onSelectBuilding(this.hoveredBuilding);
       else if (this.mode === "overview" && this.hovered) this.ev.onSelectFloor(this.hovered);
       else if (this.mode === "floor" && this.hoveredAgent?.startsWith("emp:")) this.ev.onSelectEmployee(this.hoveredAgent.slice(4));
       else if (this.mode === "floor" && this.hoveredAgent) this.ev.onSelectAgent(this.hoveredAgent);
@@ -950,6 +1027,7 @@ export class SceneController {
       this.interiors.get(this.currentFloor)?.update(t);
       animating = true;
     }
+    if (this.district.update(this.frameDt, t)) animating = true;
     if (this.stepDiorama(this.frameDt)) animating = true;
     if (this.controls.enabled) this.controls.update();
     if (animating) this.needsRender = Math.max(this.needsRender, 1);
@@ -961,6 +1039,7 @@ export class SceneController {
       this.fog.near = this.diorama >= 1 ? dist * 1.6 : dist * 1.3 + 80;
       this.fog.far = this.diorama >= 1 ? dist * 4 : dist * 5 + 900;
       this.campus.updateLabelDetail(dist);
+      this.district.setLabelDetail(dist < 380);
       this.renderer.render(this.scene, this.camera);
       this.labels.render(this.scene, this.camera);
     }

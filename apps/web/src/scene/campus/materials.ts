@@ -1,6 +1,7 @@
-// Procedural PBR materials for the campus. Textures are generated once on a canvas (no extra downloads)
-// and tiled in world metres via meter-based UVs (see boxGeometryM).
+// Procedural PBR materials for the campus. Textures are generated once on a canvas (no extra downloads, except the
+// SAG logo image) and tiled in world metres via meter-based UVs (see boxGeometryM).
 import * as THREE from "three";
+import logoUrl from "../../assets/sag-logo.png";
 
 type Paint = (g: CanvasRenderingContext2D, w: number, h: number) => void;
 
@@ -193,15 +194,13 @@ const gateMap = () =>
     }
   });
 
-const signMap = () =>
-  canvasTex(512, 192, (g, w, h) => {
-    g.clearRect(0, 0, w, h);
-    g.fillStyle = "#2a2f9a";
-    g.font = "bold 150px Arial, sans-serif";
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.fillText("SAG", w / 2, h / 2 + 8);
-  });
+/** The official SAG logo (assets/sag-logo.png, transparent background) for the gate wall lettering. */
+const signMap = () => {
+  const t = new THREE.TextureLoader().load(logoUrl);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+};
 
 const acMap = () =>
   canvasTex(128, 96, (g, w, h) => {

@@ -210,3 +210,9 @@ export const PARKING: ParkingRow[] = [
 
 /** Campus footprint used for camera framing and pan limits. */
 export const CAMPUS_BOUNDS: Rect = { x0: -45, x1: 475, z0: -135, z1: 90 };
+
+/**
+ * Land reserved across the M37 road for the SAG store network (scene/network/district.ts). Schematic: the stores' real
+ * locations are not known; the district starts at (x0 + 20, z0 + 48) and no context houses are placed here.
+ */
+export const STORE_DISTRICT: Rect = { x0: -60, x1: 640, z0: CAMPUS_BOUNDS.z1 + 2, z1: 420 };

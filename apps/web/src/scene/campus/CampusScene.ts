@@ -64,7 +64,7 @@ export class CampusScene {
 
     // SAG lettering on the stone gate wall, right of the gate (photo 2).
     const gw = BUILDINGS.find((b) => b.id === "gatewall")!;
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(6, 2.25), m.sign);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(2.25 * (915 / 298), 2.25), m.sign); // logo proportions
     sign.position.set(gw.x0 + 21.5, 3.4, gw.z1 + 0.04);
     this.root.add(sign);
 

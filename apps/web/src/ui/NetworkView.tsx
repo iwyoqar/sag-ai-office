@@ -10,11 +10,28 @@ const STATUS: Record<string, string> = {
   ASSIGNED: "Berilgan", ACCEPTED: "Qabul qilingan", IN_PROGRESS: "Jarayonda", IN_REVIEW: "Tekshiruvda", DONE: "Bajarildi",
   CHANGES_REQUESTED: "Qayta ishlash", CANCELLED: "Bekor", QUEUED: "Navbatda", BACKLOG: "Kutmoqda", FAILED: "Xato", WAITING_APPROVAL: "Tasdiq kutmoqda",
 };
-/** Who stands in the opened store: active people this viewer may see, plus the store's AI Director. */
-function occupantsOf(o: UnitOverviewDto): StoreOccupant[] {
-  const people: StoreOccupant[] = (o.employees ?? [])
-    .filter((p) => p.status === "active" && p.activation === "ACTIVE")
-    .map((p) => ({ id: p.id, name: p.displayName, role: p.role ? ROLE[p.role] : "Xodim", kind: "human" }));
+/**
+ * Who stands in the opened store: people this viewer may see (active ones solid, positions waiting for a real person or
+ * for activation translucent) and the store's AI Director. Nobody is invented: a vacant position has no name.
+ */
+export function occupantsOf(o: UnitOverviewDto): StoreOccupant[] {
+  const people: StoreOccupant[] = [];
+  if (o.employees) {
+    for (const p of o.employees) {
+      const role = p.role ? ROLE[p.role] : "Xodim";
+      if (p.activation === "ACTIVE" && p.status === "active") people.push({ id: p.id, name: p.displayName, role, kind: "human" });
+      else if (p.activation === "PENDING_ACTIVATION")
+        people.push({
+          id: p.id, role, kind: "vacant",
+          name: p.displayName.includes("(tayinlanmagan)") ? `${role} — tayinlanmagan` : `${p.displayName} — faollashtirilmagan`,
+        });
+    }
+  } else if (o.director.assigned) {
+    // people are not visible to this viewer: only the director position, as on the store card
+    people.push(o.director.activation === "ACTIVE"
+      ? { id: `${o.unit.id}:director`, name: "Direktor", role: "Direktor", kind: "human" }
+      : { id: `${o.unit.id}:director`, name: "Direktor — tayinlanmagan", role: "Direktor", kind: "vacant" });
+  }
   if (o.aiDirector && o.aiDirector.lifecycle !== "ARCHIVED") people.push({ id: o.aiDirector.id, name: o.aiDirector.name.replace(/ — .*/, ""), role: "AI", kind: "ai" });
   return people;
 }
@@ -103,7 +120,7 @@ export function NetworkView({ onClose, unitAccount }: { onClose?: () => void; un
   );
 }
 
-function UnitPanel({ unitId, onClose, onLoaded }: { unitId: string; onClose?: () => void; onLoaded: (o: UnitOverviewDto) => void }) {
+export function UnitPanel({ unitId, onClose, onLoaded }: { unitId: string; onClose?: () => void; onLoaded: (o: UnitOverviewDto) => void }) {
   const loaded = useRef(onLoaded);
   loaded.current = onLoaded;
   const [o, setO] = useState<UnitOverviewDto | null>(null);
@@ -152,8 +169,9 @@ function UnitPanel({ unitId, onClose, onLoaded }: { unitId: string; onClose?: ()
       {u.isHeadOffice && <p className="hint">Bosh ofis ma'lumotlari kampusdagi SAG Headquarters binosida.</p>}
       {!u.isHeadOffice && (
         <p className="hint">
-          Binoda: {occupantsOf(o).filter((p) => p.kind === "human").length} xodim{o.aiDirector ? " va AI Direktor" : ""}.
-          {o.employees ? " Faollashtirilmagan hisoblar binoda ko'rinmaydi." : " Xodimlar sizga ko'rinmaydi."}
+          Binoda: {occupantsOf(o).filter((p) => p.kind === "human").length} xodim{o.aiDirector ? " va AI Direktor" : ""}
+          {occupantsOf(o).some((p) => p.kind === "vacant") ? "; shaffof figuralar — hali egallanmagan yoki faollashtirilmagan lavozimlar" : ""}.
+          {o.employees ? "" : " Xodimlar sizga ko'rinmaydi."}
         </p>
       )}
 

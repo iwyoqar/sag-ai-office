@@ -30,7 +30,8 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .app { position: fixed; inset: 0; }
-.stage { position: absolute; inset: 0; }
+/* own stacking context: CSS2DRenderer gives every 3D label a z-index, which must never rise above the panels */
+.stage { position: absolute; inset: 0; z-index: 0; isolation: isolate; }
 .stage canvas { display: block; touch-action: none; }
 .label-layer { position: absolute; inset: 0; pointer-events: none; }
 /* side/bottom panels sit above the 3D name plates (CSS2D labels must not show through them) */
@@ -701,7 +702,9 @@ pre.args { font-family: var(--mono); font-size: 11.5px; background: #f8fafc; bor
 .network-legend .crumb { align-self: flex-start; margin-top: 4px; }
 .network-fallback { position: absolute; inset: 120px 16px 16px; overflow: auto; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .network-fallback li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.unit-panel { position: absolute; right: 16px; top: 16px; bottom: 16px; width: min(380px, calc(100% - 32px)); overflow-y: auto; }
+.unit-panel { width: min(380px, calc(100% - 32px)); overflow-y: auto; }
+.network-view .unit-panel { position: absolute; right: 16px; top: 16px; bottom: 16px; }
+.network-person.vacant { background: rgba(255, 255, 255, 0.7); color: #64748b; border: 1px dashed #94a3b8; box-shadow: none; font-weight: 500; }
 .unit-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 8px; }
 .unit-kpis div { display: flex; flex-direction: column; padding: 8px; border-radius: 10px; background: var(--bg-2, #f1f5f9); font-variant-numeric: tabular-nums; }
 .unit-kpis b { font-size: 17px; }

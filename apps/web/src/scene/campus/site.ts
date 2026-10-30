@@ -1,7 +1,7 @@
 // Outdoor environment: ground, roads, walks, markings, parking + vehicles, lamps, trees, surrounding context.
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { CAMPUS_BOUNDS, PARKING, ROADS, WALKS, type Rect } from "./layout";
+import { CAMPUS_BOUNDS, PARKING, ROADS, STORE_DISTRICT, WALKS, type Rect } from "./layout";
 import { groundPlaneM, type CampusMaterials } from "./materials";
 import { Instancer, UNIT } from "./instancer";
 
@@ -209,7 +209,7 @@ export function buildSite(m: CampusMaterials, inst: Instancer): Site {
   const houseRoof = new THREE.ConeGeometry(0.72, 0.45, 4);
   houseRoof.rotateY(Math.PI / 4);
   houseRoof.translate(0, 1.22, 0);
-  const keepOut: Rect[] = [{ x0: CAMPUS_BOUNDS.x0 - 8, x1: CAMPUS_BOUNDS.x1 + 8, z0: CAMPUS_BOUNDS.z0 - 8, z1: 92 }];
+  const keepOut: Rect[] = [{ x0: CAMPUS_BOUNDS.x0 - 8, x1: CAMPUS_BOUNDS.x1 + 8, z0: CAMPUS_BOUNDS.z0 - 8, z1: 92 }, STORE_DISTRICT];
   let hi = 0;
   for (let x = -330; x < 760; x += 17) {
     for (let z = -330; z < 260; z += 17) {
