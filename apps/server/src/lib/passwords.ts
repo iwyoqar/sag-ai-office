@@ -3,7 +3,15 @@ import { randomBytes, scrypt as scryptCb, timingSafeEqual, type ScryptOptions } 
 const scrypt = (pw: string, salt: Buffer, len: number, opts: ScryptOptions) =>
   new Promise<Buffer>((res, rej) => scryptCb(pw, salt, len, opts, (e, k) => (e ? rej(e) : res(k))));
 
-const PARAMS = { N: 16384, r: 8, p: 1 };
+let PARAMS = { N: 16384, r: 8, p: 1 };
+
+/**
+ * Test suites only: a cheap work factor for new hashes, so CPU-bound hashing does not decide whether a test
+ * meets its timeout under parallel load. Verification always uses the parameters stored in the hash.
+ */
+export function setHashCostForTests(params: { N: number; r: number; p: number }) {
+  PARAMS = params;
+}
 
 /** Format: scrypt$N$r$p$saltB64$hashB64 */
 export async function hashPassword(pw: string): Promise<string> {

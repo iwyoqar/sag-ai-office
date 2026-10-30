@@ -3,7 +3,7 @@ import { z } from "zod";
 import { TASK_PRIORITIES } from "@sag/shared";
 import { type Deps, actorOf, parse, requirePerm } from "../app.js";
 import {
-  calendar, createRoutine, deleteRoutine, getRoutine, listRoutines, runOccurrence, setRoutineStatus, updateRoutine,
+  calendar, createRoutine, deleteRoutine, getRoutine, listRoutines, runNow, setRoutineStatus, updateRoutine,
 } from "../schedule/service.js";
 import { badRequest, conflict } from "../lib/errors.js";
 
@@ -54,12 +54,11 @@ export const scheduleRoutes = (d: Deps) => async (app: FastifyInstance) => {
     return { routine: setRoutineStatus(d, parse(Id, req.params).id, "ACTIVE", actorOf(u)) };
   });
 
-  /** Run now — recorded as its own occurrence; a double click within the same second is ignored. */
+  /** Run now — recorded as its own occurrence; refused while the previous run's task is still open. */
   app.post("/api/routines/:id/run", async (req) => {
     const u = requirePerm(req, "tasks:manage");
-    const at = new Date(Math.floor(Date.now() / 1000) * 1000);
-    const run = runOccurrence(d, parse(Id, req.params).id, at, actorOf(u));
-    if (!run) throw conflict("already_running", "Bu routine hozirgina ishga tushirildi");
+    const run = runNow(d, parse(Id, req.params).id, actorOf(u));
+    if (!run) throw conflict("already_running", "Bu routine'ning oldingi ishi hali tugamagan");
     return { run };
   });
 

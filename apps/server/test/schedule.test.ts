@@ -99,8 +99,11 @@ describe("scheduler", () => {
     expect((await api.post("/api/routines", { name: "x", rrule: "FREQ=HOURLY" })).status).toBe(400);
     const r = (await api.post("/api/routines", { name: "Oylik moliya xulosasi", departmentId: "finance", rrule: "FREQ=MONTHLY;BYMONTHDAY=1;BYHOUR=10" })).body.routine;
     expect(r).toMatchObject({ schedule: "Har oy 1-sanada 10:00", timezone: "Asia/Tashkent", status: "ACTIVE" });
-    expect((await api.post(`/api/routines/${r.id}/run`)).status).toBe(200);
-    expect((await api.post(`/api/routines/${r.id}/run`)).status).toBe(409);
+    const first = (await api.post(`/api/routines/${r.id}/run`)).body.run;
+    expect(first.taskId).toBeTruthy();
+    expect((await api.post(`/api/routines/${r.id}/run`)).status).toBe(409); // previous run still open
+    expect((await api.post(`/api/tasks/${first.taskId}/cancel`)).status).toBe(200);
+    expect((await api.post(`/api/routines/${r.id}/run`)).status).toBe(200); // closed: may run again
     expect((await api.post(`/api/routines/${r.id}/pause`)).body.routine.status).toBe("PAUSED");
     expect((await api.post(`/api/routines/${r.id}/resume`)).body.routine.status).toBe("ACTIVE");
     const from = new Date().toISOString(), to = new Date(Date.now() + 40 * 86_400_000).toISOString();

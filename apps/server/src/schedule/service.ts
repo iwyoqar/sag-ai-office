@@ -173,6 +173,21 @@ export function runOccurrence(ctx: Ctx, routineId: string, scheduledFor: Date, a
 }
 
 /**
+ * "Run now" from a person. Refused while an earlier run's task is still open, so a double click (or two people
+ * pressing at once) never creates two tasks — checked and inserted in one write transaction.
+ */
+export function runNow(ctx: Ctx, routineId: string, actor: Actor, at = new Date()): RunDto | null {
+  return ctx.db.tx(() => {
+    const open = ctx.db.get(
+      `SELECT 1 FROM routine_runs rr JOIN tasks t ON t.id = rr.task_id
+       WHERE rr.routine_id = ? AND t.status NOT IN ('DONE', 'FAILED', 'CANCELLED') LIMIT 1`,
+      routineId,
+    );
+    return open ? null : runOccurrence(ctx, routineId, at, actor);
+  });
+}
+
+/**
  * One scheduler pass. Due routines fire once (missed occurrences while the server was down are caught up
  * with a single run, not a burst), and scheduled one-off tasks are released to the queue.
  */

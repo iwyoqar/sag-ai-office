@@ -114,3 +114,19 @@ describe("user management", () => {
     expect(await loginCookie(app, "admin", "Boshqa-Parol-2026")).toContain("sag_session");
   });
 });
+
+describe("password hashes", () => {
+  it("verifies by the parameters stored in each hash (production work factor included)", async () => {
+    const { hashPassword, setHashCostForTests, verifyPassword } = await import("../src/lib/passwords.js");
+    setHashCostForTests({ N: 16384, r: 8, p: 1 });
+    try {
+      const prod = await hashPassword("Kuchli-Parol-2026");
+      expect(prod.startsWith("scrypt$16384$8$1$")).toBe(true);
+      expect(await verifyPassword("Kuchli-Parol-2026", prod)).toBe(true);
+      expect(await verifyPassword("noto'g'ri", prod)).toBe(false);
+    } finally {
+      setHashCostForTests({ N: 1024, r: 8, p: 1 });
+    }
+    expect(await verifyPassword("x", await hashPassword("x"))).toBe(true);
+  });
+});
