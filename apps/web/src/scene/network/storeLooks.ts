@@ -184,6 +184,31 @@ if (typeof Image !== "undefined") {
   img.src = logoUrl;
 }
 
+/** The logo alone as a texture (aspect 915 : 298), optionally recoloured white (the blue reception wall). */
+export function logoTexture(white = false): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 915;
+  c.height = 298;
+  const tex = new THREE.CanvasTexture(c);
+  const draw = () => {
+    const g = c.getContext("2d")!;
+    g.clearRect(0, 0, c.width, c.height);
+    g.drawImage(logoCanvas!, 0, 0, c.width, c.height);
+    if (white) {
+      g.globalCompositeOperation = "source-in";
+      g.fillStyle = "#ffffff";
+      g.fillRect(0, 0, c.width, c.height);
+      g.globalCompositeOperation = "source-over";
+    }
+    tex.needsUpdate = true;
+  };
+  if (logoCanvas) draw();
+  else onLogo.push(draw);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
 /**
  * A sign as a transparent texture: the official logo (text "saG") or plain text, plus an optional suffix ("XL", "xs").
  * Returns the width/height ratio. Until the logo image has loaded the texture is redrawn when it arrives.

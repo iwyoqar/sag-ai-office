@@ -9,9 +9,7 @@ import type { NetworkDto, UnitCardDto } from "@sag/shared";
 import { boxGeometryM } from "../campus/materials";
 import { Character } from "../office/character";
 import { buildStore, lookFor } from "./storeLooks";
-
-/** store footprint on the plot */
-interface Rect { x0: number; x1: number; z0: number; z1: number }
+import { buildStoreInterior, type Rect, type Spot } from "./storeInterior";
 
 const PER_ROW = 3;
 const STORE_PITCH_X = 38;
@@ -52,80 +50,7 @@ export function label(text: string, cls: string, badge?: { text: string; cls: st
   return new CSS2DObject(el);
 }
 
-// ---- store interior (cut-away): terracotta walls, carpet racks, display rugs, blue reception desk.
-const TERRACOTTA = 0xc0623f;
-const RECEPTION_BLUE = 0x1f4fbf;
-const CARPETS = [0x8c2f39, 0x1f3b5c, 0xc9b28a, 0x2f6f6a, 0x6b3f2a, 0x9a8f7a];
-const imat = new Map<number, THREE.MeshStandardMaterial>();
-const im = (c: number, rough = 0.85) => {
-  let m = imat.get(c);
-  if (!m) imat.set(c, (m = new THREE.MeshStandardMaterial({ color: c, roughness: rough })));
-  return m;
-};
-const ROLL = new THREE.CylinderGeometry(0.22, 0.22, 2.4, 14).rotateZ(Math.PI / 2);
 const RING = new THREE.RingGeometry(0.42, 0.5, 32);
-
-function box(g: THREE.Group, w: number, h: number, d: number, color: number, x: number, y: number, z: number) {
-  const m = new THREE.Mesh(boxGeometryM(w, h, d), im(color));
-  m.position.set(x, y + h / 2, z);
-  m.castShadow = true;
-  m.receiveShadow = true;
-  g.add(m);
-  return m;
-}
-
-function buildInterior(s: Rect): THREE.Group {
-  const g = new THREE.Group();
-  const w = s.x1 - s.x0, d = s.z1 - s.z0, cx = (s.x0 + s.x1) / 2, cz = (s.z0 + s.z1) / 2;
-  const base = 0.5;
-  box(g, w, 0.12, d, 0xead8c4, cx, base, cz); // warm floor
-  const wall = TERRACOTTA, t = 0.3, wh = 1.6;
-  box(g, w, wh, t, wall, cx, base, s.z0 + t / 2); // back
-  box(g, t, wh, d, wall, s.x0 + t / 2, base, cz);
-  box(g, t, wh, d, wall, s.x1 - t / 2, base, cz);
-  const gap = 2.6; // front wall with the door opening
-  const side = (w - gap) / 2;
-  box(g, side, wh, t, wall, s.x0 + side / 2, base, s.z1 - t / 2);
-  box(g, side, wh, t, wall, s.x1 - side / 2, base, s.z1 - t / 2);
-  // open carpet racks along the back wall: back board, two posts, rolled carpets lying on them
-  const racks = Math.max(2, Math.floor((w - 2) / 3.2));
-  const pitch = (w - 2) / racks;
-  for (let i = 0; i < racks; i++) {
-    const x = s.x0 + 1 + pitch * (i + 0.5);
-    box(g, 2.7, 2.1, 0.1, 0x5b4636, x, base + 0.12, s.z0 + 0.55);
-    box(g, 0.1, 2.1, 0.7, 0x4a382b, x - 1.3, base + 0.12, s.z0 + 0.9);
-    box(g, 0.1, 2.1, 0.7, 0x4a382b, x + 1.3, base + 0.12, s.z0 + 0.9);
-    for (let r = 0; r < 4; r++) {
-      const roll = new THREE.Mesh(ROLL, im(CARPETS[(i * 3 + r) % CARPETS.length], 0.95));
-      roll.position.set(x, base + 0.35 + r * 0.46, s.z0 + 0.95);
-      roll.castShadow = true;
-      g.add(roll);
-    }
-  }
-  // display rugs on the floor
-  box(g, 3.2, 0.03, 2.2, CARPETS[0], cx - w * 0.2, base + 0.12, cz + 0.3);
-  box(g, 3.2, 0.03, 2.2, CARPETS[3], cx + w * 0.2, base + 0.12, cz + 0.3);
-  // terracotta accent floor zone and the blue reception desk beside the entrance
-  box(g, w * 0.4, 0.02, d * 0.35, 0xb85a3a, cx + w * 0.25, base + 0.12, s.z1 - d * 0.2);
-  box(g, 4.2, 1.05, 0.9, RECEPTION_BLUE, s.x1 - 3.6, base + 0.12, s.z1 - 2.4);
-  box(g, 4.3, 0.06, 1.0, 0xf4f4f2, s.x1 - 3.6, base + 1.17, s.z1 - 2.4);
-  box(g, 0.9, 1.05, 2.2, RECEPTION_BLUE, s.x1 - 1.95, base + 0.12, s.z1 - 3.4);
-  return g;
-}
-
-/** Standing spots inside the store, front to back, never on the racks or the counter. */
-function spots(s: Rect, n: number): THREE.Vector3[] {
-  const w = s.x1 - s.x0, d = s.z1 - s.z0;
-  const out: THREE.Vector3[] = [];
-  const cols = Math.max(2, Math.floor((w - 4) / 2.2));
-  for (let i = 0; i < n; i++) {
-    const row = Math.floor(i / cols), col = i % cols;
-    const x = s.x0 + 2 + ((w - 4) / Math.max(1, cols - 1)) * col;
-    const z = s.z0 + d * 0.45 + row * 1.6;
-    out.push(new THREE.Vector3(x, 0.62, Math.min(z, s.z1 - 1.2)));
-  }
-  return out;
-}
 
 /** A vacant position reads as a translucent figure: same body, no identity. */
 function ghost(c: Character) {
@@ -148,7 +73,7 @@ export class StoreDistrict {
   private labelsNear = true;
   private hovered: string | null = null;
   private selected: string | null = null;
-  private inside: { unitId: string; interior: THREE.Group; people: Character[]; extra: THREE.Object3D[] } | null = null;
+  private inside: { unitId: string; interior: THREE.Group; aiSpot: Spot; spots: Spot[]; people: Character[]; extra: THREE.Object3D[] } | null = null;
 
   constructor() {
     this.root.name = "store-district";
@@ -265,9 +190,9 @@ export class StoreDistrict {
     if (this.inside?.unitId !== unitId) {
       this.close();
       b.group.visible = false;
-      const interior = buildInterior(b.rect);
-      this.root.add(interior);
-      this.inside = { unitId, interior, people: [], extra: [] };
+      const built = buildStoreInterior(b.rect);
+      this.root.add(built.group);
+      this.inside = { unitId, interior: built.group, aiSpot: built.aiSpot, spots: built.spots, people: [], extra: [] };
     }
     this.selected = unitId;
     this.paintOutlines();
@@ -294,25 +219,29 @@ export class StoreDistrict {
   setOccupants(unitId: string, people: StoreOccupant[]) {
     if (!this.inside || this.inside.unitId !== unitId) return;
     this.clearPeople();
-    const b = this.buildings.get(unitId)!;
-    const at = spots(b.rect, people.length);
     const inside = this.inside;
-    people.forEach((p, i) => {
+    // the AI Director works at the monitor desk; people take the consultant desk, the reception, then the aisles
+    const free = [...inside.spots];
+    const place = (p: StoreOccupant): Spot => (p.kind === "ai" ? inside.aiSpot : free.shift() ?? inside.spots[inside.spots.length - 1]);
+    people.forEach((p) => {
+      const spot = place(p);
+      const pos = spot.pos;
       const c = new Character(p.id, p.kind !== "ai");
       c.pose = p.kind === "ai" ? "standWait" : "stand";
       if (p.kind === "vacant") ghost(c);
-      c.root.position.copy(at[i]);
+      c.root.position.copy(pos);
+      c.root.rotation.y = spot.yaw;
       inside.interior.add(c.root);
       inside.people.push(c);
       if (p.kind === "ai") {
         const ring = new THREE.Mesh(RING, new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.8 }));
         ring.rotation.x = -Math.PI / 2;
-        ring.position.set(at[i].x, 0.64, at[i].z);
+        ring.position.set(pos.x, pos.y + 0.02, pos.z);
         inside.interior.add(ring);
         inside.extra.push(ring);
       }
       const l = label(p.name, `network-person ${p.kind}`, { text: p.role, cls: "net-role" });
-      l.position.set(at[i].x, 2.35, at[i].z);
+      l.position.set(pos.x, pos.y + 1.95, pos.z);
       inside.interior.add(l);
       inside.extra.push(l);
     });
