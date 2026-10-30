@@ -1,10 +1,11 @@
 // W4 agent marketplace (HQ first): catalog from the existing agents, hire checks, AUTO / admin decisions, archive-all.
 import { describe, expect, it } from "vitest";
-import type { TemplateTool } from "@sag/shared";
+import { OPEN_TASK_STATUSES, type TemplateTool } from "@sag/shared";
 import { addUser, makeApp } from "./helpers.js";
 import { loadUser } from "../src/lib/auth.js";
+import { createTask } from "../src/domain/tasks.js";
 import {
-  addVersion, approveRequest, approveVersion, checkHire, createTemplate, getLimits, listRequests, rejectRequest, requestHire,
+  addVersion, approveRequest, archiveAll, archivePreview, approveVersion, checkHire, createTemplate, getLimits, listRequests, rejectRequest, requestHire,
   retireTemplate, setLimit, type VersionInput,
 } from "../src/domain/marketplace.js";
 import { ensureAgentTemplates, groupAgents, type SourceAgent } from "../src/domain/templatesFromAgents.js";
@@ -273,5 +274,31 @@ describe("hiring", () => {
     expect(out).toMatchObject({ status: "REJECTED", decisionReason: "Hozir byudjet yo'q", decidedVia: "user" });
     expect(notes(m.db, m.headId, "hire.decided")).toBe(1);
     expect(listRequests(m.deps, m.head()).map((x) => x.id)).toContain(r.id);
+  });
+});
+
+// ---------------------------------------------------------------- archive all
+
+describe("archive all", () => {
+  it("archive-all: preview counts, cancels open tasks, keeps history, idempotent", async () => {
+    const m = await market();
+    const agent = m.db.get<{ id: string }>("SELECT id FROM agents WHERE business_unit_id = 'hq' AND lifecycle = 'ACTIVE' ORDER BY id LIMIT 1")!.id;
+    const task = createTask(m.deps, { title: "Ochiq ish", agentId: agent }, { type: "user", id: m.admin.id });
+    const agents = m.db.get<{ n: number }>("SELECT COUNT(*) n FROM agents WHERE business_unit_id = 'hq' AND lifecycle <> 'ARCHIVED' AND is_primary_director = 0")!.n;
+    const open = m.db.get<{ n: number }>(
+      `SELECT COUNT(*) n FROM tasks t JOIN agents a ON a.id = t.agent_id
+       WHERE a.business_unit_id = 'hq' AND a.lifecycle <> 'ARCHIVED' AND a.is_primary_director = 0 AND t.status IN (${OPEN_TASK_STATUSES.map((x) => `'${x}'`).join(",")})`,
+    )!.n;
+    expect(open).toBeGreaterThanOrEqual(1);
+    expect(archivePreview(m.deps, m.admin)).toEqual({ agents, openTasks: open });
+    expect(() => archivePreview(m.deps, m.head())).toThrow();
+    expect(() => archiveAll(m.deps, m.head())).toThrow();
+
+    expect(archiveAll(m.deps, m.admin)).toEqual({ archived: agents, cancelledTasks: open });
+    expect(m.db.get<{ status: string }>("SELECT status FROM tasks WHERE id = ?", task.id)!.status).toBe("CANCELLED");
+    expect(m.db.get<{ n: number }>("SELECT COUNT(*) n FROM agents WHERE business_unit_id = 'hq' AND lifecycle <> 'ARCHIVED' AND is_primary_director = 0")!.n).toBe(0);
+    expect(m.db.get<{ n: number }>("SELECT COUNT(*) n FROM agents")!.n).toBeGreaterThanOrEqual(agents); // history kept
+    expect(m.db.get("SELECT 1 FROM audit_logs WHERE action = 'marketplace.archive_all'")).toBeTruthy();
+    expect(archiveAll(m.deps, m.admin)).toEqual({ archived: 0, cancelledTasks: 0 });
   });
 });

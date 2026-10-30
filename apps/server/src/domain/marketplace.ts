@@ -1,6 +1,7 @@
 // W4 agent marketplace, HQ first (docs/superpowers/specs/2026-10-30-agent-marketplace-design.md): templates with
 // immutable approved versions, per-department hiring limits, and the hire checks. Hard checks reject a request; soft
 // checks send a head's request to the admin (AUTO policy: everything passing hires at once).
+import { OPEN_TASK_STATUSES } from "@sag/shared";
 import type { HireCheck, HireOutcome, HireRequestDto, HiringLimitDto, TemplateDto, TemplateTool, TemplateVersionDto } from "@sag/shared";
 import { json, now } from "../db/db.js";
 import type { AuthUser } from "../lib/auth.js";
@@ -8,7 +9,7 @@ import { audit } from "../lib/audit.js";
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors.js";
 import { slug, uid } from "../lib/ids.js";
 import { has } from "./access.js";
-import { createAgent } from "./agents.js";
+import { archiveAgent, createAgent } from "./agents.js";
 import type { Ctx } from "./context.js";
 import { notify } from "./notifications.js";
 import { riskOf } from "./templatesFromAgents.js";
@@ -444,4 +445,30 @@ export function listRequests(ctx: Ctx, u: AuthUser): HireRequestDto[] {
     ...(own ?? []),
   );
   return rows.map((r) => toRequest(ctx, r));
+}
+
+// ---------------------------------------------------------------- archive the seeded agents
+
+const OPEN_IN = OPEN_TASK_STATUSES.map((s) => `'${s}'`).join(",");
+/** HQ agents the marketplace replaces: everything not yet archived except a unit's primary (AI) director */
+const ARCHIVABLE = "business_unit_id = 'hq' AND lifecycle <> 'ARCHIVED' AND is_primary_director = 0";
+
+export function archivePreview(ctx: Ctx, u: AuthUser): { agents: number; openTasks: number } {
+  requireAdmin(u);
+  return {
+    agents: ctx.db.get<{ n: number }>(`SELECT COUNT(*) n FROM agents WHERE ${ARCHIVABLE}`)!.n,
+    openTasks: ctx.db.get<{ n: number }>(`SELECT COUNT(*) n FROM tasks WHERE status IN (${OPEN_IN}) AND agent_id IN (SELECT id FROM agents WHERE ${ARCHIVABLE})`)!.n,
+  };
+}
+
+/** Archives every HQ agent in one transaction; their open tasks are cancelled, all history stays. Idempotent. */
+export function archiveAll(ctx: Ctx, u: AuthUser): { archived: number; cancelledTasks: number } {
+  requireAdmin(u);
+  return ctx.db.tx(() => {
+    const ids = ctx.db.all<{ id: string }>(`SELECT id FROM agents WHERE ${ARCHIVABLE} ORDER BY id`).map((r) => r.id);
+    let cancelled = 0;
+    for (const id of ids) cancelled += archiveAgent(ctx, id, { strategy: "cancel" }, actor(u)).affectedTasks.length;
+    audit(ctx.db, actor(u), "marketplace.archive_all", null, { archived: ids.length, cancelledTasks: cancelled });
+    return { archived: ids.length, cancelledTasks: cancelled };
+  });
 }
