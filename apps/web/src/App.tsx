@@ -13,6 +13,7 @@ import { CalendarPanel } from "./ui/CalendarPanel";
 import { AccountDialog } from "./ui/AccountDialog";
 import { PeoplePanel } from "./ui/people/PeoplePanel";
 import { MarketplacePanel } from "./ui/marketplace/MarketplacePanel";
+import { WorkforcePanel } from "./ui/WorkforcePanel";
 import { EmployeeProfile } from "./ui/people/Employees";
 import { NewWork, WorkDetail } from "./ui/people/Work";
 import { TopBar } from "./ui/TopBar";
@@ -65,6 +66,7 @@ export function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [marketplaceOpen, setMarketplaceOpen] = useState(false);
+  const [workforceOpen, setWorkforceOpen] = useState(false);
   const [employeeId, setEmployeeId] = useState<string | null>(null);
   const [workId, setWorkId] = useState<string | null>(null);
   const [newWork, setNewWork] = useState<{ assigneeId?: string } | null>(null);
@@ -250,6 +252,7 @@ export function App() {
         onAccount={() => setAccountOpen(true)}
         onPeople={ready ? () => setPeopleOpen(true) : undefined}
         onMarketplace={ready ? () => setMarketplaceOpen(true) : undefined}
+        onWorkforce={ready ? () => setWorkforceOpen(true) : undefined}
         onNetwork={ready ? showStores : undefined}
         onOpenWork={ready ? setWorkId : undefined}
         system={ready ? system : null}
@@ -297,6 +300,7 @@ export function App() {
       {ready && calendarOpen && <CalendarPanel onClose={() => setCalendarOpen(false)} onOpenTask={setTaskId} />}
       {ready && taskId && <TaskDetail taskId={taskId} onClose={() => setTaskId(null)} onOpen={setTaskId} />}
       {ready && marketplaceOpen && <MarketplacePanel onClose={() => setMarketplaceOpen(false)} />}
+      {ready && workforceOpen && <WorkforcePanel onClose={() => setWorkforceOpen(false)} onOpenTask={(id) => { setWorkforceOpen(false); setTaskId(id); }} />}
       {ready && peopleOpen && (
         <PeoplePanel onClose={() => setPeopleOpen(false)} onOpenEmployee={setEmployeeId} onOpenTask={setWorkId} onNewTask={() => setNewWork({})} />
       )}

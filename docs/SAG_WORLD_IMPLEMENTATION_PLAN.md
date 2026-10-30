@@ -318,6 +318,22 @@ invitation; automatic primary Director agent; unit orchestrator; `assertHuman`; 
 Acceptance: full-or-nothing provisioning (fault injection at each step); idempotent replay; human-only operations
 refuse agent/system actors; director plans only inside its unit.
 
+## W3.2 — HQ AI Director (status 2026-10-30, working tree)
+
+Done for HQ — [report](reports/2026-10-30-w3-2-hq-ai-director.md):
+- **Providers:** Gemini + Claude router with classified health.
+- **AI Director:** structured plan, skill-based staffing, `task_handoffs`, evaluation with bounded revisions
+  (`task_evaluations`).
+- **Hiring:** AI-initiated `request_hire` under the unit policy (APPROVAL default).
+- **Visibility:** the workforce dashboard and project notifications.
+
+Verified with mocked providers only.
+
+Still ⏳:
+- real provider runs (credentials);
+- Telegram notices;
+- store AI Directors (W3).
+
 ## W4 — Agent marketplace and hiring policies
 
 Templates + approved versions; catalog of ten templates; `request_hire` tool (not offered under RESTRICTED or to

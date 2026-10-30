@@ -20,6 +20,9 @@ import { embedderOf, retrieve } from "../knowledge/semantic.js";
 import { addMemory, approvedMemory, requestApproval } from "../domain/brain.js";
 import type { ConnectorHub } from "../connectors/hub.js";
 import type { LlmMessage } from "../llm/types.js";
+import { directorAgent, directorSettings, selectAgent } from "../domain/workforce.js";
+import { requestHireForAgent } from "../domain/marketplace.js";
+import { notify } from "../domain/notifications.js";
 
 export interface RunnerOptions {
   concurrency: number;
@@ -48,6 +51,11 @@ const DEAD_AFTER_BEATS = 3;
 
 const PlanSchema = z.object({
   summary: z.string().max(2000).default(""),
+  objective: z.string().max(2000).default(""),
+  context: z.string().max(4000).default(""),
+  expectedOutcome: z.string().max(2000).default(""),
+  requiredSkills: z.array(z.string().max(80)).max(30).default([]),
+  approvalRequirements: z.string().max(1000).default(""),
   subtasks: z
     .array(
       z.object({
@@ -55,11 +63,21 @@ const PlanSchema = z.object({
         title: z.string().min(1).max(200),
         description: z.string().max(4000).default(""),
         department: z.string(),
+        skills: z.array(z.string().max(80)).max(10).default([]),
+        deliverable: z.string().max(1000).default(""),
         dependsOn: z.array(z.string()).default([]),
       }),
     )
     .min(1),
+  missingSkills: z.array(z.object({ skill: z.string().min(1).max(120), department: z.string(), reason: z.string().max(500).default("") })).max(10).default([]),
 });
+
+const EvalSchema = z.object({
+  verdict: z.enum(["ACCEPTED", "NEEDS_REVISION", "REJECTED", "NEEDS_HUMAN_REVIEW"]),
+  issues: z.array(z.string().max(500)).max(20).default([]),
+  feedback: z.string().max(4000).default(""),
+});
+type Verdict = z.infer<typeof EvalSchema>["verdict"];
 export type Plan = z.infer<typeof PlanSchema>;
 
 class StaleTask extends Error {}
@@ -275,24 +293,38 @@ export class AgentRunner {
     }
   }
 
-  /** Orchestrator step 1: split the job across departments, create subtasks + dependency graph. */
+  /**
+   * AI Director step 1 — understand, plan, staff, delegate. The model writes a structured plan (objective, expected
+   * outcome, skills, subtasks with dependencies and deliverables); the platform picks the agents (skills, department,
+   * load — HQ agents only), records one handoff per subtask, and asks the Marketplace for a hire where nobody fits.
+   */
   private async plan(task: TaskDto, signal: AbortSignal) {
     const agentId = task.agentId!;
     this.setAgent(agentId, "THINKING");
     this.stage(task, "Topshiriq tahlil qilinmoqda");
+    const settings = directorSettings(this.ctx, task.businessUnitId);
     const deps = this.ctx.db.all<{ id: string; name: string; focus: string; n: number }>(
       `SELECT d.id, d.name, d.focus, (SELECT COUNT(*) FROM agents a WHERE a.department_id = d.id AND a.lifecycle = 'ACTIVE') n
-       FROM departments d WHERE d.is_active = 1 AND d.id <> 'director' ORDER BY d.sort`,
+       FROM departments d WHERE d.is_active = 1 AND d.id <> 'director' AND d.business_unit_id = ? ORDER BY d.sort`, task.businessUnitId,
     );
-    const maxSub = Math.min(MAX_SUBTASKS, task.limits.maxAgents ?? MAX_SUBTASKS);
+    const roster = this.ctx.db.all<{ department_id: string; role: string; n: number }>(
+      "SELECT department_id, role, COUNT(*) n FROM agents WHERE business_unit_id = ? AND lifecycle = 'ACTIVE' AND department_id <> 'director' GROUP BY 1, 2 ORDER BY 1",
+      task.businessUnitId,
+    );
+    const maxSub = Math.min(settings.maxSubtasks, MAX_SUBTASKS, task.limits.maxAgents ?? MAX_SUBTASKS);
     const system = buildSystemPrompt(this.ctx, agentId, [
-      "\n## Rejalashtiruvchi (orchestrator) vazifasi",
-      `Topshiriqni bo'limlar o'rtasida 1–${maxSub} ta kichik vazifaga bo'l. Faqat haqiqatan kerakli bo'limlarni tanla.`,
+      "\n## Rejalashtiruvchi (orchestrator) vazifasi — AI Direktor",
+      `Topshiriqni tushun, uni 1–${maxSub} ta kichik vazifaga bo'l va har biriga kerakli ko'nikmalarni yoz. Faqat haqiqatan kerakli ishlarni rejala.`,
       "Bog'liqlik: agar bir kichik vazifa boshqasining natijasidan foydalansa, dependsOn ga o'sha vazifaning key ini yoz (faqat o'zidan oldingilarini).",
-      "Mustaqil vazifalar parallel bajariladi. Har vazifa tavsifida kutilayotgan natijani aniq yoz.",
-      "Javob — faqat JSON obyekt: {\"summary\": string, \"subtasks\": [{\"key\": \"s1\", \"title\": string, \"description\": string, \"department\": \"<bo'lim id>\", \"dependsOn\": [\"s0\"]}]}",
+      "Har vazifa uchun kutilayotgan natijani (deliverable) aniq yoz. Hisob-kitob bo'lsa, taxminlarni ko'rsatishni talab qil.",
+      "Agar biror ko'nikma uchun quyidagi ro'yxatda mos agent bo'lmasa, uni missingSkills ga yoz (yangi agent yollash so'rovi uchun).",
+      "Javob — faqat JSON obyekt: {\"objective\": string, \"context\": string, \"expectedOutcome\": string, \"requiredSkills\": [string],",
+      " \"approvalRequirements\": string, \"subtasks\": [{\"key\": \"s1\", \"title\": string, \"description\": string, \"department\": \"<bo'lim id>\",",
+      " \"skills\": [string], \"deliverable\": string, \"dependsOn\": [\"s0\"]}], \"missingSkills\": [{\"skill\": string, \"department\": \"<bo'lim id>\", \"reason\": string}]}",
       "Mavjud bo'limlar (id — nom — yo'nalishlar — faol agentlar):",
       ...deps.map((d) => `- ${d.id} — ${d.name} — ${json<string[]>(d.focus, []).join(", ")} — ${d.n}`),
+      "Faol agentlar (bo'lim — rol — soni):",
+      ...roster.map((r) => `- ${r.department_id} — ${r.role} — ${r.n}`),
     ]);
     const msg = buildTaskMessage(task, []);
     let plan: Plan | null = null;
@@ -304,50 +336,160 @@ export class AgentRunner {
         json: true, temperature: 0.3,
       }, signal);
       try {
-        plan = validatePlan(PlanSchema.parse(JSON.parse(stripFence(res.text))), new Set(deps.filter((d) => d.n > 0).map((d) => d.id)), maxSub);
+        plan = validatePlan(PlanSchema.parse(JSON.parse(stripFence(res.text))), new Set(deps.map((d) => d.id)), maxSub);
       } catch (e) {
         lastError = e instanceof Error ? e.message.slice(0, 300) : String(e);
       }
     }
     if (!plan) throw new Error(`Reja tuzilmadi: ${lastError}`);
 
+    // staffing: the platform chooses agents (skills, department, load); nobody suitable → the piece waits for a hire
+    const planned = new Map<string, number>();
+    const choices = plan.subtasks.map((s) => {
+      const c = selectAgent(this.ctx, { unitId: task.businessUnitId, departmentId: s.department, skills: s.skills, title: s.title, planned });
+      if (c) planned.set(c.agentId, (planned.get(c.agentId) ?? 0) + 1);
+      return c;
+    });
     const ids = new Map<string, string>();
     const created: TaskDto[] = [];
+    const unstaffed: string[] = [];
     this.ctx.db.tx(() => {
       this.assertStillMine(task); // checked inside the write transaction: no other worker can slip in between
-      for (const s of plan!.subtasks) {
+      plan!.subtasks.forEach((s, i) => {
+        const choice = choices[i];
         const t = createTask(this.ctx, {
-          title: s.title, description: s.description, departmentId: s.department, parentId: task.id,
+          title: s.title, description: [s.description, s.deliverable ? `\nKutilayotgan natija: ${s.deliverable}` : ""].join(""),
+          departmentId: s.department, agentId: choice?.agentId ?? null, backlog: !choice, parentId: task.id,
           dependsOn: s.dependsOn.map((k) => ids.get(k)!).filter(Boolean),
           // subtasks inherit the job's limits (each piece gets the same ceilings; maxAgents only applies to planning)
           priority: task.priority, deadline: task.deadline, limits: { ...task.limits, maxAgents: undefined },
         }, SYSTEM);
+        if (!choice) {
+          unstaffed.push(s.title);
+          this.ctx.db.run("UPDATE tasks SET stage = ? WHERE id = ?", `Mos agent yo'q (${s.skills.join(", ") || s.department}) — yollash so'rovi`, t.id);
+        }
         ids.set(s.key, t.id);
         created.push(t);
         this.ctx.db.run("INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)", task.id, t.id);
-      }
+        this.ctx.db.run(
+          `INSERT INTO task_handoffs (id, parent_task_id, task_id, business_unit_id, from_agent_id, to_agent_id, input, output_format, created_at)
+           VALUES (?,?,?,?,?,?,?, 'markdown', ?)`,
+          uid("hof"), task.id, t.id, task.businessUnitId, agentId, choice?.agentId ?? null,
+          JSON.stringify({ objective: plan!.objective, title: s.title, description: s.description, skills: s.skills, deliverable: s.deliverable,
+            dependsOn: s.dependsOn, selection: choice?.reason ?? null }), now(),
+        );
+      });
+      this.ctx.db.run("UPDATE tasks SET plan = ? WHERE id = ?", JSON.stringify(plan), task.id);
+      const who = (i: number) => (choices[i] ? this.ctx.db.get<{ name: string }>("SELECT name FROM agents WHERE id = ?", choices[i]!.agentId)?.name ?? "" : "agent yo'q");
       const planText = [
-        `## Reja`, plan!.summary, "",
-        ...plan!.subtasks.map((s, i) => `${i + 1}. **${s.title}** — ${s.department}${s.dependsOn.length ? ` (kutadi: ${s.dependsOn.join(", ")})` : ""}`),
+        "## Reja", plan!.objective || plan!.summary, "",
+        ...(plan!.expectedOutcome ? [`**Kutilayotgan natija:** ${plan!.expectedOutcome}`, ""] : []),
+        ...(plan!.requiredSkills.length ? [`**Kerakli ko'nikmalar:** ${plan!.requiredSkills.join(", ")}`, ""] : []),
+        ...plan!.subtasks.map((s, i) => `${i + 1}. **${s.title}** — ${s.department} → ${who(i)}${s.dependsOn.length ? ` (kutadi: ${s.dependsOn.join(", ")})` : ""}${s.deliverable ? `\n   Natija: ${s.deliverable}` : ""}`),
+        ...(plan!.approvalRequirements ? ["", `**Tasdiq talablari:** ${plan!.approvalRequirements}`] : []),
       ].join("\n");
       this.saveDeliverable(task, agentId, "Ish rejasi", planText);
-      audit(this.ctx.db, { type: "agent", id: agentId }, "orchestrator.plan", { type: "task", id: task.id }, { subtasks: created.map((c) => c.id) });
+      audit(this.ctx.db, { type: "agent", id: agentId }, "orchestrator.plan", { type: "task", id: task.id }, { subtasks: created.map((c) => c.id), unstaffed });
     });
+
+    // skills nobody has: the Marketplace hiring request (policy, limits and approvals apply; never a bypass)
+    const hires: string[] = [];
+    const wanted = [
+      ...plan.missingSkills,
+      ...plan.subtasks.filter((_, i) => !choices[i]).map((s) => ({ skill: [s.title, ...s.skills].join(" "), department: s.department, reason: `"${s.title}" uchun agent yo'q` })),
+    ];
+    for (const m of wanted.slice(0, settings.maxAiHireRequests)) {
+      if (!deps.some((d) => d.id === m.department)) continue;
+      const r = requestHireForAgent(this.ctx, agentId, {
+        skill: m.skill, departmentId: m.department, reason: `${task.title}: ${m.reason}`,
+        directorOf: (u) => directorAgent(this.ctx, u), maxPending: settings.maxAiHireRequests,
+      });
+      hires.push(`${m.skill}: ${"request" in r ? `${r.status} (${r.request.templateName})` : `${r.status} — ${r.detail}`}`);
+    }
+    if (hires.length) this.saveDeliverable(task, agentId, "Yollash so'rovlari", hires.map((h) => `- ${h}`).join("\n"));
+    if (unstaffed.length) this.alert(task, "project.blocked", `Mos agent yo'q: ${unstaffed.join(", ")}`, "Yollash so'rovi yuborildi; agent paydo bo'lgach vazifani unga biriktiring.");
+
     // Hand each piece to its agent (internal coordination, not a chat channel).
     this.setAgent(agentId, "COMMUNICATING");
     for (const t of created) this.message(task.id, agentId, t.agentId, "handoff", `Yangi vazifa: ${t.title}`);
     transitionTask(this.ctx, task.id, "WAITING_FOR_DEPENDENCY", SYSTEM, { reason: "subtasks created" });
-    this.ctx.db.run("UPDATE tasks SET stage = ?, progress = 10 WHERE id = ?", `Bo'limlar ishlamoqda (0/${created.length})`, task.id);
-    this.ctx.bus.emit("task.progress", { taskId: task.id, agentId, departmentId: task.departmentId }, { progress: 10, stage: `Bo'limlar ishlamoqda (0/${created.length})` });
+    this.ctx.db.run("UPDATE tasks SET stage = ?, progress = 10 WHERE id = ?", `Agentlar ishlamoqda (0/${created.length})`, task.id);
+    this.ctx.bus.emit("task.progress", { taskId: task.id, agentId, departmentId: task.departmentId }, { progress: 10, stage: `Agentlar ishlamoqda (0/${created.length})` });
     this.settle(agentId, "COMMUNICATING");
   }
 
-  /** Orchestrator step 2: all subtasks are done — combine their results into the final deliverable. */
+  /**
+   * AI Director step 2 — every piece is back. First each new result is evaluated (a missing deliverable fails the
+   * deterministic check; otherwise the director's model judges completeness, missing information, contradictions,
+   * assumptions and sources). NEEDS_REVISION returns the piece to its agent as a new revision subtask (earlier
+   * versions stay) within the revision limit; REJECTED blocks the job; NEEDS_HUMAN_REVIEW sends the final result to a
+   * person. Only then are the accepted results combined.
+   */
   private async synthesize(task: TaskDto, subtasks: TaskDto[], signal: AbortSignal) {
     const agentId = task.agentId!;
+    const settings = directorSettings(this.ctx, task.businessUnitId);
+    const superseded = new Set(subtasks.map((s) => s.revisionOf).filter((x): x is string => !!x));
+    const current = subtasks.filter((s) => !superseded.has(s.id));
+    const verdicts = new Map(this.ctx.db.all<{ task_id: string; verdict: Verdict }>(
+      "SELECT task_id, verdict FROM task_evaluations WHERE parent_task_id = ?", task.id,
+    ).map((r) => [r.task_id, r.verdict]));
     this.setAgent(agentId, "THINKING");
+    const results = current.map((s) => this.resultOf(s)).filter((p): p is PriorResult => !!p);
+    const revisions: TaskDto[] = [];
+    for (const s of current) {
+      if (verdicts.has(s.id)) continue;
+      this.stage(task, `Natija baholanmoqda: ${s.title}`);
+      const e = await this.evaluate(task, s, results.filter((r) => r.title !== s.title), signal);
+      const round = this.roundOf(s);
+      let verdict = e.verdict;
+      if (verdict === "NEEDS_REVISION" && round >= settings.maxRevisions) verdict = "NEEDS_HUMAN_REVIEW"; // no endless loops
+      this.ctx.db.tx(() => {
+        this.assertStillMine(task);
+        let revisionId: string | null = null;
+        if (verdict === "NEEDS_REVISION") {
+          const rev = createTask(this.ctx, {
+            title: `${s.title} (qayta ishlash ${round + 1})`,
+            description: `${s.description}\n\n## AI Direktor izohi (qayta ishlash ${round + 1}/${settings.maxRevisions})\n${e.feedback}\n${e.issues.map((x) => `- ${x}`).join("\n")}\n\nOldingi versiya kontekst sifatida berilgan; uni to'ldirib, to'liq yangi natija yoz.`,
+            agentId: s.agentId!, parentId: task.id, dependsOn: [s.id], priority: task.priority, deadline: task.deadline,
+            limits: { ...task.limits, maxAgents: undefined },
+          }, { type: "agent", id: agentId });
+          this.ctx.db.run("UPDATE tasks SET revision_of = ? WHERE id = ?", s.id, rev.id);
+          this.ctx.db.run("INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)", task.id, rev.id);
+          this.ctx.db.run(
+            `INSERT INTO task_handoffs (id, parent_task_id, task_id, business_unit_id, from_agent_id, to_agent_id, input, output_format, created_at)
+             VALUES (?,?,?,?,?,?,?, 'markdown', ?)`,
+            uid("hof"), task.id, rev.id, task.businessUnitId, agentId, s.agentId, JSON.stringify({ revisionOf: s.id, feedback: e.feedback, issues: e.issues }), now(),
+          );
+          revisionId = rev.id;
+          revisions.push(rev);
+        }
+        const dlv = this.ctx.db.get<{ id: string }>("SELECT id FROM deliverables WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", s.id);
+        this.ctx.db.run(
+          `INSERT INTO task_evaluations (id, parent_task_id, task_id, deliverable_id, round, verdict, issues, feedback, revision_task_id, evaluator, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          uid("evl"), task.id, s.id, dlv?.id ?? null, round, verdict, JSON.stringify(e.issues), e.feedback, revisionId, e.by === "checks" ? "checks" : agentId, now(),
+        );
+        audit(this.ctx.db, { type: "agent", id: agentId }, "orchestrator.evaluate", { type: "task", id: s.id }, { verdict, round, revision: revisionId });
+      });
+      verdicts.set(s.id, verdict);
+      if (verdict === "REJECTED") {
+        const why = `Natija rad etildi: ${s.title} — ${e.feedback || e.issues.join("; ")}`;
+        transitionTask(this.ctx, task.id, "BLOCKED", SYSTEM, { error: why, reason: "subtask result rejected" });
+        this.alert(task, "project.blocked", `Loyiha to'xtadi: ${task.title}`, why);
+        this.settle(agentId, "THINKING");
+        return;
+      }
+    }
+    if (revisions.length) {
+      for (const r of revisions) this.message(task.id, agentId, r.agentId, "handoff", `Qayta ishlash: ${r.title}`);
+      transitionTask(this.ctx, task.id, "WAITING_FOR_DEPENDENCY", SYSTEM, { reason: "revisions requested" });
+      this.ctx.db.run("UPDATE tasks SET stage = ? WHERE id = ?", `Qayta ishlash kutilmoqda (${revisions.length})`, task.id);
+      this.settle(agentId, "THINKING");
+      return;
+    }
+    // combine the accepted (and human-review) results; superseded versions are kept but not used
     this.stage(task, "Natijalar birlashtirilmoqda");
-    const prior = subtasks.map((s) => this.resultOf(s)).filter((p): p is PriorResult => !!p);
+    const human = current.filter((s) => verdicts.get(s.id) === "NEEDS_HUMAN_REVIEW").map((s) => s.title);
     const system = buildSystemPrompt(this.ctx, agentId, [
       "\n## Birlashtiruvchi vazifasi",
       "Bo'limlar natijalarini bitta izchil yakuniy hujjatga birlashtir: qisqa xulosa, asosiy bo'limlar, raqamlar (manbasi bilan), keyingi qadamlar.",
@@ -355,8 +497,54 @@ export class AgentRunner {
     ]);
     this.setAgent(agentId, "WORKING");
     const g = await this.ground(task);
-    const res = await this.call(task, { system, messages: [{ role: "user", text: buildTaskMessage(task, prior, null, g.grounding) }] }, signal);
-    this.finish(task, withSources(res.text, g.hits), "Yakuniy natija");
+    const res = await this.call(task, { system, messages: [{ role: "user", text: buildTaskMessage(task, results, null, g.grounding) }] }, signal);
+    const note = human.length ? `\n\n> Inson ko'rib chiqishi kerak: ${human.join(", ")} (qayta ishlash limiti tugadi yoki baholash aniq emas).` : "";
+    this.finish(task, withSources(res.text, g.hits) + note, "Yakuniy natija", human.length > 0);
+  }
+
+  /** Revision round of a subtask: 0 for the first result, n for the n-th redo. */
+  private roundOf(t: TaskDto): number {
+    let n = 0;
+    let cur: string | null = t.revisionOf ?? null;
+    while (cur && n < 20) {
+      n++;
+      cur = this.ctx.db.get<{ revision_of: string | null }>("SELECT revision_of FROM tasks WHERE id = ?", cur)?.revision_of ?? null;
+    }
+    return n;
+  }
+
+  /** One result's verdict: deterministic checks first, then the director's model (strict JSON; unparsable → human). */
+  private async evaluate(task: TaskDto, s: TaskDto, others: PriorResult[], signal: AbortSignal): Promise<{ verdict: Verdict; issues: string[]; feedback: string; by: "checks" | "model" }> {
+    const mine = this.resultOf(s);
+    if (!mine || mine.content.trim().length < 40 || /^Natija yozilmadi\.?$/.test(mine.content.trim()))
+      return { verdict: "NEEDS_REVISION", issues: ["Natija (deliverable) yo'q yoki juda qisqa"], feedback: "Talab qilingan natijani to'liq yozing.", by: "checks" };
+    const system = buildSystemPrompt(this.ctx, task.agentId!, [
+      "\n## Baholovchi vazifasi — AI Direktor",
+      "Kichik vazifa natijasini bahola: vazifa bajarilganmi, kutilgan natija bormi, muhim ma'lumot yetishmaydimi,",
+      "boshqa agentlar natijalariga zid emasmi, hisob-kitoblarda taxminlar ko'rsatilganmi, kerak joyda manba yoki dalil bormi.",
+      "verdict: ACCEPTED (yetarli), NEEDS_REVISION (agent tuzata oladi — aniq izoh yoz), REJECTED (vazifaga umuman mos emas),",
+      "NEEDS_HUMAN_REVIEW (inson qarori kerak: masalan yuridik/moliyaviy risk yoki ma'lumot yo'q).",
+      "Javob — faqat JSON: {\"verdict\": \"ACCEPTED|NEEDS_REVISION|REJECTED|NEEDS_HUMAN_REVIEW\", \"issues\": [string], \"feedback\": string}",
+    ]);
+    const text = [
+      `## Umumiy topshiriq\n${task.title}\n${task.description}`,
+      `## Kichik vazifa\n${s.title}\n${s.description}`,
+      `## Natija (${mine.agent})\n<result>\n${mine.content.slice(0, 12000)}\n</result>`,
+      others.length ? `## Boshqa natijalar (qisqa)\n${others.map((o) => `### ${o.title}\n${o.content.slice(0, 1500)}`).join("\n")}` : "",
+    ].join("\n\n");
+    const res = await this.call(task, { system, messages: [{ role: "user", text }], json: true, temperature: 0.1 }, signal);
+    const parsed = EvalSchema.safeParse((() => { try { return JSON.parse(stripFence(res.text)); } catch { return null; } })());
+    if (!parsed.success) return { verdict: "NEEDS_HUMAN_REVIEW", issues: ["Baholash javobi tushunarsiz bo'ldi"], feedback: "", by: "model" };
+    return { ...parsed.data, by: "model" };
+  }
+
+  /** Notification to the task's creator and the unit's admins (deduplicated per task and kind). */
+  private alert(task: TaskDto, kind: string, title: string, body: string) {
+    const people = new Set<string>([...(task.createdBy ? [task.createdBy] : []), ...this.ctx.db.all<{ id: string }>(
+      `SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN role_permissions rp ON rp.role_id = ur.role_id
+       WHERE rp.permission_id = 'users:manage' AND u.status = 'active' AND u.home_unit_id = ?`, task.businessUnitId,
+    ).map((r) => r.id)]);
+    for (const userId of people) notify(this.ctx, { userId, kind, taskId: task.id, title, body, dedupeKey: `${kind}:${task.id}:${userId}` });
   }
 
   // ---------------------------------------------------------------------------
@@ -369,14 +557,15 @@ export class AgentRunner {
       const correlationId = randomUUID();
       const started = Date.now();
       const lease = this.leaseOf(task);
+      const route = this.routeFor(task);
       this.ctx.db.run(
-        `INSERT INTO agent_runs (id, task_id, agent_id, correlation_id, model, mode, status, started_at, worker_id, lease_epoch)
-         VALUES (?,?,?,?,?,?, 'running', ?, ?, ?)`,
-        runId, task.id, task.agentId, correlationId, this.llm.model, this.llm.mode, now(), lease.workerId, lease.epoch,
+        `INSERT INTO agent_runs (id, task_id, agent_id, correlation_id, model, mode, status, started_at, worker_id, lease_epoch, provider)
+         VALUES (?,?,?,?,?,?, 'running', ?, ?, ?, ?)`,
+        runId, task.id, task.agentId, correlationId, route.model ?? this.llm.model, this.llm.mode, now(), lease.workerId, lease.epoch, route.provider ?? null,
       );
       try {
         const res = await this.llm.generate({
-          ...req, correlationId, signal, timeoutMs: this.o.taskTimeoutMs,
+          ...req, correlationId, signal, timeoutMs: this.o.taskTimeoutMs, route,
           maxOutputTokens: Math.max(256, Math.min(req.maxOutputTokens ?? 6000, 8192, budget.tokensLeft)),
         });
         this.recordUsage(task, runId, res, Date.now() - started);
@@ -415,20 +604,45 @@ export class AgentRunner {
     if (l.maxCostUsd && u.cost >= l.maxCostUsd) throw new LimitError(`Xarajat limiti tugadi ($${u.cost.toFixed(4)} / $${l.maxCostUsd})`);
     if (l.maxDurationMs && u.started_at && Date.now() - Date.parse(u.started_at) > l.maxDurationMs)
       throw new LimitError(`Vaqt limiti tugadi (${Math.round(l.maxDurationMs / 60000)} daqiqa)`);
+    // the whole job (plan + every subtask + revisions) spends from the job's token and cost ceilings
+    const rootId = task.parentId ?? task.id;
+    const root = task.parentId ? getTask(this.ctx, task.parentId) : task;
+    if (root.limits.maxCostUsd || root.limits.maxTokens) {
+      const fam = this.ctx.db.get<{ tok: number; cost: number }>(
+        "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) tok, COALESCE(SUM(cost_usd), 0) cost FROM tasks WHERE id = ? OR parent_id = ?", rootId, rootId,
+      )!;
+      if (root.limits.maxTokens && fam.tok >= root.limits.maxTokens) throw new LimitError(`Loyiha token limiti tugadi (${fam.tok}/${root.limits.maxTokens})`);
+      if (root.limits.maxCostUsd && fam.cost >= root.limits.maxCostUsd) throw new LimitError(`Loyiha xarajat limiti tugadi ($${fam.cost.toFixed(4)} / $${root.limits.maxCostUsd})`);
+      const pct = directorSettings(this.ctx, task.businessUnitId).budgetAlertPct / 100;
+      if (root.limits.maxCostUsd && fam.cost >= root.limits.maxCostUsd * pct)
+        this.alert(root, "budget.threshold", `Byudjet ${Math.round(pct * 100)}% ga yetdi: ${root.title}`, `$${fam.cost.toFixed(4)} / $${root.limits.maxCostUsd}`);
+    }
     return { tokensLeft: l.maxTokens ? l.maxTokens - used : Infinity };
   }
 
+  /** Provider and model of this call: the AI Director's settings for orchestrated jobs, else the agent's own. */
+  private routeFor(task: TaskDto): { provider: "gemini" | "anthropic" | null; model: string | null } {
+    const a = this.ctx.db.get<{ provider: "gemini" | "anthropic" | null; model: string | null }>("SELECT provider, model FROM agents WHERE id = ?", task.agentId);
+    if (task.kind === "orchestrate") {
+      const s = directorSettings(this.ctx, task.businessUnitId);
+      if (s.provider || s.model) return { provider: s.provider ?? a?.provider ?? null, model: s.model ?? (s.provider ? null : a?.model ?? null) };
+    }
+    return { provider: a?.provider ?? null, model: a?.model ?? null };
+  }
+
   private recordUsage(task: TaskDto, runId: string, res: LlmResult, latency: number) {
-    const cost = estimateCost(this.pricing, res.inputTokens, res.outputTokens);
+    // provider-reported tokens; cost is an estimate at the answering provider's configured price
+    const cost = res.costUsd ?? estimateCost(this.pricing, res.inputTokens, res.outputTokens);
+    const provider = res.provider ?? (this.llm.provider === "router" ? null : this.llm.provider);
     this.ctx.db.tx(() => {
       this.ctx.db.run(
-        "UPDATE agent_runs SET status = 'succeeded', end_reason = 'succeeded', model = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?, latency_ms = ?, finished_at = ? WHERE id = ?",
-        res.model, res.inputTokens, res.outputTokens, cost, latency, now(), runId,
+        "UPDATE agent_runs SET status = 'succeeded', end_reason = 'succeeded', model = ?, provider = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?, latency_ms = ?, finished_at = ? WHERE id = ?",
+        res.model, provider, res.inputTokens, res.outputTokens, cost, latency, now(), runId,
       );
       this.ctx.db.run(
-        `INSERT INTO usage_records (id, run_id, agent_id, department_id, task_id, model, input_tokens, output_tokens, cost_usd, is_estimate, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,1,?)`,
-        uid("use"), runId, task.agentId, task.departmentId, task.id, res.model, res.inputTokens, res.outputTokens, cost, now(),
+        `INSERT INTO usage_records (id, run_id, agent_id, department_id, task_id, model, input_tokens, output_tokens, cost_usd, is_estimate, created_at, provider)
+         VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`,
+        uid("use"), runId, task.agentId, task.departmentId, task.id, res.model, res.inputTokens, res.outputTokens, cost, now(), provider,
       );
       this.ctx.db.run(
         "UPDATE tasks SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, cost_usd = cost_usd + ? WHERE id = ?",
@@ -437,8 +651,8 @@ export class AgentRunner {
     });
   }
 
-  private finish(task: TaskDto, text: string, title: string) {
-    const needsApproval = task.requiresApproval;
+  private finish(task: TaskDto, text: string, title: string, humanReview = false) {
+    const needsApproval = task.requiresApproval || humanReview;
     this.ctx.db.tx(() => {
       // fenced: a run that lost its lease (and was re-run elsewhere) must not add a second result
       this.assertStillMine(task);
@@ -456,6 +670,9 @@ export class AgentRunner {
         addMemory(this.ctx, { kind: "result", content: `${task.title}: ${summarize(text)}`, departmentId: task.departmentId, taskId: task.id },
           { type: "agent", id: task.agentId });
     });
+    if (task.kind === "orchestrate")
+      this.alert(task, needsApproval ? "project.approval" : "project.completed",
+        needsApproval ? `Tasdiq kutilmoqda: ${task.title}` : `Loyiha tayyor: ${task.title}`, summarize(text));
     if (needsApproval) {
       this.setAgent(task.agentId!, "WAITING_APPROVAL");
       this.settle(task.agentId!, "WAITING_APPROVAL", 60 * 60_000);
@@ -485,9 +702,11 @@ export class AgentRunner {
     // a failed piece blocks the combined job instead of leaving it waiting forever
     if (task.parentId) {
       const parent = getTask(this.ctx, task.parentId);
-      if (parent.status === "WAITING_FOR_DEPENDENCY")
+      if (parent.status === "WAITING_FOR_DEPENDENCY") {
         transitionTask(this.ctx, parent.id, "BLOCKED", SYSTEM, { error: `Kichik vazifa bajarilmadi: ${task.title} — ${error}`, reason: "subtask failed" });
-    }
+        this.alert(parent, "project.blocked", `Loyiha to'xtadi: ${parent.title}`, `Kichik vazifa bajarilmadi: ${task.title} — ${error}`);
+      }
+    } else if (task.kind === "orchestrate") this.alert(task, "project.failed", `Loyiha bajarilmadi: ${task.title}`, error);
     this.o.log?.("task failed", { taskId: task.id, error });
   }
 

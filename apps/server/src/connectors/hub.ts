@@ -1,5 +1,6 @@
 // Connector hub: real connection state, which tools an agent may use, running read tools, turning write tools into
 // approval requests, and executing them once a person approves. Every call is recorded in tool_executions.
+import { ProviderRouter } from "../llm/router.js";
 import { createHash } from "node:crypto";
 import type { ToolCall, ToolSpec, LlmClient } from "../llm/types.js";
 import type { Ctx } from "../domain/context.js";
@@ -475,8 +476,10 @@ export class ConnectorHub {
         if (!ok) cls = r.status === 429 ? "rate_limited" : r.status >= 500 ? "provider" : "auth";
       } else if (inst.connector_id === "gemini") {
         const llm = this.deps.llm();
-        if (!llm || llm.provider !== "gemini") throw new ConnectorError("Gemini sozlanmagan", 0);
-        const h = await llm.health();
+        // the router holds one client per provider; the Gemini connector checks the Gemini one
+        const gemini = llm instanceof ProviderRouter ? llm.clientFor("gemini") : llm?.provider === "gemini" ? llm : undefined;
+        if (!gemini) throw new ConnectorError("Gemini sozlanmagan", 0);
+        const h = await gemini.health();
         ok = h.ok;
         detail = h.ok ? `Gemini: ${h.model}` : `Gemini: ${h.detail ?? "xato"}`;
         if (!ok) cls = /key|ruxsat|auth/i.test(h.detail ?? "") ? "auth" : "provider";

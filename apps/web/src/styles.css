@@ -764,3 +764,15 @@ pre.args { font-family: var(--mono); font-size: 11.5px; background: #f8fafc; bor
 .marketplace .mk-req.s-PENDING { border-left: 3px solid #f59e0b; }
 .marketplace .mk-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px; }
 .marketplace input.num { width: 90px; }
+
+/* AI workforce dashboard */
+.workforce .wf-providers { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 8px; font-size: 12px; }
+.workforce .tag.ok { background: #ecfdf5; color: #065f46; }
+.workforce .tag.bad { background: #fef2f2; color: #991b1b; }
+.workforce .wf-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin: 8px 0 12px; }
+.workforce .wf-kpis div { border: 1px solid var(--border); border-radius: 9px; padding: 8px; display: flex; flex-direction: column; }
+.workforce .wf-kpis b { font-size: 18px; }
+.workforce .wf-kpis small { color: var(--text-3); font-size: 11px; }
+.workforce .wf-project.s-BLOCKED, .workforce .wf-project.s-FAILED { border-left: 3px solid #dc2626; }
+.workforce .wf-project.s-WAITING_APPROVAL { border-left: 3px solid #f59e0b; }
+.workforce .wf-project.s-DONE { border-left: 3px solid #16a34a; }

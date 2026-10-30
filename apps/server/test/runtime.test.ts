@@ -121,8 +121,10 @@ describe("orchestrator", () => {
           ],
         });
       if (req.system.includes("Birlashtiruvchi")) return "# Yakuniy strategiya";
+      // the AI Director evaluates every result before combining (W3.2)
+      if (req.system.includes("Baholovchi")) return JSON.stringify({ verdict: "ACCEPTED", issues: [], feedback: "" });
       const title = /Sarlavha: (.*)/.exec(req.messages[0].text)?.[1] ?? "?";
-      return `natija: ${title}`;
+      return `natija: ${title}. Batafsil tahlil, taxminlar va xulosalar bilan to'liq natija.`;
     });
 
   it("splits, runs in dependency order, hands off results and combines them", async () => {

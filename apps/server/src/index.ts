@@ -3,7 +3,7 @@ import { Db } from "./db/db.js";
 import { seed } from "./db/seed.js";
 import { buildApp } from "./app.js";
 import { recoverExpiredLeases } from "./domain/tasks.js";
-import { createLlm } from "./llm/index.js";
+import { createLlm, ProviderRouter } from "./llm/index.js";
 import { AgentRunner } from "./agents/runner.js";
 import { TelegramBot } from "./telegram/bot.js";
 import { Scheduler } from "./schedule/service.js";
@@ -68,9 +68,11 @@ if (llm.client) {
   const client = llm.client;
   const check = async () => {
     const h = await client.health();
-    deps.llmHealth = { ...h, checkedAt: new Date().toISOString() };
-    if (!h.ok) app.log.error({ model: h.model, detail: h.detail }, "LLM health check failed");
-    else app.log.info({ provider: client.provider, model: h.model, mode: client.mode }, "LLM ready");
+    // per provider: not configured / invalid credentials / rate limited / available / unavailable
+    const providers = client instanceof ProviderRouter ? await client.healthAll() : undefined;
+    deps.llmHealth = { ...h, checkedAt: new Date().toISOString(), ...(providers ? { providers } : {}) };
+    if (!h.ok) app.log.error({ model: h.model, detail: h.detail, providers: providers?.map((p) => `${p.provider}:${p.status}`) }, "LLM health check failed");
+    else app.log.info({ provider: client.provider, model: h.model, mode: client.mode, providers: providers?.map((p) => `${p.provider}:${p.status}`) }, "LLM ready");
   };
   await check();
   healthTimer = setInterval(() => void check(), 10 * 60_000);

@@ -10,6 +10,7 @@ import { HttpError, forbidden, notFound, unauthorized } from "./lib/errors.js";
 import { HQ_UNIT } from "./domain/units.js";
 import { unitRoutes } from "./routes/units.js";
 import { marketplaceRoutes } from "./routes/marketplace.js";
+import { workforceRoutes } from "./routes/workforce.js";
 import type { Actor } from "./lib/audit.js";
 import type { Ctx } from "./domain/context.js";
 import { authRoutes } from "./routes/auth.js";
@@ -79,7 +80,7 @@ export interface Deps extends Ctx {
   llm: LlmSetup;
   /** set by the process that runs agents (absent in API-only tests) */
   runner?: AgentRunner;
-  llmHealth?: { ok: boolean; model: string; detail?: string; checkedAt: string };
+  llmHealth?: { ok: boolean; model: string; detail?: string; status?: string; checkedAt: string; providers?: { provider: string; model: string; status: string; ok: boolean; detail?: string }[] };
   telegram?: TelegramBot;
   connectors: ConnectorHub;
 }
@@ -203,6 +204,7 @@ export async function buildApp(opts: AppOptions) {
   await app.register(scheduleRoutes(deps));
   await app.register(unitRoutes(deps));
   await app.register(marketplaceRoutes(deps));
+  await app.register(workforceRoutes(deps));
 
   return { app, deps };
 }

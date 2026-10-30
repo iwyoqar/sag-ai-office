@@ -1,7 +1,7 @@
 // Google Gemini via the official REST API (generativelanguage.googleapis.com, v1beta).
 // No SDK dependency: one fetch per call, with timeout, retry/backoff, rate-limit handling and a request spacer
 // so the free tier's requests-per-minute limit is respected.
-import { LlmError, type LlmClient, type LlmRequest, type LlmResult } from "./types.js";
+import { LlmError, statusOf, type LlmClient, type LlmRequest, type LlmResult } from "./types.js";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -124,7 +124,7 @@ export class GeminiClient implements LlmClient {
     req.signal?.addEventListener("abort", onAbort);
     let res: Response;
     try {
-      res = await this.fetch(`${BASE}/models/${encodeURIComponent(this.model)}:generateContent`, {
+      res = await this.fetch(`${BASE}/models/${encodeURIComponent(req.model ?? this.model)}:generateContent`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-goog-api-key": this.o.apiKey, "x-request-id": req.correlationId },
         body: JSON.stringify(body),
@@ -160,7 +160,7 @@ export class GeminiClient implements LlmClient {
       // thinking tokens are billed as output
       outputTokens: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0),
       finishReason: cand?.finishReason ?? "STOP",
-      model: data.modelVersion ?? this.model,
+      model: data.modelVersion ?? req.model ?? this.model,
     };
   }
 
@@ -234,11 +234,12 @@ export class GeminiClient implements LlmClient {
       const res = await this.fetch(`${BASE}/models/${encodeURIComponent(this.model)}`, {
         headers: { "x-goog-api-key": this.o.apiKey },
       });
-      if (res.ok) return { ok: true, model: this.model };
+      if (res.ok) return { ok: true, model: this.model, status: "available" as const };
       const data = (await res.json().catch(() => ({}))) as GeminiResponse;
-      return { ok: false, model: this.model, detail: toError(res.status, data).message };
+      const err = toError(res.status, data);
+      return { ok: false, model: this.model, detail: err.message, status: statusOf(err) };
     } catch (e) {
-      return { ok: false, model: this.model, detail: `Tarmoq xatosi: ${(e as Error).message}` };
+      return { ok: false, model: this.model, detail: `Tarmoq xatosi: ${(e as Error).message}`, status: "unavailable" as const };
     }
   }
 }

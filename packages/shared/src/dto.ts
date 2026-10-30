@@ -103,6 +103,8 @@ export interface TaskDto {
   id: string; kind: "single" | "orchestrate" | "human";
   /** a person must approve the result before the task counts as done */
   requiresApproval: boolean; scheduledFor: string | null; title: string; description: string; createdBy: string | null; parentId: string | null;
+  /** a revision subtask: the earlier subtask it redoes after the AI Director's evaluation */
+  revisionOf?: string | null;
   departmentId: string | null; agentId: string | null; priority: TaskPriority; deadline: string | null;
   status: TaskStatus; progress: number | null; stage: string | null; result: string | null; error: string | null;
   attempts: number; maxAttempts: number; limits: TaskLimits; dependsOn: string[];

@@ -11,6 +11,7 @@ export type { TaskDto, TaskLimits } from "@sag/shared";
 import type { TaskDto, TaskLimits } from "@sag/shared";
 
 interface TaskRow {
+  revision_of?: string | null;
   id: string; title: string; description: string; created_by: string | null; parent_id: string | null;
   department_id: string | null; agent_id: string | null; priority: TaskPriority; deadline: string | null;
   status: TaskStatus; progress: number | null; stage: string | null; result: string | null; error: string | null;
@@ -30,7 +31,7 @@ export type { TaskRow };
 export function toDto(ctx: Ctx, r: TaskRow): TaskDto {
   const deps = ctx.db.all<{ depends_on_id: string }>("SELECT depends_on_id FROM task_dependencies WHERE task_id = ?", r.id);
   return {
-    id: r.id, kind: r.kind, requiresApproval: !!r.requires_approval, scheduledFor: r.scheduled_for, title: r.title, description: r.description, createdBy: r.created_by, parentId: r.parent_id,
+    id: r.id, kind: r.kind, requiresApproval: !!r.requires_approval, scheduledFor: r.scheduled_for, title: r.title, description: r.description, createdBy: r.created_by, parentId: r.parent_id, revisionOf: r.revision_of ?? null,
     departmentId: r.department_id, agentId: r.agent_id, priority: r.priority, deadline: r.deadline, status: r.status,
     progress: r.progress, stage: r.stage, result: r.result, error: r.error, attempts: r.attempts, maxAttempts: r.max_attempts,
     limits: json(r.limits, {}), dependsOn: deps.map((d) => d.depends_on_id),

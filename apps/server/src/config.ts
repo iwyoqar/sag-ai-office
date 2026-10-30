@@ -24,8 +24,18 @@ export const config = {
   /** extra origins allowed to send state-changing requests (CSRF), comma-separated; PUBLIC_URL is always allowed */
   allowedOrigins: [process.env.PUBLIC_URL || "http://localhost:5173", ...(process.env.ALLOWED_ORIGINS ?? "").split(",")].map((s) => s.trim()).filter(Boolean),
   llm: {
-    /** gemini | mock (mock = test double, clearly labelled) */
+    /** default provider: gemini | anthropic | mock (mock = test double, clearly labelled) */
     provider: (process.env.LLM_PROVIDER ?? "gemini").toLowerCase(),
+    /** providers tried after the default one fails with a rate limit / outage / timeout, comma-separated ("" = none) */
+    fallback: (process.env.LLM_FALLBACK ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
+    /** Claude model id; set it in .env when a newer model ships (no code change) */
+    anthropicModel: process.env.ANTHROPIC_MODEL || "claude-opus-5-5",
+    /** Claude's server-side refusal fallback (fallbacks: "default"); ANTHROPIC_SERVER_FALLBACK=off disables it */
+    anthropicServerFallback: (process.env.ANTHROPIC_SERVER_FALLBACK ?? "on") !== "off",
+    /** USD per 1M tokens for Claude's cost estimate (from your price list; 0 = not entered) */
+    anthropicPriceInputPerM: Number(process.env.ANTHROPIC_PRICE_INPUT_PER_M ?? 0),
+    anthropicPriceOutputPerM: Number(process.env.ANTHROPIC_PRICE_OUTPUT_PER_M ?? 0),
     geminiApiKey: process.env.GEMINI_API_KEY || undefined,
     geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
     /** "" disables semantic search (full-text search keeps working) */

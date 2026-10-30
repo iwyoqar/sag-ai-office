@@ -289,7 +289,7 @@ export function checkHire(
 // ---------------------------------------------------------------- hire requests
 
 interface RequestRow {
-  id: string; template_id: string; template_version: number; department_id: string; requested_by_id: string; justification: string;
+  id: string; template_id: string; template_version: number; department_id: string; requested_by_id: string; requested_by_type: "user" | "agent"; justification: string;
   checks: string; status: HireRequestDto["status"]; decided_via: "user" | "policy" | null; decided_by: string | null;
   decision_reason: string | null; override: number; agent_id: string | null; created_at: string; decided_at: string | null;
 }
@@ -299,7 +299,12 @@ function toRequest(ctx: Ctx, r: RequestRow): HireRequestDto {
     id: r.id, templateId: r.template_id, templateVersion: r.template_version,
     templateName: ctx.db.get<{ name: string }>("SELECT name FROM agent_templates WHERE id = ?", r.template_id)?.name ?? r.template_id,
     departmentId: r.department_id,
-    requestedBy: { id: r.requested_by_id, name: ctx.db.get<{ display_name: string }>("SELECT display_name FROM users WHERE id = ?", r.requested_by_id)?.display_name ?? "—" },
+    requestedBy: {
+      id: r.requested_by_id,
+      name: r.requested_by_type === "agent"
+        ? `AI: ${ctx.db.get<{ name: string }>("SELECT name FROM agents WHERE id = ?", r.requested_by_id)?.name ?? r.requested_by_id}`
+        : ctx.db.get<{ display_name: string }>("SELECT display_name FROM users WHERE id = ?", r.requested_by_id)?.display_name ?? "—",
+    },
     justification: r.justification, checks: json(r.checks, []), status: r.status, decidedVia: r.decided_via, decidedBy: r.decided_by,
     decisionReason: r.decision_reason, override: !!r.override, agentId: r.agent_id, createdAt: r.created_at, decidedAt: r.decided_at,
   };
@@ -332,6 +337,7 @@ function hireFrom(ctx: Ctx, u: AuthUser, r: RequestRow, grants: TemplateTool[]):
 }
 
 function tellRequester(ctx: Ctx, r: RequestRow, approved: boolean, reason: string | null) {
+  if (r.requested_by_type === "agent") return; // the AI Director learns the outcome from the request itself
   const name = ctx.db.get<{ name: string }>("SELECT name FROM agent_templates WHERE id = ?", r.template_id)?.name ?? r.template_id;
   notify(ctx, {
     userId: r.requested_by_id, kind: "hire.decided", dedupeKey: `hire.decided:${r.id}`,
@@ -483,4 +489,84 @@ export function archiveAll(ctx: Ctx, u: AuthUser): { archived: number; cancelled
     audit(ctx.db, actor(u), "marketplace.archive_all", null, { archived: ids.length, cancelledTasks: cancelled });
     return { archived: ids.length, cancelledTasks: cancelled };
   });
+}
+
+// ---------------------------------------------------------------- request_hire (the AI Director)
+
+export type AgentHireResult =
+  | { status: "requested" | "hired" | "duplicate"; request: HireRequestDto }
+  | { status: "refused" | "no_template" | "agent_exists" | "cap_reached"; detail: string };
+
+/** Approved templates that fit a skill for a department, best first (role, skills and responsibilities). */
+export function findTemplates(ctx: Ctx, i: { skill: string; departmentId: string }): { id: string; name: string; score: number }[] {
+  const want = new Set(i.skill.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  return ctx.db.all<TemplateRow & { role: string; skills: string; responsibilities: string }>(
+    `SELECT t.*, v.role, v.skills, v.responsibilities FROM agent_templates t
+     JOIN agent_template_versions v ON v.template_id = t.id AND v.version = t.current_version
+     WHERE t.business_unit_id = 'hq' AND t.status = 'APPROVED'`,
+  )
+    .filter((t) => { const a = json<string[]>(t.allowed_departments, []); return !a.length || a.includes(i.departmentId); })
+    .map((t) => {
+      const have = `${t.name} ${t.role} ${t.responsibilities} ${json<string[]>(t.skills, []).join(" ")}`.toLowerCase();
+      return { id: t.id, name: t.name, score: [...want].filter((w) => have.includes(w)).length };
+    })
+    .filter((t) => t.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * The AI Director asks for an agent it lacks. Only the unit's AI Director may call this; the unit's hiring policy
+ * decides: RESTRICTED → refused (humans hire); APPROVAL (default) → a PENDING request for the admin; AUTO → hired at
+ * once only when every check passes, including the department's AUTO list, limits and budget. No duplicate requests,
+ * no second agent of a template the department already has, at most `maxAiHireRequests` pending AI requests.
+ */
+export function requestHireForAgent(
+  ctx: Ctx, agentId: string, i: { skill: string; departmentId: string; reason: string; directorOf: (unitId: string) => string | null; maxPending: number },
+): AgentHireResult {
+  const a = ctx.db.get<{ business_unit_id: string; lifecycle: string }>("SELECT business_unit_id, lifecycle FROM agents WHERE id = ?", agentId);
+  if (!a || a.lifecycle !== "ACTIVE" || i.directorOf(a.business_unit_id) !== agentId)
+    return { status: "refused", detail: "faqat unitning faol AI Direktori yollash so'rovi yubora oladi" };
+  if (a.business_unit_id !== "hq") return { status: "refused", detail: "hozircha faqat HQ" };
+  const policy = ctx.db.get<{ hiring_policy: "AUTO" | "APPROVAL" | "RESTRICTED" }>("SELECT hiring_policy FROM unit_policies WHERE business_unit_id = 'hq'")?.hiring_policy ?? "APPROVAL";
+  if (policy === "RESTRICTED") return { status: "refused", detail: "yollash siyosati RESTRICTED: agentni faqat inson yollaydi" };
+  const tpl = findTemplates(ctx, { skill: i.skill, departmentId: i.departmentId })[0];
+  if (!tpl) return { status: "no_template", detail: `"${i.skill}" uchun mos tasdiqlangan andoza yo'q` };
+  const existing = ctx.db.get<{ id: string }>("SELECT id FROM agents WHERE template_id = ? AND department_id = ? AND lifecycle = 'ACTIVE'", tpl.id, i.departmentId);
+  if (existing) return { status: "agent_exists", detail: `${tpl.name} bo'limda allaqachon bor (${existing.id})` };
+  const dup = ctx.db.get<RequestRow>("SELECT * FROM agent_hire_requests WHERE template_id = ? AND department_id = ? AND status = 'PENDING'", tpl.id, i.departmentId);
+  if (dup) return { status: "duplicate", request: toRequest(ctx, dup) };
+  const pending = ctx.db.get<{ n: number }>("SELECT COUNT(*) n FROM agent_hire_requests WHERE requested_by_type = 'agent' AND status = 'PENDING'")!.n;
+  if (pending >= i.maxPending) return { status: "cap_reached", detail: `AI so'rovlari limiti: ${pending}/${i.maxPending}` };
+  const c = checkHire(ctx, { templateId: tpl.id, departmentId: i.departmentId, requester: "head" });
+  const t = templateRow(ctx, tpl.id);
+  const id = uid("hire");
+  const tm = now();
+  const justification = `AI Direktor: ${i.reason}`.slice(0, 1000);
+  const hireNow = policy === "AUTO" && c.outcome === "hire";
+  ctx.db.tx(() => {
+    ctx.db.run(
+      `INSERT INTO agent_hire_requests (id, template_id, template_version, department_id, requested_by_type, requested_by_id, justification,
+         policy_at_request, checks, status, created_at)
+       VALUES (?, ?, ?, ?, 'agent', ?, ?, ?, ?, 'PENDING', ?)`,
+      id, t.id, t.current_version, i.departmentId, agentId, justification, policy, JSON.stringify(c.checks), tm,
+    );
+    if (c.outcome === "reject") {
+      ctx.db.run("UPDATE agent_hire_requests SET status = 'REJECTED', decided_via = 'policy', decision_reason = ?, decided_at = ? WHERE id = ?", reasonOf(c.checks), tm, id);
+    } else if (hireNow) {
+      const r = requestRow(ctx, id);
+      const v = versionRow(ctx, t.id, t.current_version!)!;
+      const created = createAgent(ctx, {
+        name: t.name, role: v.role, departmentId: i.departmentId, model: v.model, skills: json(v.skills, []), responsibilities: v.responsibilities,
+        instructions: v.instructions, maxTokensPerTask: v.max_tokens_per_task, grants: c.grants, template: { id: t.id, version: v.version },
+      }, { type: "agent", id: agentId }).id;
+      ctx.db.run("UPDATE agent_hire_requests SET status = 'APPROVED', decided_via = 'policy', agent_id = ?, decided_at = ? WHERE id = ?", created, tm, r.id);
+    } else {
+      for (const ad of admins(ctx))
+        notify(ctx, { userId: ad, kind: "hire.pending", dedupeKey: `hire.pending:${id}:${ad}`, title: `AI Direktor agent so'radi: ${t.name}`, body: justification });
+    }
+    audit(ctx.db, { type: "agent", id: agentId }, "marketplace.hire.request", { type: "agent_hire_request", id },
+      { templateId: t.id, departmentId: i.departmentId, policy, outcome: c.outcome, skill: i.skill });
+  });
+  const req = toRequest(ctx, requestRow(ctx, id));
+  return { status: hireNow ? "hired" : "requested", request: req };
 }

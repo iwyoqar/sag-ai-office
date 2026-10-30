@@ -3,10 +3,10 @@ import { useOffice } from "../api/office";
 import type { SystemStatus } from "../api/system";
 import { NotificationsBell } from "./people/PeoplePanel";
 
-export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks, tasksOpen, system, onBrain, onCalendar, onAccount, onPeople, onOpenWork, onNetwork, onMarketplace }: {
+export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks, tasksOpen, system, onBrain, onCalendar, onAccount, onPeople, onOpenWork, onNetwork, onMarketplace, onWorkforce }: {
   floor?: FloorDto; building?: string; inOffice: boolean; onCampus?: () => void; onOffice?: () => void;
   onTasks?: () => void; tasksOpen?: boolean; system?: SystemStatus | null; onBrain?: () => void; onCalendar?: () => void; onAccount?: () => void;
-  onPeople?: () => void; onOpenWork?: (id: string) => void; onNetwork?: () => void; onMarketplace?: () => void;
+  onPeople?: () => void; onOpenWork?: (id: string) => void; onNetwork?: () => void; onMarketplace?: () => void; onWorkforce?: () => void;
 }) {
   const { user, live, auth, logout, unitAccount, can } = useOffice();
   // the marketplace is for the admin and department heads (they hire into their own departments)
@@ -47,6 +47,7 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
           {onPeople && <button className="tasks-btn" onClick={onPeople}>Xodimlar</button>}
           {onBrain && <button className="tasks-btn" onClick={onBrain}>The Brain</button>}
           {marketplace && <button className="tasks-btn" onClick={onMarketplace} title="AI agentlarni andozalardan yollash">Marketplace</button>}
+          {onWorkforce && (can("brain:manage") || can("users:manage")) && <button className="tasks-btn" onClick={onWorkforce} title="AI Direktor va agentlar ishi">AI ishchi kuchi</button>}
           {onCalendar && <button className="tasks-btn" onClick={onCalendar}>Kalendar</button>}
           {onTasks && (
             <button className={`tasks-btn${tasksOpen ? " on" : ""}`} onClick={onTasks} title="AI agentlar vazifalari">
