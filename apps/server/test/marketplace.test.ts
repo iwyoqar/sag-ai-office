@@ -311,6 +311,16 @@ describe("archive all", () => {
     expect(m.db.get("SELECT 1 FROM audit_logs WHERE action = 'marketplace.archive_all'")).toBeTruthy();
     expect(archiveAll(m.deps, m.admin)).toEqual({ archived: 0, cancelledTasks: 0 });
   });
+
+  it("final review: archive-all keeps agents hired through the marketplace", async () => {
+    const m = await market();
+    const id = m.approved();
+    const hired = requestHire(m.deps, m.head(), { templateId: id, departmentId: "marketing", justification: "Yangi agent" });
+    expect(archivePreview(m.deps, m.admin).agents).toBeGreaterThan(0);
+    archiveAll(m.deps, m.admin);
+    expect(m.db.get<{ lifecycle: string }>("SELECT lifecycle FROM agents WHERE id = ?", hired.agentId)!.lifecycle).toBe("ACTIVE");
+    expect(archivePreview(m.deps, m.admin)).toEqual({ agents: 0, openTasks: 0 });
+  });
 });
 
 // ---------------------------------------------------------------- API
@@ -348,6 +358,39 @@ describe("API", () => {
     });
     expect(created.status).toBe(201);
     expect((await a.admin.post(`/api/marketplace/templates/${created.body.template.id}/versions/1/approve`)).status).toBe(200);
+  });
+
+  it("final review: a never-approved template is a 409, not a crash, and nothing is recorded", async () => {
+    const a = await api();
+    const draft = await a.admin.post("/api/marketplace/templates", {
+      name: "Qoralama", category: "x", allowedDepartments: [],
+      version: { role: "Qoralama", responsibilities: "", skills: [], instructions: "", tools: [], model: null, maxTokensPerTask: null, estMonthlyMinor: 0 },
+    });
+    const n = () => a.db.get<{ n: number }>("SELECT COUNT(*) n FROM agent_hire_requests")!.n;
+    const before = n();
+    const r = await a.admin.post("/api/marketplace/requests", { templateId: draft.body.template.id, departmentId: "marketing", justification: "Sinov uchun" });
+    expect(r.status).toBe(409);
+    expect(r.body.error.code).toBe("template_not_approved");
+    expect(n()).toBe(before);
+  });
+
+  it("final review: the admin sees a pending request's checks as they are now", async () => {
+    const a = await api();
+    expect((await a.admin.put("/api/marketplace/limits/marketing", { autoTemplates: [] })).status).toBe(200);
+    const req =(await a.head.post("/api/marketplace/requests", { templateId: a.id, departmentId: "marketing", justification: "Kerak bo'ldi" })).body.request;
+    expect(req.status).toBe("PENDING");
+    const now = await a.admin.post(`/api/marketplace/requests/${req.id}/check`);
+    expect(now.status).toBe(200);
+    expect(now.body.checks.find((c: { id: string }) => c.id === "auto_listed").ok).toBe(true);
+    expect(now.body.checks.filter((c: { ok: boolean }) => !c.ok)).toEqual([]);
+    expect((await a.head.post(`/api/marketplace/requests/${req.id}/check`)).status).toBe(403);
+  });
+
+  it("final review: only the admin and department heads read the catalog; /me says who is a head", async () => {
+    const a = await api();
+    expect((await a.emp.get("/api/marketplace/templates")).status).toBe(403);
+    expect((await a.head.get("/api/auth/me")).body.user.headOf).toEqual(["marketing"]);
+    expect((await a.emp.get("/api/auth/me")).body.user.headOf).toEqual([]);
   });
 
   it("whitespace justification is 400 and records nothing", async () => {

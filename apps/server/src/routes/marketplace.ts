@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type Deps, parse, requireUser } from "../app.js";
 import {
   addVersion, approveRequest, approveVersion, archiveAll, archivePreview, cancelRequest, checkHire, createTemplate, getLimits,
-  headDepartments, isAdmin, listRequests, listTemplates, rejectRequest, requestHire, retireTemplate, setLimit,
+  headDepartments, isAdmin, listRequests, listTemplates, recheckRequest, rejectRequest, requestHire, retireTemplate, setLimit,
 } from "../domain/marketplace.js";
 import { forbidden } from "../lib/errors.js";
 
@@ -74,6 +74,8 @@ export const marketplaceRoutes = (d: Deps) => async (app: FastifyInstance) => {
     reply.status(201);
     return { request: requestHire(d, requireUser(req), b) };
   });
+
+  app.post("/api/marketplace/requests/:id/check", async (req) => recheckRequest(d, requireUser(req), parse(Id, req.params).id));
 
   app.post("/api/marketplace/requests/:id/approve", async (req) => {
     const b = parse(z.object({ override: z.boolean().optional() }), req.body ?? {});

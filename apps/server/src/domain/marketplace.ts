@@ -96,6 +96,7 @@ function insertVersion(ctx: Ctx, u: AuthUser, templateId: string, version: numbe
 }
 
 export function listTemplates(ctx: Ctx, u: AuthUser): TemplateDto[] {
+  if (!isAdmin(u) && !headDepartments(ctx, u.id).length) throw forbidden("Marketplace administrator va bo'lim rahbarlari uchun");
   const rows = ctx.db.all<TemplateRow>(
     `SELECT * FROM agent_templates WHERE business_unit_id = 'hq' ${isAdmin(u) ? "" : "AND status = 'APPROVED'"} ORDER BY category, name`,
   );
@@ -348,6 +349,7 @@ export function requestHire(ctx: Ctx, u: AuthUser, i: { templateId: string; depa
   const justification = i.justification.trim();
   if (!justification) throw badRequest("Sabab yozilishi kerak");
   const t = templateRow(ctx, i.templateId);
+  if (t.current_version == null) throw conflict("template_not_approved", "Andoza hali tasdiqlanmagan");
   const c = checkHire(ctx, { templateId: t.id, departmentId: i.departmentId, requester: admin ? "admin" : "head" });
   if (admin && c.outcome === "hire" && failed(c.checks, false).length && !i.override)
     throw conflict("override_required", `Limitdan tashqari: ${failed(c.checks, false).map((x) => x.detail).join("; ")}`);
@@ -375,6 +377,13 @@ export function requestHire(ctx: Ctx, u: AuthUser, i: { templateId: string; depa
     audit(ctx.db, actor(u), "marketplace.hire.request", { type: "agent_hire_request", id }, { templateId: t.id, departmentId: i.departmentId, outcome: c.outcome });
   });
   return toRequest(ctx, requestRow(ctx, id));
+}
+
+/** The checks of a pending request as they stand now (what an admin decision would see). Writes nothing. */
+export function recheckRequest(ctx: Ctx, u: AuthUser, id: string) {
+  requireAdmin(u);
+  const r = requestRow(ctx, id);
+  return checkHire(ctx, { templateId: r.template_id, version: r.template_version, departmentId: r.department_id, requester: "admin", excludeRequestId: r.id });
 }
 
 /** Admin decision. The checks run again now; a request is decided once (the conditional update), so one agent at most. */
@@ -452,8 +461,9 @@ export function listRequests(ctx: Ctx, u: AuthUser): HireRequestDto[] {
 // ---------------------------------------------------------------- archive the seeded agents
 
 const OPEN_IN = OPEN_TASK_STATUSES.map((s) => `'${s}'`).join(",");
-/** HQ agents the marketplace replaces: everything not yet archived except a unit's primary (AI) director */
-const ARCHIVABLE = "business_unit_id = 'hq' AND lifecycle <> 'ARCHIVED' AND is_primary_director = 0";
+/** HQ agents the marketplace replaces: not archived, not a unit's primary (AI) director, not hired through the marketplace */
+const ARCHIVABLE = "business_unit_id = 'hq' AND lifecycle <> 'ARCHIVED' AND is_primary_director = 0"
+  + " AND id NOT IN (SELECT agent_id FROM agent_hire_requests WHERE agent_id IS NOT NULL)";
 
 export function archivePreview(ctx: Ctx, u: AuthUser): { agents: number; openTasks: number } {
   requireAdmin(u);

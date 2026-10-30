@@ -10,7 +10,7 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
 }) {
   const { user, live, auth, logout, unitAccount, can } = useOffice();
   // the marketplace is for the admin and department heads (they hire into their own departments)
-  const marketplace = !!onMarketplace && (can("users:manage") || !!user?.managedDepartments?.length);
+  const marketplace = !!onMarketplace && (can("users:manage") || !!user?.headOf?.length);
   return (
     <header className="topbar">
       <div className="brand">

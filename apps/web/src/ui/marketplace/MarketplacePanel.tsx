@@ -49,7 +49,7 @@ export function MarketplacePanel({ onClose }: { onClose: () => void }) {
 function useHireDepartments() {
   const { office, user, can } = useOffice();
   const all = Object.values(office?.departments ?? {});
-  return can("users:manage") ? all : all.filter((d) => user?.managedDepartments?.includes(d.id));
+  return can("users:manage") ? all : all.filter((d) => user?.headOf?.includes(d.id));
 }
 
 // ---------------------------------------------------------------- catalog
@@ -156,6 +156,17 @@ function Requests() {
   const { data, error, reload } = useLoad<{ requests: HireRequestDto[] }>("/api/marketplace/requests");
   const [msg, setMsg] = useState<Note>(null);
   const [override, setOverride] = useState<Record<string, boolean>>({});
+  // the admin decides on the checks as they are now (stored ones were taken when the head asked)
+  const [now, setNow] = useState<Record<string, HireCheck[]>>({});
+  const pendingIds = (data?.requests ?? []).filter((r) => r.status === "PENDING").map((r) => r.id).join(",");
+  useEffect(() => {
+    if (!admin || !pendingIds) return;
+    let alive = true;
+    void Promise.all(pendingIds.split(",").map((id) =>
+      api.post<{ checks: HireCheck[] }>(`/api/marketplace/requests/${id}/check`).then((c) => [id, c.checks] as const).catch(() => null),
+    )).then((rows) => alive && setNow(Object.fromEntries(rows.filter((x): x is readonly [string, HireCheck[]] => !!x))));
+    return () => { alive = false; };
+  }, [admin, pendingIds]);
   if (error) return <div className="notice warn">{error}</div>;
   if (!data) return <Loading />;
   if (!data.requests.length) return <Empty>So'rovlar yo'q.</Empty>;
@@ -163,7 +174,9 @@ function Requests() {
     <div className="mk-requests">
       <Msg m={msg} />
       {data.requests.map((r) => {
-        const soft = r.checks.filter((c) => !c.hard && !c.ok);
+        const checks = (r.status === "PENDING" && admin && now[r.id]) || r.checks;
+        const soft = checks.filter((c) => !c.hard && !c.ok);
+        const hard = checks.some((c) => c.hard && !c.ok);
         return (
           <section key={r.id} className={`ins-card mk-req s-${r.status}`}>
             <div className="sec-head">
@@ -172,7 +185,8 @@ function Requests() {
             </div>
             <div className="muted">{r.requestedBy.name} · {new Date(r.createdAt).toLocaleString()} · “{r.justification}”</div>
             {r.decisionReason && <div className="muted">Sabab: {r.decisionReason}</div>}
-            <ul className="mk-checks">{r.checks.filter((c) => !c.ok).map((c) => <li key={c.id} className={c.hard ? "bad" : "warn"}>✗ {c.detail}</li>)}</ul>
+            {checks !== r.checks && <div className="muted">Hozirgi tekshiruv:</div>}
+            <ul className="mk-checks">{checks.filter((c) => !c.ok).map((c) => <li key={c.id} className={c.hard ? "bad" : "warn"}>✗ {c.detail}</li>)}</ul>
             {r.status === "PENDING" && (
               <div className="row-end">
                 {admin && soft.length > 0 && (
@@ -182,8 +196,8 @@ function Requests() {
                   const reason = window.prompt("Rad etish sababi:");
                   if (reason && reason.trim().length >= 3) void run(() => api.post(`/api/marketplace/requests/${r.id}/reject`, { reason: reason.trim() }), setMsg, "Rad etildi.").then(reload);
                 }}>Rad etish</button>}
-                {admin && <button className="primary small" disabled={soft.length > 0 && !override[r.id]}
-                  onClick={() => void run(() => api.post(`/api/marketplace/requests/${r.id}/approve`, { override: !!override[r.id] }), setMsg, "Tasdiqlandi.").then(reload)}>Tasdiqlash</button>}
+                {admin && <button className="primary small" disabled={!now[r.id] || hard || (soft.length > 0 && !override[r.id])}
+                  onClick={() => void run(() => api.post(`/api/marketplace/requests/${r.id}/approve`, { override: soft.length > 0 && !!override[r.id] }), setMsg, "Tasdiqlandi.").then(reload)}>Tasdiqlash</button>}
                 {r.requestedBy.id === user?.id && <button className="link" onClick={() => void run(() => api.post(`/api/marketplace/requests/${r.id}/cancel`), setMsg, "Bekor qilindi.").then(reload)}>Bekor qilish</button>}
               </div>
             )}

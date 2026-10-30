@@ -7,6 +7,8 @@ export interface UserDto {
   departmentId?: string | null;
   /** departments this user manages (head or delegated grant) */
   managedDepartments?: string[];
+  /** departments this user heads (departments.head_user_id): where they may hire agents */
+  headOf?: string[];
   /** business unit of the account ('hq' = SAG Head Office); store accounts only use the unit routes */
   homeUnitId?: string;
 }
