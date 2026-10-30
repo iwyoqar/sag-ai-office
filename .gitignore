@@ -3,10 +3,13 @@ dist/
 .env
 apps/web/public/models/
 *.log
-data/
+# the dev database is versioned on purpose (owner decision); WAL/SHM side files are not
+data/*
+!data/sag.db
 .env.*
 !.env.example
 *.db
+!data/sag.db
 *.db-wal
 *.db-shm
 .vercel/
