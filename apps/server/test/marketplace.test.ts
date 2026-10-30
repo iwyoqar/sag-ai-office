@@ -1,7 +1,7 @@
 // W4 agent marketplace (HQ first): catalog from the existing agents, hire checks, AUTO / admin decisions, archive-all.
 import { describe, expect, it } from "vitest";
 import { OPEN_TASK_STATUSES, type TemplateTool } from "@sag/shared";
-import { addUser, makeApp } from "./helpers.js";
+import { addUser, adminClient, client, loginCookie, makeApp } from "./helpers.js";
 import { loadUser } from "../src/lib/auth.js";
 import { createTask } from "../src/domain/tasks.js";
 import {
@@ -300,5 +300,63 @@ describe("archive all", () => {
     expect(m.db.get<{ n: number }>("SELECT COUNT(*) n FROM agents")!.n).toBeGreaterThanOrEqual(agents); // history kept
     expect(m.db.get("SELECT 1 FROM audit_logs WHERE action = 'marketplace.archive_all'")).toBeTruthy();
     expect(archiveAll(m.deps, m.admin)).toEqual({ archived: 0, cancelledTasks: 0 });
+  });
+});
+
+// ---------------------------------------------------------------- API
+
+describe("API", () => {
+  async function api() {
+    const m = await market();
+    const id = m.approved();
+    const as = async (username: string, password: string) => client(m.app, await loginCookie(m.app, username, password));
+    const admin = await adminClient(m.app);
+    m.db.run("UPDATE departments SET head_user_id = NULL WHERE id = 'marketing'");
+    const head = await addUser(m.db, "api.head", "employee");
+    m.db.run("UPDATE departments SET head_user_id = ? WHERE id = 'marketing'", head.id);
+    const emp = await addUser(m.db, "api.emp", "employee");
+    return { ...m, id, admin, head: await as(head.username, head.password), emp: await as(emp.username, emp.password) };
+  }
+
+  it("API permissions", async () => {
+    const a = await api();
+    const body = { templateId: a.id, departmentId: "marketing", justification: "Kerak bo'ldi" };
+    expect((await a.emp.post("/api/marketplace/requests", body)).status).toBe(403);
+    expect((await a.head.post("/api/marketplace/requests", { ...body, departmentId: "procurement" })).status).toBe(403);
+    expect((await a.head.put("/api/marketplace/limits/marketing", { maxAgents: 3 })).status).toBe(403);
+    expect((await a.head.post("/api/marketplace/archive-all")).status).toBe(403);
+    expect((await a.head.get("/api/marketplace/archive-preview")).status).toBe(403);
+    const ok = await a.head.post("/api/marketplace/requests", body);
+    expect(ok.status).toBe(201);
+    expect(ok.body.request.status).toBe("APPROVED");
+    expect((await a.head.get("/api/marketplace/templates")).body.templates.every((t: { status: string }) => t.status === "APPROVED")).toBe(true);
+    expect((await a.admin.put("/api/marketplace/limits/marketing", { maxAgents: 3 })).status).toBe(200);
+    expect((await a.admin.get("/api/marketplace/archive-preview")).status).toBe(200);
+    const created = await a.admin.post("/api/marketplace/templates", {
+      name: "Tahlilchi", category: "finance", allowedDepartments: [],
+      version: { role: "Tahlilchi", responsibilities: "", skills: [], instructions: "", tools: [], model: null, maxTokensPerTask: null, estMonthlyMinor: 0 },
+    });
+    expect(created.status).toBe(201);
+    expect((await a.admin.post(`/api/marketplace/templates/${created.body.template.id}/versions/1/approve`)).status).toBe(200);
+  });
+
+  it("whitespace justification is 400 and records nothing", async () => {
+    const a = await api();
+    const n = () => a.db.get<{ n: number }>("SELECT COUNT(*) n FROM agent_hire_requests")!.n;
+    const before = n();
+    const r = await a.head.post("/api/marketplace/requests", { templateId: a.id, departmentId: "marketing", justification: "   " });
+    expect(r.status).toBe(400);
+    expect(n()).toBe(before);
+  });
+
+  it("POST /check writes nothing", async () => {
+    const a = await api();
+    const n = () => a.db.get<{ n: number }>("SELECT COUNT(*) n FROM agent_hire_requests")!.n;
+    const before = n();
+    const r = await a.head.post("/api/marketplace/check", { templateId: a.id, departmentId: "marketing" });
+    expect(r.status).toBe(200);
+    expect(r.body.outcome).toBe("hire");
+    expect(r.body.checks).toHaveLength(8);
+    expect(n()).toBe(before);
   });
 });

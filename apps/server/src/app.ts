@@ -9,6 +9,7 @@ import { type AuthUser, userForSession } from "./lib/auth.js";
 import { HttpError, forbidden, notFound, unauthorized } from "./lib/errors.js";
 import { HQ_UNIT } from "./domain/units.js";
 import { unitRoutes } from "./routes/units.js";
+import { marketplaceRoutes } from "./routes/marketplace.js";
 import type { Actor } from "./lib/audit.js";
 import type { Ctx } from "./domain/context.js";
 import { authRoutes } from "./routes/auth.js";
@@ -201,6 +202,7 @@ export async function buildApp(opts: AppOptions) {
   await app.register(brainRoutes(deps));
   await app.register(scheduleRoutes(deps));
   await app.register(unitRoutes(deps));
+  await app.register(marketplaceRoutes(deps));
 
   return { app, deps };
 }
