@@ -93,6 +93,8 @@ export const PERMISSIONS = [
   "employees:read_all", "employees:manage_all", "employees:manage_dept",
   "tasks:assign_any", "tasks:assign_dept", "tasks:read_all", "tasks:read_team",
   "permissions:delegate", "workload:configure",
+  // sensitive AI data — separate from task visibility (security model §3.5)
+  "agent_chat:read_others", "ai_runs:read", "tool_io:read", "budget:read",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -105,6 +107,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   director: [
     "tasks:read", "tasks:create", "tasks:manage", "agents:read", "agents:control", "audit:read", "brain:manage",
     "employees:read_all", "tasks:assign_any", "tasks:read_all", "permissions:delegate", "workload:configure",
+    "ai_runs:read", "tool_io:read", "budget:read",
   ],
   department_head: ["tasks:read", "tasks:create", "agents:read", "employees:manage_dept", "tasks:assign_dept"],
   employee: ["tasks:read", "tasks:create", "agents:read"],
@@ -128,6 +131,8 @@ export interface DeptStats {
   avgMinutes: number | null;
   tokens: number;
   costUsd: number;
+  /** tokens/cost withheld: the viewer lacks budget:read (task figures are already limited to what they can see) */
+  usageHidden?: boolean;
 }
 
 /** Events pushed over SSE. `type` names match the spec's realtime list. */

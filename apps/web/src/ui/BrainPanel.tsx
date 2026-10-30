@@ -412,7 +412,7 @@ export function ApprovalsTab({ taskId, compact }: { taskId?: string; compact?: b
         <div key={a.id} className={`ins-card${tool ? " tool-approval" : ""}`}>
           <div className="ins-head">
             {tool && <span className="ai-chip mock">Agent amali · {a.payload.connector}</span>}
-            <b>{tool ? a.payload.summary : compact ? "Natija tasdiqlashni kutmoqda" : a.taskTitle}</b>
+            <b>{tool ? a.payload.summary ?? "Amal tafsilotlari sizga ko'rsatilmaydi" : compact ? "Natija tasdiqlashni kutmoqda" : a.taskTitle}</b>
             <span className="muted">{office?.agents.find((x) => x.id === a.agentId)?.name} · {new Date(a.requestedAt).toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" })}</span>
           </div>
           {tool && (

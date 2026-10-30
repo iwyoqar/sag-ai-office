@@ -1,7 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import type { OfficeEvent } from "@sag/shared";
-import { type Deps, requirePerm } from "../app.js";
+import { type Deps, SESSION_COOKIE, requirePerm } from "../app.js";
 import { HQ_UNIT } from "../domain/units.js";
+import { type AuthUser, userForSession } from "../lib/auth.js";
+import { canSeeTask, has, taskRef } from "../domain/access.js";
 
 // A real named event (not an SSE comment), so clients can detect a silently dead stream behind proxies.
 const HEARTBEAT_MS = 20_000;
@@ -18,15 +20,29 @@ export const eventRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   app.get("/api/events", async (req, reply) => {
-    const u = requirePerm(req, "tasks:read");
-    const companyWide = u.permissions.includes("tasks:read_all") || u.permissions.includes("tasks:assign_any");
-    // People's work and personal notices reach only their audience (events carry ids, never content).
+    let u: AuthUser = requirePerm(req, "tasks:read");
+    // Task visibility per stream, refreshed with the session check (permissions may change while it is open).
+    let seen = new Map<string, boolean>();
+    const seesTask = (id: string) => {
+      let v = seen.get(id);
+      if (v === undefined) {
+        const r = taskRef(d, id);
+        v = !!r && canSeeTask(d, u, r);
+        seen.set(id, v);
+      }
+      return v;
+    };
+    // Every event reaches only people who may see what it is about: personal notices their audience, people's
+    // work its audience (or unit-wide readers), AI task events those who can see the task. Agent status without a
+    // task is public — it is what the 3D office shows.
     const allowed = (e: OfficeEvent) => {
       // the company-wide stream is HQ's; other units' activity never reaches it
       if (e.unitId && e.unitId !== HQ_UNIT) return false;
       const aud = e.data?.audience as string[] | undefined;
       if (e.type === "notification.created") return !!aud?.includes(u.id);
-      if (e.data?.human) return companyWide || !!aud?.includes(u.id);
+      if (e.data?.human) return has(u, "tasks:read_all") || has(u, "tasks:assign_any") || !!aud?.includes(u.id);
+      if (e.taskId) return seesTask(e.taskId);
+      if (e.type === "connector.activity") return has(u, "brain:manage");
       return true;
     };
     const header = req.headers["last-event-id"];
@@ -59,7 +75,15 @@ export const eventRoutes = (d: Deps) => async (app: FastifyInstance) => {
     for (const e of queue) if (e.id > last) { last = e.id; send(e); }
     res.write(`event: ready\ndata: ${JSON.stringify({ lastEventId: last })}\n\n`);
 
-    const hb = setInterval(() => res.write("event: ping\ndata: {}\n\n"), HEARTBEAT_MS);
+    // The heartbeat doubles as the session check: logout, expiry or deactivation ends the stream.
+    const cookie = req.cookies[SESSION_COOKIE];
+    const hb = setInterval(() => {
+      const fresh = userForSession(d.db, cookie);
+      if (!fresh || !fresh.permissions.includes("tasks:read")) return void res.end();
+      u = fresh;
+      seen = new Map();
+      res.write("event: ping\ndata: {}\n\n");
+    }, HEARTBEAT_MS);
     open.add(res);
     res.on("close", () => {
       clearInterval(hb);

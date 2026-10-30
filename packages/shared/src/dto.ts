@@ -88,7 +88,7 @@ export interface AgentProfileDto {
   connectors: { id: string; name: string; status: string; authStatus: string; granted: boolean; allowedActions: string[] }[];
   instructions: { id: string; scope: string; title: string; version: number; content: string }[];
   errors: { taskId: string; title: string; error: string; at: string }[];
-  usage: { inputTokens: number; outputTokens: number; costUsd: number; runs: number };
+  usage: { inputTokens: number; outputTokens: number; costUsd: number; runs: number; /** withheld without budget:read */ hidden?: boolean };
 }
 
 export interface TaskLimits {

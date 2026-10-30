@@ -9,6 +9,7 @@
     "migrate": "tsx src/db/cli.ts migrate",
     "seed": "tsx src/db/cli.ts seed",
     "import:stores": "tsx src/import/cli.ts",
+    "backup": "tsx src/backup/cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

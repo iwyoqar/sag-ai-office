@@ -4,6 +4,7 @@
 import type { Permission, Role } from "@sag/shared";
 import type { AuthUser } from "../lib/auth.js";
 import type { Ctx } from "./context.js";
+import { HQ_UNIT } from "./units.js";
 
 export const has = (u: AuthUser, p: Permission) => u.permissions.includes(p);
 
@@ -73,9 +74,10 @@ export interface TaskRef {
   assigned_by: string | null;
   assignee_user_id: string | null;
   reviewer_user_id: string | null;
+  business_unit_id: string;
 }
 
-const TASK_REF = "SELECT id, kind, parent_id, department_id, created_by, assigned_by, assignee_user_id, reviewer_user_id FROM tasks WHERE id = ?";
+const TASK_REF = "SELECT id, kind, parent_id, department_id, created_by, assigned_by, assignee_user_id, reviewer_user_id, business_unit_id FROM tasks WHERE id = ?";
 export const taskRef = (ctx: Ctx, id: string) => ctx.db.get<TaskRef>(TASK_REF, id);
 
 /** Ancestors, nearest first (bounded: parent chains are short and acyclic). */
@@ -96,6 +98,7 @@ const involved = (u: AuthUser, t: TaskRef) =>
 
 /** Owns the work: may edit, split, reassign, review and cancel it. */
 export function canManageTask(ctx: Ctx, u: AuthUser, t: TaskRef): boolean {
+  if (t.business_unit_id !== HQ_UNIT) return false; // these rules serve HQ's routes; units have their own (domain/units.ts)
   if (has(u, "tasks:assign_any")) return true;
   if (t.created_by === u.id || t.assigned_by === u.id) return true;
   if (t.department_id && deptsFor(u, "tasks:assign_dept").has(t.department_id)) return true;
@@ -103,25 +106,47 @@ export function canManageTask(ctx: Ctx, u: AuthUser, t: TaskRef): boolean {
   return ancestors(ctx, t).some((a) => a.assignee_user_id === u.id || a.created_by === u.id || a.assigned_by === u.id);
 }
 
+/**
+ * Whole-organisation task reach. Today there is exactly one organisation (it becomes business unit `hq` in W1), so
+ * `tasks:read_all` means "every task of this unit" — never cross-unit. W1 replaces this with the unit scope.
+ */
+export const readsAllTasks = (u: AuthUser) => has(u, "tasks:read_all") || has(u, "tasks:assign_any");
+
+/** Departments whose tasks `u` sees as a department head (or through department-scoped grants). */
+export const taskDepartments = (u: AuthUser) =>
+  new Set([...deptsFor(u, "tasks:read_team"), ...deptsFor(u, "employees:manage_dept"), ...deptsFor(u, "tasks:assign_dept")]);
+
+/**
+ * One rule for AI and human tasks (security model §3.5): unit-wide readers, people involved in the task, heads of
+ * its department, and whoever is responsible for an ancestor (a parent's creator sees its subtasks' progress).
+ */
 export function canSeeTask(ctx: Ctx, u: AuthUser, t: TaskRef): boolean {
-  if (t.kind !== "human") return true; // AI tasks keep their existing visibility (tasks:read)
-  if (has(u, "tasks:read_all") || involved(u, t)) return true;
-  if (t.department_id && (deptsFor(u, "tasks:read_team").has(t.department_id) || deptsFor(u, "employees:manage_dept").has(t.department_id)))
-    return true;
+  // HQ's task, work and event routes never reach another business unit's work (units: domain/units.ts unitAccess)
+  if (t.business_unit_id !== HQ_UNIT) return false;
+  if (readsAllTasks(u) || involved(u, t)) return true;
+  if (t.department_id && taskDepartments(u).has(t.department_id)) return true;
   return canManageTask(ctx, u, t);
 }
 
-/** SQL fragment + params limiting a task query to human tasks `u` may see (for list endpoints). */
+/**
+ * The assignee of a subtask needs its parent's context (title, description, priority, deadline, status, owner)
+ * even when the parent itself is not theirs to see — but not the parent's comments, files or other subtasks.
+ */
+export function canSeeParentContext(ctx: Ctx, u: AuthUser, child: TaskRef): boolean {
+  return (child.business_unit_id === HQ_UNIT && involved(u, child)) || canSeeTask(ctx, u, child);
+}
+
+/** SQL fragment + params limiting a task query to tasks `u` may see (for list endpoints and stats). */
 export function visibleTaskSql(u: AuthUser, alias = "t"): { sql: string; params: string[] } {
   // company-wide (HQ) task lists never include other business units' work
-  const hq = `${alias}.business_unit_id = 'hq'`;
-  if (has(u, "tasks:read_all") || has(u, "tasks:assign_any")) return { sql: hq, params: [] };
-  const depts = [...new Set([...deptsFor(u, "tasks:read_team"), ...deptsFor(u, "employees:manage_dept"), ...deptsFor(u, "tasks:assign_dept")])];
+  const hq = `${alias}.business_unit_id = '${HQ_UNIT}'`;
+  if (readsAllTasks(u)) return { sql: hq, params: [] };
+  const depts = [...taskDepartments(u)];
   const me = u.id;
   const own = `(${alias}.created_by = ? OR ${alias}.assigned_by = ? OR ${alias}.assignee_user_id = ? OR ${alias}.reviewer_user_id = ?)`;
   // descendants of tasks this user is responsible for (recursive, depth-limited by the data)
   const below = `${alias}.id IN (WITH RECURSIVE sub(id) AS (
-      SELECT id FROM tasks WHERE kind = 'human' AND (assignee_user_id = ? OR created_by = ? OR assigned_by = ?)
+      SELECT id FROM tasks WHERE assignee_user_id = ? OR created_by = ? OR assigned_by = ?
       UNION SELECT c.id FROM tasks c JOIN sub ON c.parent_id = sub.id) SELECT id FROM sub)`;
   const parts = [own, below];
   const params = [me, me, me, me, me, me, me];

@@ -49,7 +49,25 @@ S (SAP discovery) is mostly questions for SAG's SAP owner and can start now in p
 
 ---
 
-## W0 — Production hardening (next)
+## W0 — Production hardening (implemented 2026-10-30, awaiting owner actions)
+
+Status: implemented in the working tree and verified by tests — see
+[W0_PRODUCTION_HARDENING_REPORT.md](W0_PRODUCTION_HARDENING_REPORT.md) for what was done, how it was tested and what
+is still open. Not committed or deployed. Production readiness is **not** claimed: credential rotation and a real
+off-site backup upload + restore are still outstanding.
+
+| Plan item (below) | Status |
+|---|---|
+| W0.1 secrets | ⏳ owner actions (rotation checklist, GitHub Support); history on GitHub already clean |
+| W0.2 data isolation | ✅ tasks (AI + human), agent chats, SSE, run records, tool payloads, approvals, connector log, stats, knowledge, memory, agent profiles |
+| W0.3 reliable execution | ✅ heartbeat leases, `lease_epoch` fencing, execution records (`worker_id`, `lease_epoch`, `end_reason`), write-action idempotency, `unknown` for interrupted actions |
+| W0.4 deployment/queue recovery | ✅ graceful stop releases leases; startup recovery via `worker_heartbeats`; attempts limit on crash loops; `/api/ready` |
+| W0.5 proxy/rate limits | ✅ `TRUSTED_PROXIES`; DB-backed per-account backoff + per-IP ceiling |
+| W0.6 backup/restore | ✅ code + tests + runbook · ⏳ not operational until storage is configured and a real restore drill passes |
+| W0.7 readiness review | 🟡 see report §8 (CSRF/Origin, scrypt upgrade, admin-password log, Render env vars open) |
+| W0.8 verification | ✅ see report §5 |
+
+Original plan text follows (kept for reference).
 
 Order: W0.1 user actions start immediately; W0.3 + W0.4 together (same code); then W0.2, W0.5, W0.6, W0.7;
 W0.8 runs after each step. Every item: regression tests, typecheck, all tests, build.

@@ -57,8 +57,11 @@ export interface AppOptions {
   cookieSecure?: boolean;
   logger?: boolean | object;
   llm?: LlmSetup;
-  /** behind Render / Vercel: take the client IP from X-Forwarded-For (login rate limit) */
-  trustProxy?: boolean;
+  /**
+   * Proxies whose X-Forwarded-For is believed (client IP for login throttling and audit): false (default), a hop
+   * count, or a comma-separated list of IPs/CIDRs. `true` (trust any sender) is refused.
+   */
+  trustProxy?: false | number | string;
   connectors?: ConnectorConfig;
   /** HTTP client for connector calls (tests inject a fake) */
   http?: typeof fetch;
@@ -93,6 +96,7 @@ export function requirePerm(req: FastifyRequest, perm: Permission): AuthUser {
 export const actorOf = (u: AuthUser): Actor => ({ type: "user", id: u.id });
 
 export async function buildApp(opts: AppOptions) {
+  if ((opts.trustProxy as unknown) === true) throw new Error("trustProxy: true would let any client forge its IP — give a hop count or proxy addresses");
   const app = Fastify({
     logger: opts.logger ?? false,
     trustProxy: opts.trustProxy ?? false,
@@ -147,6 +151,29 @@ export async function buildApp(opts: AppOptions) {
   });
 
   app.get("/api/health", async () => ({ ok: true, time: new Date().toISOString(), subscribers: bus.subscriberCount }));
+
+  // Readiness for the platform / monitoring: can we write, is the queue moving, are backups fresh. Public, so it
+  // reports states and ages only — no names, paths, keys or error texts. 503 when not ready to serve.
+  app.get("/api/ready", async (_req, reply) => {
+    let writable = false;
+    try {
+      opts.db.tx(() => opts.db.get("SELECT 1"));
+      writable = true;
+    } catch { /* reported below */ }
+    const oldestQueued = opts.db.get<{ at: string | null }>(
+      "SELECT MIN(updated_at) at FROM tasks WHERE status = 'QUEUED' AND kind <> 'human' AND (scheduled_for IS NULL OR scheduled_for <= ?)", new Date().toISOString(),
+    )?.at;
+    const lastVerified = opts.db.get<{ at: string | null }>("SELECT MAX(verified_at) at FROM backup_runs WHERE status = 'verified'")?.at ?? null;
+    const age = (iso: string | null | undefined) => (iso ? Math.round((Date.now() - Date.parse(iso)) / 1000) : null);
+    const body = {
+      ok: writable,
+      database: writable ? "writable" : "unavailable",
+      worker: deps.runner ? (deps.runner.running ? "running" : "stopped") : "absent",
+      queueLagSeconds: age(oldestQueued),
+      lastVerifiedBackupAgeSeconds: age(lastVerified),
+    };
+    return reply.status(writable ? 200 : 503).send(body);
+  });
 
   await app.register(authRoutes(deps));
   await app.register(orgRoutes(deps));

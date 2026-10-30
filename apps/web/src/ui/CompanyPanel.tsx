@@ -22,8 +22,8 @@ export function CompanyPanel({ onSelect, stats, onBack, children }: {
         <Stat label="Faol" value={all?.active ?? "–"} tone={STATUS_META.WORKING.color} />
         <Stat label="Tasdiq" value={all?.waitingApproval ?? "–"} tone={STATUS_META.WAITING_APPROVAL.color} />
         <Stat label="Xatolar" value={all?.errors ?? "–"} tone={STATUS_META.ERROR.color} />
-        <Stat label="Tokenlar" value={all ? fmtTokens(all.tokens) : "–"} />
-        <Stat label="API xarajat" value={all ? fmtUsd(all.costUsd) : "–"} />
+        <Stat label="Tokenlar" value={all && !all.usageHidden ? fmtTokens(all.tokens) : "–"} />
+        <Stat label="API xarajat" value={all && !all.usageHidden ? fmtUsd(all.costUsd) : "–"} />
       </div>
       <table className="floor-table">
         <thead>

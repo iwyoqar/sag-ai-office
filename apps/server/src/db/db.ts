@@ -17,17 +17,26 @@ function norm(params: Param[]): SQLInputValue[] {
 }
 
 /**
- * Thin wrapper over node:sqlite. All SQL is written to stay portable to PostgreSQL
- * (positional params, ISO-8601 TEXT timestamps, JSON as TEXT, RETURNING).
+ * Thin wrapper over node:sqlite (SQLite is the production database — owner decision 2026-10-30).
+ *
+ * Concurrency model: one writer at a time (WAL lets readers continue). Every write transaction starts with
+ * BEGIN IMMEDIATE, so lock contention shows up at the start, where SQLite's busy handler waits up to
+ * `busy_timeout` for the other writer — that wait *is* the retry policy; there are no lock-upgrade deadlocks to
+ * retry because no transaction starts as a reader. Transactions must stay short: the API is synchronous, a
+ * transaction body cannot await (enforced below), and no network or LLM call may run inside one.
  */
 export class Db {
   readonly raw: DatabaseSyncT;
   private depth = 0;
+  private closed = false;
+  /** called when a write transaction held the lock longer than `slowTxMs` (wired to the logger in index.ts) */
+  onSlowTx: ((ms: number) => void) | null = null;
+  slowTxMs = 250;
 
-  constructor(path: string) {
+  constructor(path: string, opts: { busyTimeoutMs?: number } = {}) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.raw = new DatabaseSync(path);
-    this.raw.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+    this.raw.exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = ${Math.max(0, Math.floor(opts.busyTimeoutMs ?? 5000))};`);
     if (path !== ":memory:") this.raw.exec("PRAGMA journal_mode = WAL;");
   }
 
@@ -44,21 +53,38 @@ export class Db {
     return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) };
   }
 
-  /** Runs fn in a transaction; nested calls join the outer one. */
+  /** Runs fn in a write transaction; nested calls join the outer one. fn must be synchronous. */
   tx<T>(fn: () => T): T {
     if (this.depth > 0) return fn();
     this.raw.exec("BEGIN IMMEDIATE");
     this.depth++;
+    const started = Date.now();
     try {
       const out = fn();
+      // an async body would commit before its awaits ran, i.e. outside the transaction
+      if (out instanceof Promise) {
+        out.catch(() => {});
+        throw new Error("Db.tx: the transaction body must be synchronous (no await inside a transaction)");
+      }
       this.raw.exec("COMMIT");
       return out;
     } catch (e) {
-      this.raw.exec("ROLLBACK");
+      // SQLite may already have rolled back (e.g. disk full); the original error is the one that matters
+      if (this.raw.isTransaction) this.raw.exec("ROLLBACK");
       throw e;
     } finally {
       this.depth--;
+      const ms = Date.now() - started;
+      if (ms > this.slowTxMs) this.onSlowTx?.(ms);
     }
+  }
+
+  /** Migrations not applied yet, and whether this database already holds data (worth a backup first). */
+  pendingMigrations(): { pending: string[]; existing: boolean } {
+    const has = !!this.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'");
+    const done = new Set(has ? this.all<{ name: string }>("SELECT name FROM schema_migrations").map((r) => r.name) : []);
+    const pending = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort().filter((f) => !done.has(f));
+    return { pending, existing: done.size > 0 };
   }
 
   migrate(): string[] {
@@ -92,7 +118,15 @@ export class Db {
     return applied;
   }
 
+  /** Checkpoints the WAL into the main file (clean state for file copies) and closes. Idempotent. */
   close() {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.raw.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      /* best effort: another connection may still be reading */
+    }
     this.raw.close();
   }
 }

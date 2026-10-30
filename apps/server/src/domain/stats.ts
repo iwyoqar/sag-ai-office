@@ -27,21 +27,32 @@ export function resolveRange(range: StatsRange, from?: string, to?: string, at =
   return { from: start.toISOString(), to: new Date(at.getTime() + 1000).toISOString() };
 }
 
+/** Who is asking: task figures count only tasks they can see; usage needs budget:read. Omitted = everything. */
+export interface StatsView {
+  visible: { sql: string; params: string[] };
+  usage: boolean;
+}
+
 /** Per-department stats. Snapshot values (agents, in progress, queued…) are "now"; volumes are for the range. */
-export function departmentStats(ctx: Ctx, range: { from: string; to: string }): DeptStats[] {
+export function departmentStats(ctx: Ctx, range: { from: string; to: string }, view?: StatsView): DeptStats[] {
   const { db } = ctx;
+  const vis = view?.visible ?? { sql: "1=1", params: [] };
   const deps = db.all<{ id: string }>("SELECT id FROM departments WHERE business_unit_id = 'hq' ORDER BY sort");
   const agents = db.all<{ department_id: string; status: string; lifecycle: string }>(
     "SELECT department_id, status, lifecycle FROM agents WHERE lifecycle <> 'ARCHIVED' AND business_unit_id = 'hq'",
   );
   const live = db.all<{ department_id: string; status: string; n: number }>(
-    "SELECT department_id, status, COUNT(*) n FROM tasks WHERE business_unit_id = 'hq' AND kind <> 'human' AND status IN ('IN_PROGRESS','QUEUED','WAITING_APPROVAL') GROUP BY department_id, status",
+    `SELECT t.department_id, t.status, COUNT(*) n FROM tasks t
+     WHERE t.business_unit_id = 'hq' AND t.kind <> 'human' AND t.status IN ('IN_PROGRESS','QUEUED','WAITING_APPROVAL') AND ${vis.sql}
+     GROUP BY t.department_id, t.status`,
+    ...vis.params,
   );
   const closed = db.all<{ department_id: string; status: string; started_at: string | null; completed_at: string }>(
-    "SELECT department_id, status, started_at, completed_at FROM tasks WHERE business_unit_id = 'hq' AND kind <> 'human' AND status IN ('DONE','FAILED') AND completed_at >= ? AND completed_at < ?",
-    range.from, range.to,
+    `SELECT t.department_id, t.status, t.started_at, t.completed_at FROM tasks t
+     WHERE t.business_unit_id = 'hq' AND t.kind <> 'human' AND t.status IN ('DONE','FAILED') AND t.completed_at >= ? AND t.completed_at < ? AND ${vis.sql}`,
+    range.from, range.to, ...vis.params,
   );
-  const usage = db.all<{ department_id: string; tokens: number; cost: number }>(
+  const usage = view && !view.usage ? [] : db.all<{ department_id: string; tokens: number; cost: number }>(
     `SELECT department_id, COALESCE(SUM(input_tokens + output_tokens),0) tokens, COALESCE(SUM(cost_usd),0) cost
      FROM usage_records WHERE created_at >= ? AND created_at < ?
        AND department_id IN (SELECT id FROM departments WHERE business_unit_id = 'hq') GROUP BY department_id`,
@@ -67,6 +78,7 @@ export function departmentStats(ctx: Ctx, range: { from: string; to: string }): 
       avgMinutes: durations.length ? Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) * 10) / 10 : null,
       tokens: u?.tokens ?? 0,
       costUsd: Math.round((u?.cost ?? 0) * 10000) / 10000,
+      ...(view && !view.usage ? { usageHidden: true } : {}),
     };
   });
 }

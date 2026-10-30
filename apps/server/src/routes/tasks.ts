@@ -6,7 +6,7 @@ import {
   cancelTask, createTask, getTask, getTaskDetail, listTasks, reassignTask, retryTask, transitionTask, updateTask,
 } from "../domain/tasks.js";
 import { conflict, forbidden, notFound } from "../lib/errors.js";
-import { canSeeTask, taskRef } from "../domain/access.js";
+import { canSeeTask, has, taskRef, visibleTaskSql } from "../domain/access.js";
 import { HQ_UNIT } from "../domain/units.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
@@ -64,7 +64,7 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
   };
 
   app.get("/api/tasks", async (req) => {
-    requirePerm(req, "tasks:read");
+    const u = requirePerm(req, "tasks:read");
     const q = parse(
       z.object({
         group: z.enum(Object.keys(GROUPS) as [string, ...string[]]).default("ALL"),
@@ -83,8 +83,8 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
     return {
       tasks: listTasks(d, {
         status, departmentId: q.departmentId, agentId: q.agentId, limit: q.limit, unitId: HQ_UNIT,
-        parentId: q.topLevel === "true" ? null : q.parentId,
-      }).filter((t) => t.kind !== "human"),
+        parentId: q.topLevel === "true" ? null : q.parentId, aiOnly: true, visible: visibleTaskSql(u),
+      }),
     };
   });
 
@@ -93,7 +93,18 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
     const { id } = parse(Id, req.params);
     const r = taskRef(d, id);
     if (!r || !canSeeTask(d, u, r)) throw notFound("Vazifa");
-    return getTaskDetail(d, id);
+    const detail = getTaskDetail(d, id);
+    // Task visibility does not include the AI internals: run records need ai_runs:read, tool payloads tool_io:read.
+    const runs = has(u, "ai_runs:read");
+    const payloads = has(u, "tool_io:read") || has(u, "tasks:manage");
+    return {
+      ...detail,
+      subtasks: detail.subtasks.filter((s) => { const sr = taskRef(d, s.id); return !!sr && canSeeTask(d, u, sr); }),
+      runs: runs ? detail.runs : [],
+      tools: runs ? detail.tools : [],
+      approvals: payloads ? detail.approvals : detail.approvals.map((a) => ({ ...(a as object), payload: null, payloadHidden: true })),
+      restricted: { runs: !runs, payloads: !payloads },
+    };
   });
 
   app.post("/api/tasks", async (req, reply) => {

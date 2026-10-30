@@ -10,7 +10,7 @@ import { audit, type Actor } from "../lib/audit.js";
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors.js";
 import { uid } from "../lib/ids.js";
 import {
-  ancestors, canAssignTo, canManageTask, canSeeTask, has, personRef, visibleTaskSql, type TaskRef,
+  ancestors, canAssignTo, canManageTask, canSeeParentContext, canSeeTask, has, personRef, visibleTaskSql, type TaskRef,
 } from "./access.js";
 import type { Ctx } from "./context.js";
 import { checkWorkload, notify } from "./notifications.js";
@@ -29,6 +29,7 @@ function rowOf(ctx: Ctx, id: string): TaskRow {
 const refOf = (r: TaskRow): TaskRef => ({
   id: r.id, kind: r.kind, parent_id: r.parent_id, department_id: r.department_id, created_by: r.created_by,
   assigned_by: r.assigned_by, assignee_user_id: r.assignee_user_id, reviewer_user_id: r.reviewer_user_id,
+  business_unit_id: r.business_unit_id,
 });
 
 /** Loads a human task the caller may see; others get 404 (no existence leak). */
@@ -565,7 +566,15 @@ export function workDetail(ctx: Ctx, u: AuthUser, id: string) {
   const parent = r.parent_id ? ctx.db.get<TaskRow>("SELECT * FROM tasks WHERE id = ?", r.parent_id) : null;
   return {
     task: items(ctx, [r])[0],
-    parent: parent && canSeeTask(ctx, u, refOf(parent)) ? { id: parent.id, title: parent.title, status: parent.status } : null,
+    // full parent for those who may see it; otherwise only the context an assignee needs (no comments/files/siblings)
+    parent: !parent ? null
+      : canSeeTask(ctx, u, refOf(parent)) ? { id: parent.id, title: parent.title, status: parent.status }
+      : canSeeParentContext(ctx, u, ref)
+        ? {
+          id: parent.id, title: parent.title, status: parent.status, contextOnly: true, description: parent.description,
+          priority: parent.priority, deadline: parent.deadline, ownerId: parent.assignee_user_id ?? parent.created_by,
+        }
+        : null,
     subtasks: items(ctx, subs),
     comments: ctx.db.all(
       `SELECT c.id, c.kind, c.body, c.created_at createdAt, c.user_id userId, u.display_name userName

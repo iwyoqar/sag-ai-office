@@ -25,8 +25,9 @@ services:
         value: /var/data/sag.db
       - key: COOKIE_SECURE
         value: "true"
-      - key: TRUST_PROXY
-        value: "true"
+      # client IP for login throttling/audit: trust only Render's load balancer (one hop), never every sender
+      - key: TRUSTED_PROXIES
+        value: "1"
       - key: LOG_LEVEL
         value: info
       - key: LLM_PROVIDER

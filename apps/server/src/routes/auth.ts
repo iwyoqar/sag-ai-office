@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { type Deps, SESSION_COOKIE, parse, requirePerm, requireUser } from "../app.js";
-import { AttemptLimiter, createSession, destroySession, login, sha } from "../lib/auth.js";
+import { createSession, destroySession, login, sha } from "../lib/auth.js";
+import { LoginThrottle } from "../lib/throttle.js";
 import { changeOwnPassword, createUser, listUsers, resetPassword, updateUser } from "../domain/users.js";
 import { actorOf } from "../app.js";
 import { audit } from "../lib/audit.js";
@@ -11,18 +12,29 @@ import { managedDepartments } from "../domain/access.js";
 const LoginBody = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(256) });
 
 export const authRoutes = (d: Deps) => async (app: FastifyInstance) => {
-  const limiter = new AttemptLimiter(5, 60_000);
+  // req.ip is the socket address unless a configured trusted proxy reported the client (see AppOptions.trustProxy)
+  const throttle = new LoginThrottle(d.db);
+  const tooMany = (reply: { header: (k: string, v: string) => unknown }, ms: number) => {
+    const s = Math.max(1, Math.ceil(ms / 1000));
+    reply.header("retry-after", String(s));
+    return new HttpError(429, "too_many_attempts", `Juda ko'p urinish. ${s} soniyadan keyin qayta urinib ko'ring.`, { retryAfterSeconds: s });
+  };
 
   app.post("/api/auth/login", async (req, reply) => {
     const body = parse(LoginBody, req.body);
-    const key = `${req.ip}:${body.username.toLowerCase()}`;
-    if (!limiter.allow(key)) throw new HttpError(429, "too_many_attempts", "Juda ko'p urinish. Bir daqiqadan keyin qayta urinib ko'ring.");
+    throttle.prune();
+    const wait = throttle.retryAfterMs(body.username, req.ip);
+    if (wait > 0) {
+      audit(d.db, { type: "system", id: null }, "auth.login_throttled", { type: "user", id: null }, { username: body.username, ip: req.ip });
+      throw tooMany(reply, wait);
+    }
     const user = await login(d.db, body.username, body.password);
     if (!user) {
-      audit(d.db, { type: "system", id: null }, "auth.login_failed", { type: "user", id: null }, { username: body.username, ip: req.ip });
+      const lockMs = throttle.fail(body.username, req.ip);
+      audit(d.db, { type: "system", id: null }, "auth.login_failed", { type: "user", id: null }, { username: body.username, ip: req.ip, lockMs });
       throw new HttpError(401, "invalid_credentials", "Login yoki parol noto'g'ri");
     }
-    limiter.reset(key);
+    throttle.succeed(body.username);
     const s = createSession(d.db, user.id, d.sessionTtlHours);
     d.db.run("UPDATE users SET last_login_at = ? WHERE id = ?", new Date().toISOString(), user.id);
     audit(d.db, { type: "user", id: user.id }, "auth.login", { type: "user", id: user.id }, { ip: req.ip });

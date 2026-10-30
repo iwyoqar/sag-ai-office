@@ -58,6 +58,10 @@ export interface TaskFilter {
   status?: TaskStatus[]; departmentId?: string; agentId?: string; parentId?: string | null; limit?: number;
   /** owning unit; HQ routes pass 'hq', internal callers (runner) may omit it */
   unitId?: string;
+  /** only agent (non-human) tasks */
+  aiOnly?: boolean;
+  /** access predicate over alias `t` (from `visibleTaskSql`); omitted = internal callers (runner, scheduler) */
+  visible?: { sql: string; params: string[] };
 }
 
 export function listTasks(ctx: Ctx, f: TaskFilter = {}): TaskDto[] {
@@ -72,9 +76,11 @@ export function listTasks(ctx: Ctx, f: TaskFilter = {}): TaskDto[] {
   if (f.unitId) { where.push("business_unit_id = ?"); p.push(f.unitId); }
   if (f.parentId === null) where.push("parent_id IS NULL");
   else if (f.parentId) { where.push("parent_id = ?"); p.push(f.parentId); }
+  if (f.aiOnly) where.push("kind <> 'human'");
+  if (f.visible) { where.push(f.visible.sql); p.push(...f.visible.params); }
   p.push(Math.min(f.limit ?? 200, 500));
   return ctx.db
-    .all<TaskRow>(`SELECT * FROM tasks WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`, ...p)
+    .all<TaskRow>(`SELECT t.* FROM tasks t WHERE ${where.join(" AND ")} ORDER BY t.created_at DESC LIMIT ?`, ...p)
     .map((r) => toDto(ctx, r));
 }
 
@@ -344,12 +350,17 @@ export function reportProgress(ctx: Ctx, id: string, p: { progress?: number | nu
  * Atomically claims the next runnable task: QUEUED, owner ACTIVE, all dependencies DONE.
  * The guarded UPDATE ... WHERE status = 'QUEUED' means a task can only ever be claimed once.
  */
-export function claimNextTask(ctx: Ctx, workerId: string, leaseMs: number): TaskDto | null {
+export interface Claimed extends TaskDto {
+  /** fencing token: only writes carrying this epoch (and the claiming worker) are accepted for the task */
+  leaseEpoch: number;
+}
+
+export function claimNextTask(ctx: Ctx, workerId: string, leaseMs: number): Claimed | null {
   const t = now();
   const until = new Date(Date.now() + leaseMs).toISOString();
-  const claimed = ctx.db.get<TaskRow>(
+  const claimed = ctx.db.get<TaskRow & { lease_epoch: number }>(
     `UPDATE tasks SET status = 'IN_PROGRESS', lease_owner = ?, lease_until = ?, attempts = attempts + 1,
-       started_at = COALESCE(started_at, ?), updated_at = ?
+       lease_epoch = lease_epoch + 1, started_at = COALESCE(started_at, ?), updated_at = ?
      WHERE id = (
        SELECT t.id FROM tasks t JOIN agents a ON a.id = t.agent_id
        WHERE t.status = 'QUEUED' AND a.lifecycle = 'ACTIVE'
@@ -364,26 +375,90 @@ export function claimNextTask(ctx: Ctx, workerId: string, leaseMs: number): Task
   );
   if (!claimed) return null;
   ctx.bus.emit("task.status", { taskId: claimed.id, agentId: claimed.agent_id, departmentId: claimed.department_id }, { from: "QUEUED", to: "IN_PROGRESS", worker: workerId }, null);
-  return toDto(ctx, claimed);
+  return { ...toDto(ctx, claimed), leaseEpoch: claimed.lease_epoch };
 }
 
-/** Puts tasks whose worker lease expired (crash / restart) back in the queue. */
-export function recoverExpiredLeases(ctx: Ctx): string[] {
+export interface Lease { taskId: string; workerId: string; epoch: number }
+
+/** SQL guard for writes made on behalf of a lease (append to a WHERE clause; params: id, owner, epoch). */
+export const LEASE_GUARD = "id = ? AND status = 'IN_PROGRESS' AND lease_owner = ? AND lease_epoch = ?";
+export const leaseParams = (l: Lease) => [l.taskId, l.workerId, l.epoch] as const;
+
+/** Does `l` still own its task? */
+export function holdsLease(ctx: Ctx, l: Lease): boolean {
+  return !!ctx.db.get(`SELECT 1 FROM tasks WHERE ${LEASE_GUARD}`, ...leaseParams(l));
+}
+
+/** Heartbeat: extends the lease atomically. False = the lease is gone (expired and recovered, cancelled, stolen). */
+export function renewLease(ctx: Ctx, l: Lease, leaseMs: number): boolean {
+  const until = new Date(Date.now() + leaseMs).toISOString();
+  return ctx.db.run(`UPDATE tasks SET lease_until = ? WHERE ${LEASE_GUARD}`, until, ...leaseParams(l)).changes === 1;
+}
+
+/**
+ * Graceful stop: give the task back to the queue at once (the attempt is not counted — the worker stopped, the task
+ * did not fail). No-op if the lease was already lost.
+ */
+export function releaseLease(ctx: Ctx, l: Lease, reason: string): boolean {
   const t = now();
-  const rows = ctx.db.all<{ id: string; agent_id: string | null; department_id: string | null }>(
-    "SELECT id, agent_id, department_id FROM tasks WHERE status = 'IN_PROGRESS' AND lease_until IS NOT NULL AND lease_until < ?", t,
-  );
+  const r = ctx.db.tx(() => {
+    const row = ctx.db.get<{ agent_id: string | null; department_id: string | null }>(
+      `UPDATE tasks SET status = 'QUEUED', lease_owner = NULL, lease_until = NULL, attempts = MAX(attempts - 1, 0),
+         stage = 'Navbatga qaytarildi (server to''xtadi)', updated_at = ?
+       WHERE ${LEASE_GUARD} RETURNING agent_id, department_id`,
+      t, ...leaseParams(l),
+    );
+    if (row)
+      ctx.db.run(
+        "UPDATE agent_runs SET status = 'cancelled', end_reason = 'shutdown', error = ?, finished_at = ? WHERE task_id = ? AND status = 'running'",
+        reason, t, l.taskId,
+      );
+    return row;
+  });
+  if (!r) return false;
+  ctx.bus.emit("task.status", { taskId: l.taskId, agentId: r.agent_id, departmentId: r.department_id }, { from: "IN_PROGRESS", to: "QUEUED", reason }, null);
+  return true;
+}
+
+/**
+ * Puts tasks whose worker is gone back in the queue: leases that ran out, and — when `deadOwner` says which workers
+ * have stopped heart-beating — leases they still nominally hold. A task that has used all its attempts fails
+ * instead of looping (a task that crashes its worker every time must not crash it forever).
+ */
+export function recoverExpiredLeases(ctx: Ctx, opts: { deadOwner?: (owner: string | null) => boolean } = {}): string[] {
+  const t = now();
+  const rows = ctx.db
+    .all<{ id: string; agent_id: string | null; department_id: string | null; lease_owner: string | null; lease_until: string | null; attempts: number; max_attempts: number }>(
+      "SELECT id, agent_id, department_id, lease_owner, lease_until, attempts, max_attempts FROM tasks WHERE status = 'IN_PROGRESS' AND kind <> 'human'",
+    )
+    .filter((r) => (r.lease_until !== null && r.lease_until < t) || !!opts.deadOwner?.(r.lease_owner));
+  const out: string[] = [];
   for (const r of rows) {
-    ctx.db.run(
-      "UPDATE tasks SET status = 'QUEUED', lease_owner = NULL, lease_until = NULL, stage = 'Qayta navbatga qo''yildi (lease tugadi)', updated_at = ? WHERE id = ? AND status = 'IN_PROGRESS'",
-      t, r.id,
-    );
-    // the worker that held the lease is gone: its in-flight AI call will never finish, so close it in the log
-    ctx.db.run(
-      "UPDATE agent_runs SET status = 'failed', error = 'uzildi (ishchi jarayon to''xtadi)', finished_at = ? WHERE task_id = ? AND status = 'running'",
-      t, r.id,
-    );
-    ctx.bus.emit("task.status", { taskId: r.id, agentId: r.agent_id, departmentId: r.department_id }, { from: "IN_PROGRESS", to: "QUEUED", reason: "lease expired" }, null);
+    const exhausted = r.attempts >= r.max_attempts;
+    const moved = ctx.db.tx(() => {
+      // guarded by the lease we saw: a worker that renewed in the meantime keeps its task
+      const ch = ctx.db.run(
+        `UPDATE tasks SET status = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?, stage = ?,
+           error = CASE WHEN ? = 1 THEN ? ELSE error END
+         WHERE id = ? AND status = 'IN_PROGRESS' AND lease_owner IS ? AND lease_until IS ?`,
+        exhausted ? "FAILED" : "QUEUED", t,
+        exhausted ? null : "Qayta navbatga qo'yildi (ishchi jarayon to'xtagan)",
+        exhausted ? 1 : 0, `Ishchi jarayon ${r.attempts} marta to'xtadi — vazifa to'xtatildi`,
+        r.id, r.lease_owner, r.lease_until,
+      ).changes;
+      if (!ch) return false;
+      if (exhausted) ctx.db.run("UPDATE tasks SET completed_at = ? WHERE id = ?", t, r.id);
+      // the worker that held the lease is gone: its in-flight AI call will never finish, so close it in the log
+      ctx.db.run(
+        "UPDATE agent_runs SET status = 'failed', end_reason = 'orphaned', error = 'uzildi (ishchi jarayon to''xtadi)', finished_at = ? WHERE task_id = ? AND status = 'running'",
+        t, r.id,
+      );
+      return true;
+    });
+    if (!moved) continue;
+    ctx.bus.emit("task.status", { taskId: r.id, agentId: r.agent_id, departmentId: r.department_id },
+      { from: "IN_PROGRESS", to: exhausted ? "FAILED" : "QUEUED", reason: exhausted ? "worker lost, attempts exhausted" : "worker lost" }, null);
+    out.push(r.id);
   }
-  return rows.map((r) => r.id);
+  return out;
 }

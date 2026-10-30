@@ -54,5 +54,7 @@ export function sumStats(list: DeptStats[]): Omit<DeptStats, "departmentId"> {
     avgMinutes: doneWithTime ? Math.round((durations.reduce((n, s) => n + s.avgMinutes! * s.completed, 0) / doneWithTime) * 10) / 10 : null,
     tokens: list.reduce((n, s) => n + s.tokens, 0),
     costUsd: Math.round(list.reduce((n, s) => n + s.costUsd, 0) * 10000) / 10000,
+    // the server withholds usage from people without budget:read; show "–" rather than a misleading 0
+    usageHidden: list.some((s) => s.usageHidden),
   };
 }

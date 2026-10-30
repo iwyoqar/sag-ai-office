@@ -2,11 +2,15 @@
 // Lifecycle per task: claim (lease) → load agent + instructions → prior results → LLM → deliverable → DONE
 //                     (or retry with backoff → FAILED), with every call recorded in agent_runs / usage_records.
 import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { z } from "zod";
 import type { AgentStatus } from "@sag/shared";
 import { json, now } from "../db/db.js";
 import type { Ctx } from "../domain/context.js";
-import { claimNextTask, createTask, getTask, listTasks, reportProgress, transitionTask, type TaskDto } from "../domain/tasks.js";
+import {
+  LEASE_GUARD, claimNextTask, createTask, getTask, holdsLease, leaseParams, listTasks, recoverExpiredLeases, releaseLease, renewLease,
+  transitionTask, type Lease, type TaskDto,
+} from "../domain/tasks.js";
 import { SYSTEM, audit } from "../lib/audit.js";
 import { uid } from "../lib/ids.js";
 import { LlmError, estimateCost, type LlmClient, type LlmRequest, type LlmResult, type Pricing } from "../llm/types.js";
@@ -28,12 +32,19 @@ export interface RunnerOptions {
   log?: (msg: string, meta?: Record<string, unknown>) => void;
   /** connector tools for agents (omit = text only) */
   tools?: ConnectorHub;
+  /** lease length; renewed by the heartbeat while the run works (default 90 s) */
+  leaseMs?: number;
+  /** heartbeat period: renews leases and the worker's liveness row (default leaseMs / 3) */
+  heartbeatMs?: number;
+  /** how long stop() waits for in-flight runs to wind down after aborting them (default 10 s) */
+  stopTimeoutMs?: number;
 }
 
 const MAX_SUBTASKS = 6;
 /** model ↔ tool round trips per task before a final answer is forced */
 const MAX_TOOL_STEPS = 4;
-const RUN_LEASE_MS = 15 * 60_000;
+/** A worker whose heartbeat is older than this many periods is considered gone. */
+const DEAD_AFTER_BEATS = 3;
 
 const PlanSchema = z.object({
   summary: z.string().max(2000).default(""),
@@ -57,12 +68,21 @@ class LimitError extends Error {}
 
 export class AgentRunner {
   private timer: NodeJS.Timeout | null = null;
+  private beat: NodeJS.Timeout | null = null;
   private active = new Map<string, AbortController>();
+  /** fencing tokens of the runs in flight: every write for a task must still hold its lease */
+  private leases = new Map<string, Lease>();
+  private inflight = new Set<Promise<void>>();
   private settleTimers = new Set<NodeJS.Timeout>();
   private unsubscribe: (() => void) | null = null;
   readonly workerId = `w-${randomUUID().slice(0, 8)}`;
+  private readonly leaseMs: number;
+  private readonly heartbeatMs: number;
 
-  constructor(private ctx: Ctx, private llm: LlmClient, private pricing: Pricing, private o: RunnerOptions) {}
+  constructor(private ctx: Ctx, private llm: LlmClient, private pricing: Pricing, private o: RunnerOptions) {
+    this.leaseMs = o.leaseMs ?? 90_000;
+    this.heartbeatMs = o.heartbeatMs ?? Math.max(10, Math.floor(this.leaseMs / 3));
+  }
 
   get running() {
     return this.timer !== null;
@@ -74,6 +94,8 @@ export class AgentRunner {
 
   start() {
     if (this.timer) return;
+    this.registerWorker();
+    this.recoverOnStart();
     // A task moved away from IN_PROGRESS by a person (stop, cancel, reassign) aborts its LLM call.
     this.unsubscribe = this.ctx.bus.subscribe((e) => {
       if (e.type !== "task.status" || !e.taskId) return;
@@ -81,29 +103,101 @@ export class AgentRunner {
       if (to !== "IN_PROGRESS" && to !== "WAITING_FOR_DEPENDENCY" && to !== "DONE") this.active.get(e.taskId)?.abort();
     });
     this.timer = setInterval(() => void this.tick(), this.o.pollMs);
+    this.beat = setInterval(() => this.heartbeat(), this.heartbeatMs);
   }
 
+  /**
+   * Graceful stop (deploy, SIGTERM): stop claiming, hand every leased task back to the queue at once (no attempt
+   * counted), abort the in-flight calls, wait a bounded time for them to wind down. Their late writes are fenced off.
+   * Idempotent.
+   */
   async stop() {
     if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    if (this.beat) clearInterval(this.beat);
+    this.timer = this.beat = null;
     this.unsubscribe?.();
-    for (const c of this.active.values()) c.abort();
+    this.unsubscribe = null;
+    for (const [taskId, lease] of this.leases) {
+      releaseLease(this.ctx, lease, "worker stopped");
+      this.active.get(taskId)?.abort();
+    }
     for (const t of this.settleTimers) clearTimeout(t);
+    const wait = Promise.allSettled([...this.inflight]);
+    const limit = new Promise((res) => setTimeout(res, this.o.stopTimeoutMs ?? 10_000).unref());
+    await Promise.race([wait, limit]);
+    this.ctx.db.run("DELETE FROM worker_heartbeats WHERE worker_id = ?", this.workerId);
   }
+
+  // ---------------------------------------------------------------------------
+  // worker liveness and recovery
+
+  private registerWorker() {
+    const t = now();
+    this.ctx.db.run(
+      `INSERT INTO worker_heartbeats (worker_id, pid, host, started_at, heartbeat_at) VALUES (?,?,?,?,?)
+       ON CONFLICT(worker_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at`,
+      this.workerId, process.pid, hostname(), t, t,
+    );
+  }
+
+  /** Workers (other than this one) that stopped heart-beating: their leases are void now, not when they expire. */
+  private deadOwner = (owner: string | null) => {
+    if (!owner || owner === this.workerId) return false;
+    const cutoff = new Date(Date.now() - DEAD_AFTER_BEATS * this.heartbeatMs).toISOString();
+    return !this.ctx.db.get("SELECT 1 FROM worker_heartbeats WHERE worker_id = ? AND heartbeat_at >= ?", owner, cutoff);
+  };
+
+  /**
+   * Startup: work abandoned by a crashed or stopped worker goes back to the queue immediately (a deploy no longer
+   * leaves an agent's queue stalled until an old lease runs out), and agents shown as busy with nothing running
+   * return to IDLE.
+   */
+  private recoverOnStart() {
+    const cutoff = new Date(Date.now() - DEAD_AFTER_BEATS * this.heartbeatMs).toISOString();
+    this.ctx.db.run("DELETE FROM worker_heartbeats WHERE heartbeat_at < ? AND worker_id <> ?", cutoff, this.workerId);
+    const recovered = recoverExpiredLeases(this.ctx, { deadOwner: this.deadOwner });
+    if (recovered.length) this.o.log?.("recovered abandoned tasks", { recovered });
+    const stuck = this.ctx.db.all<{ id: string }>(
+      `SELECT a.id FROM agents a WHERE a.status IN ('THINKING','WORKING','COMMUNICATING')
+         AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.agent_id = a.id AND t.status = 'IN_PROGRESS')`,
+    );
+    for (const a of stuck) this.setAgent(a.id, "IDLE");
+  }
+
+  /** Renews this worker's liveness and every lease it holds; a lease that cannot be renewed aborts its run. */
+  private heartbeat() {
+    this.ctx.db.run("UPDATE worker_heartbeats SET heartbeat_at = ? WHERE worker_id = ?", now(), this.workerId);
+    for (const [taskId, lease] of this.leases) {
+      if (!renewLease(this.ctx, lease, this.leaseMs)) {
+        this.o.log?.("lease lost — run aborted", { taskId, epoch: lease.epoch });
+        this.lost.add(taskId);
+        this.active.get(taskId)?.abort();
+      }
+    }
+    recoverExpiredLeases(this.ctx, { deadOwner: this.deadOwner });
+  }
+
+  private lost = new Set<string>();
 
   /** Claims and starts as many tasks as free slots allow. Returns the started run promises (for tests). */
   tick(): Promise<void>[] {
     const started: Promise<void>[] = [];
     while (this.active.size < this.o.concurrency) {
-      const task = claimNextTask(this.ctx, this.workerId, RUN_LEASE_MS);
+      const task = claimNextTask(this.ctx, this.workerId, this.leaseMs);
       if (!task) break;
       const ctrl = new AbortController();
       this.active.set(task.id, ctrl);
-      started.push(
-        this.process(task, ctrl.signal)
-          .catch((e) => this.o.log?.("runner crash", { taskId: task.id, err: String(e) }))
-          .finally(() => this.active.delete(task.id)),
-      );
+      this.leases.set(task.id, { taskId: task.id, workerId: this.workerId, epoch: task.leaseEpoch });
+      const run: Promise<void> = this.process(task, ctrl.signal)
+        .catch((e) => this.o.log?.("runner crash", { taskId: task.id, err: String(e) }))
+        .finally(() => {
+          this.active.delete(task.id);
+          this.leases.delete(task.id);
+          this.lost.delete(task.id);
+          this.inflight.delete(run);
+        });
+      this.inflight.add(run);
+      started.push(run);
     }
     return started;
   }
@@ -126,6 +220,12 @@ export class AgentRunner {
       }
       this.fail(task, e instanceof Error ? e.message : String(e));
     }
+  }
+
+  private leaseOf(task: TaskDto): Lease {
+    const l = this.leases.get(task.id);
+    if (!l) throw new StaleTask();
+    return l;
   }
 
   /** Single task: one agent, one deliverable. */
@@ -160,7 +260,7 @@ export class AgentRunner {
         return { text, actions: log.length ? `\n\n## Amallar\n${log.join("\n")}` : "" };
       }
       this.setAgent(task.agentId!, "COMMUNICATING");
-      this.stage(task, `Vositalar: ${res.toolCalls.map((c) => c.name).join(", ")}`);
+      this.stage(task, `Vositalar: ${res.toolCalls.map((c) => c.name).join(", ")}`); // also proves the lease is still ours
       const results = [];
       for (const c of res.toolCalls.slice(0, 5)) {
         const out = await hub!.invoke({ taskId: task.id, agentId: task.agentId!, runId: res.runId!, correlationId: res.runId! }, c);
@@ -211,10 +311,10 @@ export class AgentRunner {
     }
     if (!plan) throw new Error(`Reja tuzilmadi: ${lastError}`);
 
-    this.assertStillMine(task);
     const ids = new Map<string, string>();
     const created: TaskDto[] = [];
     this.ctx.db.tx(() => {
+      this.assertStillMine(task); // checked inside the write transaction: no other worker can slip in between
       for (const s of plan!.subtasks) {
         const t = createTask(this.ctx, {
           title: s.title, description: s.description, departmentId: s.department, parentId: task.id,
@@ -268,9 +368,11 @@ export class AgentRunner {
       const runId = uid("run");
       const correlationId = randomUUID();
       const started = Date.now();
+      const lease = this.leaseOf(task);
       this.ctx.db.run(
-        "INSERT INTO agent_runs (id, task_id, agent_id, correlation_id, model, mode, status, started_at) VALUES (?,?,?,?,?,?, 'running', ?)",
-        runId, task.id, task.agentId, correlationId, this.llm.model, this.llm.mode, now(),
+        `INSERT INTO agent_runs (id, task_id, agent_id, correlation_id, model, mode, status, started_at, worker_id, lease_epoch)
+         VALUES (?,?,?,?,?,?, 'running', ?, ?, ?)`,
+        runId, task.id, task.agentId, correlationId, this.llm.model, this.llm.mode, now(), lease.workerId, lease.epoch,
       );
       try {
         const res = await this.llm.generate({
@@ -281,13 +383,15 @@ export class AgentRunner {
         return { ...res, runId };
       } catch (e) {
         const err = e instanceof LlmError ? e : new LlmError(String(e), "server", false);
+        const aborted = err.code === "aborted" || signal.aborted;
+        const reason = this.lost.has(task.id) ? "lost_lease" : aborted ? "aborted" : err.retryable && attempt < maxAttempts ? "retryable_error" : "final_error";
         this.ctx.db.run(
-          "UPDATE agent_runs SET status = ?, error = ?, latency_ms = ?, finished_at = ? WHERE id = ?",
-          err.code === "aborted" ? "cancelled" : "failed", err.message, Date.now() - started, now(), runId,
+          "UPDATE agent_runs SET status = ?, error = ?, latency_ms = ?, finished_at = ?, end_reason = COALESCE(end_reason, ?) WHERE id = ?",
+          aborted ? "cancelled" : "failed", err.message, Date.now() - started, now(), reason, runId,
         );
-        if (err.code === "aborted") throw new StaleTask();
+        if (aborted) throw new StaleTask();
         if (!err.retryable || attempt >= maxAttempts) throw err;
-        this.ctx.db.run("UPDATE tasks SET attempts = attempts + 1 WHERE id = ?", task.id);
+        this.ctx.db.run(`UPDATE tasks SET attempts = attempts + 1 WHERE ${LEASE_GUARD}`, ...leaseParams(this.leaseOf(task)));
         this.stage(task, `Qayta urinish ${attempt + 1}/${maxAttempts}: ${err.message}`);
         await sleep((this.o.retryDelayMs ?? 20_000) * attempt, signal);
         if (signal.aborted) throw new StaleTask();
@@ -318,7 +422,7 @@ export class AgentRunner {
     const cost = estimateCost(this.pricing, res.inputTokens, res.outputTokens);
     this.ctx.db.tx(() => {
       this.ctx.db.run(
-        "UPDATE agent_runs SET status = 'succeeded', model = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?, latency_ms = ?, finished_at = ? WHERE id = ?",
+        "UPDATE agent_runs SET status = 'succeeded', end_reason = 'succeeded', model = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?, latency_ms = ?, finished_at = ? WHERE id = ?",
         res.model, res.inputTokens, res.outputTokens, cost, latency, now(), runId,
       );
       this.ctx.db.run(
@@ -334,9 +438,10 @@ export class AgentRunner {
   }
 
   private finish(task: TaskDto, text: string, title: string) {
-    this.assertStillMine(task);
     const needsApproval = task.requiresApproval;
     this.ctx.db.tx(() => {
+      // fenced: a run that lost its lease (and was re-run elsewhere) must not add a second result
+      this.assertStillMine(task);
       this.saveDeliverable(task, task.agentId!, title, text);
       if (needsApproval) {
         transitionTask(this.ctx, task.id, "WAITING_APPROVAL", SYSTEM, { result: summarize(text), reason: "result needs approval" });
@@ -368,8 +473,13 @@ export class AgentRunner {
   }
 
   private fail(task: TaskDto, error: string) {
-    const current = getTask(this.ctx, task.id);
-    if (current.status === "IN_PROGRESS") transitionTask(this.ctx, task.id, "FAILED", SYSTEM, { error, reason: "agent run failed" });
+    const lease = this.leases.get(task.id);
+    const mine = this.ctx.db.tx(() => {
+      if (!lease || !holdsLease(this.ctx, lease)) return false; // lost the lease: the next run decides the outcome
+      transitionTask(this.ctx, task.id, "FAILED", SYSTEM, { error, reason: "agent run failed" });
+      return true;
+    });
+    if (!mine) return;
     this.setAgent(task.agentId!, "ERROR");
     this.settle(task.agentId!, "ERROR", 15_000);
     // a failed piece blocks the combined job instead of leaving it waiting forever
@@ -435,18 +545,21 @@ export class AgentRunner {
     this.ctx.bus.emit("agent.message", { taskId, agentId: from }, { from, to, kind, content });
   }
 
+  /** Progress text, written only while this run still holds the task's lease. */
   private stage(task: TaskDto, stage: string) {
-    try {
-      reportProgress(this.ctx, task.id, { stage }, SYSTEM);
-    } catch {
-      throw new StaleTask();
-    }
+    const l = this.leaseOf(task);
+    const ok = this.ctx.db.run(`UPDATE tasks SET stage = ?, updated_at = ? WHERE ${LEASE_GUARD} AND agent_id IS ?`, stage, now(), ...leaseParams(l), task.agentId).changes;
+    if (!ok) throw new StaleTask();
+    this.ctx.bus.emit("task.progress", { taskId: task.id, agentId: task.agentId, departmentId: task.departmentId }, { progress: null, stage }, null);
   }
 
-  /** The task may have been stopped, cancelled or reassigned while the model was thinking. */
+  /**
+   * The task may have been stopped, cancelled, reassigned, or re-queued after this run lost its lease (and possibly
+   * claimed by another worker). Call inside the write transaction whose writes it protects.
+   */
   private assertStillMine(task: TaskDto) {
-    const t = getTask(this.ctx, task.id);
-    if (t.status !== "IN_PROGRESS" || t.agentId !== task.agentId) throw new StaleTask();
+    const l = this.leaseOf(task);
+    if (!this.ctx.db.get(`SELECT 1 FROM tasks WHERE ${LEASE_GUARD} AND agent_id IS ?`, ...leaseParams(l), task.agentId)) throw new StaleTask();
   }
 
   private setAgent(agentId: string, status: AgentStatus) {

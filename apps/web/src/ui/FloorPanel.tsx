@@ -71,8 +71,8 @@ export function FloorPanel({ floor, onBack, onAgent, selectedAgent }: {
           <Stat label="Tugallangan" value={v(s?.completed)} tone={STATUS_META.COMPLETED.color} />
           <Stat label="Xatolar" value={v(s?.errors)} tone={STATUS_META.ERROR.color} />
           <Stat label="O'rt. vaqt" value={s ? (s.avgMinutes === null ? "—" : `${s.avgMinutes} min`) : "–"} />
-          <Stat label="Tokenlar" value={s ? fmtTokens(s.tokens) : "–"} />
-          <Stat label="API xarajat" value={s ? fmtUsd(s.costUsd) : "–"} />
+          <Stat label="Tokenlar" value={s && !s.usageHidden ? fmtTokens(s.tokens) : "–"} />
+          <Stat label="API xarajat" value={s && !s.usageHidden ? fmtUsd(s.costUsd) : "–"} />
         </div>
         <p className="hint">Hisoblash vaqti: Asia/Tashkent. Xarajat — Claude API usage yozuvlaridan (Phase 3 dan boshlab).</p>
       </section>

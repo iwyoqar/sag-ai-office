@@ -3,7 +3,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { type Deps, parse, requirePerm } from "../app.js";
-import { audit } from "../lib/audit.js";
+import { audit, redact } from "../lib/audit.js";
+import { canSeeTask, has, taskRef } from "../domain/access.js";
 import { badRequest } from "../lib/errors.js";
 
 export const connectorRoutes = (d: Deps) => async (app: FastifyInstance) => {
@@ -25,10 +26,26 @@ export const connectorRoutes = (d: Deps) => async (app: FastifyInstance) => {
     return r;
   });
 
+  /**
+   * Agent action log. Connector managers see every entry, others only entries of tasks they can see. Inputs and
+   * outputs (e-mail bodies, sheet rows…) need tool_io:read; secret-looking fields are always redacted.
+   */
   app.get("/api/connectors/activity", async (req) => {
-    requirePerm(req, "tasks:read");
+    const u = requirePerm(req, "tasks:read");
     const q = parse(z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }), req.query);
-    return { items: hub.activity(q.limit) };
+    const manager = has(u, "brain:manage");
+    const payloads = has(u, "tool_io:read");
+    const items = hub
+      .activity(manager ? q.limit : 200)
+      .filter((e) => {
+        if (manager) return true;
+        const taskId = (e as { taskId?: unknown }).taskId;
+        const r = typeof taskId === "string" ? taskRef(d, taskId) : undefined;
+        return !!r && canSeeTask(d, u, r);
+      })
+      .slice(0, q.limit)
+      .map((e) => (payloads ? { ...e, input: redact(e.input), output: redact(e.output) } : { ...e, input: null, output: null, payloadHidden: true }));
+    return { items };
   });
 
   // ---- Google OAuth (one company account for Gmail, Drive, Sheets, Calendar)

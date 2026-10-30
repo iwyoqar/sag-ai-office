@@ -85,7 +85,7 @@ export function AgentProfile({ agentId, onClose }: { agentId: string; onClose: (
               </dd>
               <dt>Sarflangan tokenlar</dt>
               <dd>
-                {fmtTokens(p.usage.inputTokens + p.usage.outputTokens)} · {fmtUsd(p.usage.costUsd)}
+                {p.usage.hidden ? "–" : <>{fmtTokens(p.usage.inputTokens + p.usage.outputTokens)} · {fmtUsd(p.usage.costUsd)}</>}
                 <small className="muted"> ({p.usage.runs} ta chaqiruv)</small>
               </dd>
               <dt>Oxirgi xatolar</dt>

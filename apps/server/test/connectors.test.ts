@@ -151,6 +151,33 @@ describe("connectors: agent tool loop", () => {
     expect(audit).toEqual(expect.arrayContaining(["tool.propose", "tool.decide", "tool.execute"]));
   });
 
+  it("the same write action proposed twice joins the pending request (idempotency key), a different one does not", async () => {
+    let n = 0;
+    const post = (text: string) => ({ toolCalls: [{ name: "telegram_post_group", args: { text } }] });
+    const s = await setup({ reply: () => [post("E'lon A"), post("E'lon A"), post("E'lon B")][n++] ?? "Tayyor." });
+    const recep = agentOf(s.db, "reception");
+    await s.admin.put(`/api/agents/${recep}/connectors`, { connectorIds: ["telegram"], writeIds: ["telegram"] });
+    const t = createTask(s.deps, { title: "E'lonlar", agentId: recep }, SYSTEM);
+    await s.run();
+    const pending = s.db.all<{ payload: string }>("SELECT payload FROM approvals WHERE task_id = ? AND status = 'PENDING' ORDER BY requested_at", t.id);
+    expect(pending.map((p) => JSON.parse(p.payload).args.text)).toEqual(["E'lon A", "E'lon B"]);
+    expect(s.posted).toEqual([]);
+  });
+
+  it("an approved action cut off by a crash is marked unknown at startup and never retried automatically", async () => {
+    const s = await setup();
+    const recep = agentOf(s.db, "reception");
+    const t = createTask(s.deps, { title: "x", agentId: recep }, SYSTEM);
+    const at = new Date().toISOString();
+    s.db.run("INSERT INTO agent_runs (id, task_id, agent_id, correlation_id, model, mode, status, started_at) VALUES ('r1', ?, ?, 'c', 'm', 'mock', 'succeeded', ?)", t.id, recep, at);
+    s.db.run("INSERT INTO tool_executions (id, run_id, tool, input, status, started_at, agent_id, task_id) VALUES ('tx1', 'r1', 'gmail_send', '{}', 'running', ?, ?, ?)", at, recep, t.id);
+    expect(s.deps.connectors.markInterrupted()).toBe(1);
+    const ex = s.db.get<{ status: string; error: string }>("SELECT status, error FROM tool_executions WHERE id = 'tx1'")!;
+    expect(ex.status).toBe("unknown");
+    expect(ex.error).toContain("noma'lum");
+    expect(s.deps.connectors.markInterrupted()).toBe(0);
+  });
+
   it("gmail: search runs at once, send waits for approval and then sends a proper message with the refreshed token", async () => {
     let n = 0;
     const s = await setup({

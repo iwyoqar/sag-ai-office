@@ -13,6 +13,14 @@ export function setHashCostForTests(params: { N: number; r: number; p: number })
   PARAMS = params;
 }
 
+/**
+ * A hash with the current work factor and an unguessable password, verified when the username does not exist, so a
+ * missing account costs the same time as a wrong password (no username probing by timing).
+ */
+export function dummyHash(): string {
+  return `scrypt$${PARAMS.N}$${PARAMS.r}$${PARAMS.p}$${"A".repeat(22)}==$${"A".repeat(43)}=`;
+}
+
 /** Format: scrypt$N$r$p$saltB64$hashB64 */
 export async function hashPassword(pw: string): Promise<string> {
   const salt = randomBytes(16);

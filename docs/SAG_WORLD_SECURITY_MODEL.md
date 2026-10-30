@@ -178,33 +178,35 @@ scope predicate, read-audit for detail access across units, and periodic export 
 - **User-level isolation (W0.2)**: another user's conversations, events, tasks, employee details and restricted
   documents are unreachable.
 
-## 8. Current-state findings (audit 2026-10-30, updated)
+## 8. Current-state findings (audit 2026-10-30, status after W0 implementation)
 
-Severity: **B** blocker · **H** high · **M** medium · **L** low.
+Severity: **B** blocker · **H** high · **M** medium · **L** low. Status: ✅ fixed and covered by tests in this
+working tree (not yet committed or deployed) · ⏳ open.
 
-| Sev | Finding | Where | Planned fix |
-|---|---|---|---|
-| **B** | Secrets in git history. Status 2026-10-30 14:30: GitHub `main` was rewritten (21 commits scanned: no secret files or token patterns), **but** GitHub still serves the old commit `d3605b2` by its SHA (verified through the API), and this computer's local `main` still contains it. The exposed credentials must be treated as compromised until rotated. | git | W0.1: rotate; GitHub Support request to purge cached/dangling objects; re-clone or reset every working copy |
-| **B** | Agent run lease (15 min) never renewed; runner writes not fenced by lease owner → long runs execute twice | `agents/runner.ts:36,444`, `domain/tasks.ts:366` | W0.3 |
-| **B** | After deploy/crash, IN_PROGRESS tasks wait out the 15-min lease; one task per agent stalls the agent's queue | `index.ts`, `runner.stop()` | W0.4 |
-| **B** | Login throttling bypassable with forged `X-Forwarded-For` under `TRUST_PROXY=true`; in-memory limiter | `config.ts:19`, `routes/auth.ts:18`, `lib/auth.ts:93` | W0.5 |
-| **B** | No off-site backup, no tested restore | `DEPLOY.md` | W0.6 |
-| H | `GET /api/agents/:id/chat` returns every user's conversation with that agent | `routes/runtime.ts:28` | W0.2 |
-| H | SSE sends every AI event (task titles, stages, agent ids) to every logged-in user | `routes/events.ts` | W0.2 |
-| H | AI tasks, their deliverables and results are visible to anyone with `tasks:read` (`canSeeTask` returns true for non-human tasks) | `domain/access.ts:107` | W0.2 (needs owner confirmation of the new rule) |
-| M | Knowledge list/search and memory list company-wide for any `agents:read` holder | `routes/brain.ts:34,65,102` | W0.2 |
-| M | Approval list exposes tool payloads to anyone with `tasks:read` | `routes/brain.ts:131` | W0.2 |
-| M | Stats (usage, cost, per-agent activity) readable by anyone with `tasks:read` | `routes/org.ts:24` | W0.2 |
-| M | Connector activity log (tool inputs/outputs of every agent, e.g. e-mail bodies) readable by anyone with `tasks:read` | `routes/connectors.ts:28`, `connectors/hub.ts:257` | W0.2 |
-| M | No CSRF token / Origin check | `routes/auth.ts:30` | W0.7 |
-| M | scrypt N=2^14 (below current OWASP guidance) | `lib/passwords.ts` | W0.7: raise with `maxmem`, rehash on login |
-| M | Generated admin password logged when `ADMIN_PASSWORD` empty | `index.ts:31` | W0.7 |
-| M | `render.yaml` lacks `PUBLIC_URL`, `SECRETS_KEY`, `GOOGLE_*` | `render.yaml` | W0.7 |
-| L | Approved tool execution interrupted by a crash stays `running` forever | `connectors/hub.ts:233` | W0.3 (`unknown` + human decision) |
-| L | Shutdown not bounded; no fatal-error handlers | `index.ts:97` | W0.4 |
-| L | Routine run and its task not in one transaction | `schedule/service.ts` | W0.4 |
-| L | SSE stays open after logout/deactivation | `routes/events.ts` | W0.2 |
-| L | Health check does not check DB/queue/bot/backup age | `app.ts:117` | W0.7 |
+| Sev | Finding | Status |
+|---|---|---|
+| **B** | Secrets in git history. GitHub `main` was rewritten and is clean (21 commits scanned), **but** GitHub still serves the old commit `d3605b2` by SHA, and the credentials must be treated as compromised until rotated | ⏳ owner actions: rotation ([CREDENTIAL_ROTATION.md](CREDENTIAL_ROTATION.md)), GitHub Support purge request |
+| **B** | Agent lease never renewed, runner writes not fenced → long runs could execute twice | ✅ 90 s lease + 30 s heartbeat; `lease_epoch` fencing on every runner write; lost lease aborts the run (`test/reliability.test.ts`) |
+| **B** | After deploy/crash, IN_PROGRESS tasks waited out the 15-min lease; agent queues stalled | ✅ graceful stop releases leases at once; startup recovers tasks of dead workers immediately (`worker_heartbeats`) |
+| **B** | Login throttling bypassable with forged `X-Forwarded-For`; in-memory limiter | ✅ `TRUSTED_PROXIES` (hop count / CIDRs, never "all"); DB-backed per-account backoff + per-IP ceiling (`test/proxy.test.ts`) |
+| **B** | No off-site backup, no tested restore | ✅ in code (encrypted, verified-by-restore, retention, CLI, runbook) · ⏳ **not operational** until the owner configures storage and a real upload + restore succeeds |
+| H | `GET /api/agents/:id/chat` returned every user's conversation | ✅ own conversation only; others need `agent_chat:read_others`, audited |
+| H | SSE sent every AI event to every user | ✅ events filtered by task visibility; connector events to `brain:manage`; stream re-checks the session every 20 s |
+| H | AI tasks, deliverables and results visible to every `tasks:read` holder | ✅ one rule for AI and human tasks (§3.5); runs need `ai_runs:read`, payloads `tool_io:read` |
+| M | Knowledge list/search and memory company-wide | ✅ company-wide + own/headed departments unless `brain:manage` |
+| M | Approval list exposed tool payloads | ✅ approvers see all; others only their visible tasks' requests, payload hidden without `tool_io:read` |
+| M | Stats readable company-wide incl. cost | ✅ counts over visible tasks only; tokens/cost need `budget:read` |
+| M | Connector activity log exposed every agent's tool I/O | ✅ scoped by task visibility; payloads need `tool_io:read`; secret-looking fields always redacted |
+| M | No CSRF token / Origin check | ⏳ not in this W0 scope |
+| M | scrypt N=2^14 (below current OWASP guidance) | ⏳ not changed (production parameters intentionally untouched) |
+| M | Generated admin password logged when `ADMIN_PASSWORD` empty | ⏳ open |
+| M | `render.yaml` lacks `PUBLIC_URL`, `SECRETS_KEY`, `GOOGLE_*`, `BACKUP_*` | ⏳ owner adds them in Render (documented in DEPLOY.md) |
+| L | Approved tool execution interrupted by a crash stayed `running` forever | ✅ marked `unknown` at startup, never auto-retried; identical pending write actions de-duplicated by idempotency key |
+| L | Shutdown not bounded; no fatal-error handlers | ✅ bounded (20 s), idempotent; `uncaughtException`/`unhandledRejection` handled |
+| L | Routine run and its task not in one transaction | ⏳ open (low risk; "Run now" duplicate fixed in Phase A) |
+| L | SSE stayed open after logout/deactivation | ✅ closed at the next heartbeat |
+| L | Health check did not check DB/queue/backup | ✅ `/api/ready` (states and ages only) |
+| L | An `async` body passed to `db.tx` would commit before its awaits | ✅ refused and rolled back (`test/db.test.ts`) |
 
 Already good: hashed session tokens, httpOnly cookies, session revocation on password change, constant-time
 login path, status-guarded atomic task transitions, approval claimed atomically before a write tool runs,

@@ -4,6 +4,7 @@ import { type Deps, actorOf, parse, requirePerm } from "../app.js";
 import {
   archiveAgent, createAgent, getAgentProfile, listAgents, setAgentConnectors, setLifecycle, stopAgent, transferAgent, updateAgent,
 } from "../domain/agents.js";
+import { canSeeTask, has, taskRef } from "../domain/access.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 const name = z.string().trim().min(1).max(80);
@@ -35,8 +36,16 @@ export const agentRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   app.get("/api/agents/:id", async (req) => {
-    requirePerm(req, "agents:read");
-    return getAgentProfile(d, parse(Id, req.params).id);
+    const u = requirePerm(req, "agents:read");
+    const p = getAgentProfile(d, parse(Id, req.params).id);
+    // the agent card is public; its tasks and errors follow task visibility, usage needs budget:read
+    const sees = (id: string) => { const r = taskRef(d, id); return !!r && canSeeTask(d, u, r); };
+    return {
+      ...p,
+      recentTasks: (p.recentTasks as { id: string }[]).filter((t) => sees(t.id)),
+      errors: (p.errors as { taskId: string }[]).filter((t) => sees(t.taskId)),
+      usage: has(u, "budget:read") ? p.usage : { ...p.usage, costUsd: 0, inputTokens: 0, outputTokens: 0, hidden: true },
+    };
   });
 
   app.post("/api/agents", async (req, reply) => {

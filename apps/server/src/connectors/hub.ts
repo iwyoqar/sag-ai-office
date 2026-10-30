@@ -1,5 +1,6 @@
 // Connector hub: real connection state, which tools an agent may use, running read tools, turning write tools into
 // approval requests, and executing them once a person approves. Every call is recorded in tool_executions.
+import { createHash } from "node:crypto";
 import type { ToolCall, ToolSpec, LlmClient } from "../llm/types.js";
 import type { Ctx } from "../domain/context.js";
 import { now } from "../db/db.js";
@@ -155,15 +156,30 @@ export class ConnectorHub {
     };
   }
 
-  private record(e: { runId: string; tool: ToolDef; input: unknown; status: string; taskId: string | null; agentId: string; approvalId?: string | null; output?: unknown; error?: string | null }) {
+  private record(e: { runId: string; tool: ToolDef; input: unknown; status: string; taskId: string | null; agentId: string; approvalId?: string | null; output?: unknown; error?: string | null; idempotencyKey?: string }) {
     const id = uid("tex");
     this.ctx.db.run(
-      `INSERT INTO tool_executions (id, run_id, tool, connector_id, input, output, status, error, started_at, finished_at, approval_id, agent_id, task_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO tool_executions (id, run_id, tool, connector_id, input, output, status, error, started_at, finished_at, approval_id, agent_id, task_id, idempotency_key)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       id, e.runId, e.tool.name, e.tool.connector, clip(JSON.stringify(e.input)), e.output === undefined ? null : clip(JSON.stringify(e.output)),
       e.status, e.error ?? null, now(), e.status === "pending_approval" || e.status === "running" ? null : now(), e.approvalId ?? null, e.agentId, e.taskId,
+      e.idempotencyKey ?? null,
     );
     return id;
+  }
+
+  /**
+   * An approved external action that was cut off mid-call (process crash or deploy) has an unknown outcome: the
+   * e-mail may or may not have gone out. It is marked `unknown` for a person to check — never retried
+   * automatically. Call once at startup of the process that runs approved actions.
+   */
+  markInterrupted(): number {
+    return this.ctx.db.run(
+      `UPDATE tool_executions SET status = 'unknown', finished_at = ?,
+         error = 'Bajarilish uzildi (server to''xtadi): natija noma''lum — tashqi tizimda tekshiring, avtomatik qayta urinilmaydi'
+       WHERE status = 'running'`,
+      now(),
+    ).changes;
   }
 
   /**
@@ -185,6 +201,13 @@ export class ConnectorHub {
     const args = parsed.data as Record<string, unknown>;
     this.ctx.bus.emit("connector.activity", { taskId: c.taskId, agentId: c.agentId }, { connector: tool.connector, tool: tool.name, kind: tool.kind });
     if (tool.kind === "write") {
+      // The same action proposed again (a retried or re-run step) joins the request already waiting for a person.
+      const idempotencyKey = `${c.taskId ?? "-"}:${tool.name}:${createHash("sha256").update(stableJson(args)).digest("hex")}`;
+      const waiting = this.ctx.db.get<{ approval_id: string }>(
+        "SELECT approval_id FROM tool_executions WHERE idempotency_key = ? AND status = 'pending_approval'", idempotencyKey,
+      );
+      if (waiting)
+        return { status: "pending_approval", approvalId: waiting.approval_id, note: "Bu amal allaqachon tasdiqqa yuborilgan — qayta yuborilmadi." };
       const approvalId = uid("apr");
       const summary = tool.summary(args);
       this.ctx.db.tx(() => {
@@ -192,7 +215,7 @@ export class ConnectorHub {
           "INSERT INTO approvals (id, task_id, agent_id, action, payload, status, requested_at) VALUES (?,?,?,?,?, 'PENDING', ?)",
           approvalId, c.taskId, c.agentId, `tool:${tool.name}`, JSON.stringify({ tool: tool.name, connector: tool.connector, summary, args }), now(),
         );
-        this.record({ ...c, tool, input: args, status: "pending_approval", approvalId });
+        this.record({ ...c, tool, input: args, status: "pending_approval", approvalId, idempotencyKey });
         audit(this.ctx.db, { type: "agent", id: c.agentId }, "tool.propose", { type: "approval", id: approvalId }, { tool: tool.name, summary });
       });
       this.ctx.bus.emit("approval.requested", { taskId: c.taskId, agentId: c.agentId }, { approvalId, action: `tool:${tool.name}`, title: summary });
@@ -315,4 +338,12 @@ function safeJson(v: unknown) {
     return v;
   }
 }
+/** JSON with sorted keys, so equal arguments always hash the same. */
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
+  if (v && typeof v === "object")
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`).join(",")}}`;
+  return JSON.stringify(v) ?? "null";
+}
+
 const clip = (s: string) => (s.length > MAX_OUTPUT ? `${s.slice(0, MAX_OUTPUT)}…` : s);

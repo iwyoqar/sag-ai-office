@@ -1,6 +1,6 @@
 // Agent runtime tests. All LLM calls here use the MockLlm test double (mode = "mock");
 // they verify the system logic, not real Gemini output.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { adminClient, makeApp } from "./helpers.js";
 import { AgentRunner } from "../src/agents/runner.js";
 import { buildSystemPrompt, buildTaskMessage } from "../src/agents/prompt.js";
@@ -42,8 +42,8 @@ describe("agent runner — single tasks", () => {
     expect(deps.db.get("SELECT 1 FROM deliverables WHERE task_id = ?", t.id)).toBeTruthy();
     expect(deps.db.get<{ n: number }>("SELECT COUNT(*) n FROM usage_records WHERE task_id = ? AND is_estimate = 1", t.id)!.n).toBe(1);
     expect(agentStatus(deps, "marketing-javohir")).toBe("COMPLETED");
-    await new Promise((res) => setTimeout(res, 30));
-    expect(agentStatus(deps, "marketing-javohir")).toBe("IDLE");
+    // the settle timer (settleMs) returns the agent to IDLE; wait for the condition, not for a fixed time
+    await vi.waitFor(() => expect(agentStatus(deps, "marketing-javohir")).toBe("IDLE"));
     // the prompt carried the agent's identity and the task as data
     expect(llm.calls[0].system).toContain("Javohir");
     expect(llm.calls[0].messages[0].text).toContain("<task");

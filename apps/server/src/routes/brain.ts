@@ -9,7 +9,9 @@ import { ingestDocument, knowledgeStatus, listDocuments, removeDocument } from "
 import { embedPending, embedderOf, retrieve } from "../knowledge/semantic.js";
 import { MAX_UPLOAD_BYTES } from "../knowledge/extract.js";
 import { audit } from "../lib/audit.js";
-import { badRequest, notFound } from "../lib/errors.js";
+import { badRequest, forbidden, notFound } from "../lib/errors.js";
+import type { AuthUser } from "../lib/auth.js";
+import { canSeeTask, has, taskDepartments, taskRef } from "../domain/access.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 const ScopeQ = z.object({
@@ -17,6 +19,13 @@ const ScopeQ = z.object({
   scopeId: z.string().max(80).optional(),
   history: z.enum(["true", "false"]).optional(),
 });
+
+/** Departments whose documents and memory a non-manager may read (company-wide items are always readable). */
+const knowledgeDepts = (u: AuthUser) => {
+  const s = taskDepartments(u);
+  if (u.departmentId) s.add(u.departmentId);
+  return s;
+};
 
 export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
   const embedder = embedderOf(d.llm.client);
@@ -32,8 +41,10 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
 
   // ---------------------------------------------------------------- knowledge
   app.get("/api/knowledge", async (req) => {
-    requirePerm(req, "agents:read");
-    return { status: knowledgeStatus(d, embedder?.model, embedError), documents: listDocuments(d) };
+    const u = requirePerm(req, "agents:read");
+    const mine = knowledgeDepts(u);
+    const documents = has(u, "brain:manage") ? listDocuments(d) : listDocuments(d).filter((x) => !x.departmentId || mine.has(x.departmentId));
+    return { status: knowledgeStatus(d, embedder?.model, embedError), documents };
   });
 
   app.post("/api/knowledge", async (req, reply) => {
@@ -63,10 +74,16 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   app.get("/api/knowledge/search", async (req) => {
-    requirePerm(req, "agents:read");
+    const u = requirePerm(req, "agents:read");
     const q = parse(z.object({ q: z.string().min(2).max(500), departmentId: z.string().optional() }), req.query);
     // departmentId given → exactly what an agent of that department would retrieve
-    return retrieve(d, embedder, q.q, { departmentId: q.departmentId === undefined ? undefined : q.departmentId || null, limit: 10 });
+    let departmentId = q.departmentId === undefined ? undefined : q.departmentId || null;
+    if (!has(u, "brain:manage")) {
+      // never the whole library: company-wide documents + one department the person belongs to or heads
+      if (departmentId === undefined) departmentId = u.departmentId;
+      if (departmentId && !knowledgeDepts(u).has(departmentId)) throw forbidden();
+    }
+    return retrieve(d, embedder, q.q, { departmentId, limit: 10 });
   });
 
   // ---------------------------------------------------------------- instructions
@@ -100,9 +117,12 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
 
   // ---------------------------------------------------------------- company memory
   app.get("/api/memory", async (req) => {
-    requirePerm(req, "agents:read");
+    const u = requirePerm(req, "agents:read");
     const q = parse(z.object({ status: z.enum(["PENDING", "APPROVED", "REJECTED"]).optional() }), req.query);
-    return { memory: listMemory(d, q.status) };
+    if (has(u, "brain:manage")) return { memory: listMemory(d, q.status) };
+    // others: approved items of the company and their own departments; review queues stay with The Brain managers
+    const mine = knowledgeDepts(u);
+    return { memory: listMemory(d, "APPROVED").filter((m) => (!q.status || q.status === "APPROVED") && (!m.departmentId || mine.has(m.departmentId))) };
   });
 
   app.post("/api/memory", async (req, reply) => {
@@ -128,10 +148,18 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   // ---------------------------------------------------------------- approvals
+  /** Approvers (tasks:manage) see every request with its payload; others only requests on tasks they can see. */
   app.get("/api/approvals", async (req) => {
-    requirePerm(req, "tasks:read");
+    const u = requirePerm(req, "tasks:read");
     const q = parse(z.object({ status: z.enum(["PENDING", "APPROVED", "REJECTED"]).default("PENDING") }), req.query);
-    return { approvals: listApprovals(d, q.status) };
+    const all = listApprovals(d, q.status);
+    if (has(u, "tasks:manage")) return { approvals: all };
+    const payloads = has(u, "tool_io:read");
+    return {
+      approvals: all
+        .filter((a) => { const r = a.taskId ? taskRef(d, a.taskId) : undefined; return !!r && canSeeTask(d, u, r); })
+        .map((a) => (payloads ? a : { ...a, payload: {}, payloadHidden: true })),
+    };
   });
 
   app.post("/api/approvals/:id/decide", async (req) => {

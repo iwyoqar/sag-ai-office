@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { type Deps, parse, requirePerm } from "../app.js";
+import { type Deps, actorOf, parse, requirePerm } from "../app.js";
+import { audit } from "../lib/audit.js";
 import { buildSystemPrompt } from "../agents/prompt.js";
 import { now } from "../db/db.js";
 import { HttpError, notFound } from "../lib/errors.js";
@@ -25,12 +26,19 @@ export const runtimeRoutes = (d: Deps) => async (app: FastifyInstance) => {
     };
   });
 
+  /** A person's own conversation with the agent. Reading someone else's needs agent_chat:read_others and is audited. */
   app.get("/api/agents/:id/chat", async (req) => {
-    requirePerm(req, "agents:read");
+    const u = requirePerm(req, "agents:read");
     const { id } = parse(Id, req.params);
+    const { userId } = parse(z.object({ userId: z.string().min(1).max(80).optional() }), req.query);
+    const who = userId ?? u.id;
+    if (who !== u.id) {
+      requirePerm(req, "agent_chat:read_others");
+      audit(d.db, actorOf(u), "agent_chat.read_other", { type: "agent", id }, { userId: who });
+    }
     return {
       messages: d.db.all(
-        `SELECT id, role, content, created_at createdAt FROM chat_messages WHERE agent_id = ? ORDER BY created_at DESC LIMIT 50`, id,
+        `SELECT id, role, content, created_at createdAt FROM chat_messages WHERE agent_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 50`, id, who,
       ).reverse(),
     };
   });

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { trustedProxiesFrom } from "./lib/throttle.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -16,7 +17,8 @@ export const config = {
   databasePath: resolve(root, process.env.DATABASE_PATH ?? "data/sag.db"),
   sessionTtlHours: int(process.env.SESSION_TTL_HOURS, 24 * 7),
   cookieSecure: process.env.COOKIE_SECURE === "true",
-  trustProxy: process.env.TRUST_PROXY === "true",
+  /** proxies allowed to set X-Forwarded-For: false, a hop count, or IPs/CIDRs (TRUSTED_PROXIES) — never "all" */
+  trustProxy: trustedProxiesFrom(process.env),
   adminPassword: process.env.ADMIN_PASSWORD || undefined,
   logLevel: process.env.LOG_LEVEL ?? "info",
   llm: {

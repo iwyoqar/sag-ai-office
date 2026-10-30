@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { type Deps, parse, requireUser } from "../app.js";
-import { AttemptLimiter } from "../lib/auth.js";
+import { LoginThrottle } from "../lib/throttle.js";
 import { HttpError } from "../lib/errors.js";
 import {
   DATA_CLASSES, activateAccount, addUnitEmployee, approveAgreement, assignDirector, createUnitTask, listAgreements, listUnitEmployees,
@@ -17,13 +17,23 @@ const DataClass = z.enum(DATA_CLASSES as [string, ...string[]]);
 
 /** Business units (stores). Every handler checks the caller's unit access in domain/units.ts. */
 export const unitRoutes = (d: Deps) => async (app: FastifyInstance) => {
-  const limiter = new AttemptLimiter(10, 60_000);
+  // failed activations per client address (trusted proxies only, see app.ts), stored in the database
+  const activation = new LoginThrottle(d.db, { accountFree: 10, ipFree: 10, windowMs: 15 * 60_000, baseLockMs: 60_000, maxLockMs: 15 * 60_000 }, "activate:");
 
   // one-time activation of a pending account (director or employee); no session needed
-  app.post("/api/auth/activate", async (req) => {
-    if (!limiter.allow(req.ip)) throw new HttpError(429, "too_many_attempts", "Juda ko'p urinish. Bir daqiqadan keyin qayta urinib ko'ring.");
+  app.post("/api/auth/activate", async (req, reply) => {
+    const wait = activation.retryAfterIpMs(req.ip);
+    if (wait > 0) {
+      reply.header("retry-after", String(Math.ceil(wait / 1000)));
+      throw new HttpError(429, "too_many_attempts", "Juda ko'p urinish. Keyinroq qayta urinib ko'ring.");
+    }
     const body = parse(z.object({ token: z.string().min(20).max(200), password: z.string().min(1).max(256) }), req.body);
-    return { ok: true, ...(await activateAccount(d, body.token, body.password)) };
+    try {
+      return { ok: true, ...(await activateAccount(d, body.token, body.password)) };
+    } catch (e) {
+      activation.failIp(req.ip);
+      throw e;
+    }
   });
 
   app.get("/api/units", async (req) => ({ network: network(d, requireUser(req)) }));

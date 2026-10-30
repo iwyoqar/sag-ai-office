@@ -13,6 +13,8 @@ interface Detail {
   events: OfficeEvent[];
   messages: { id: string; fromAgentId: string | null; toAgentId: string | null; kind: string; content: string; createdAt: string }[];
   deliverables: { id: string; agentId: string | null; title: string; content: string; createdAt: string }[];
+  /** what the server withheld from this viewer (run records need ai_runs:read, tool payloads tool_io:read) */
+  restricted?: { runs: boolean; payloads: boolean };
   runs: { id: string; agentId: string; model: string; mode: string; status: string; inputTokens: number; outputTokens: number; costUsd: number; latencyMs: number | null; error: string | null; startedAt: string }[];
 }
 
@@ -132,7 +134,7 @@ export function TaskDetail({ taskId, onClose, onOpen }: { taskId: string; onClos
             <div className="seg" role="tablist">
               <button className={tab === "result" ? "on" : ""} onClick={() => setTab("result")}>Natija ({d.deliverables.length})</button>
               <button className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Faoliyat</button>
-              <button className={tab === "runs" ? "on" : ""} onClick={() => setTab("runs")}>AI chaqiruvlari ({d.runs.length})</button>
+              {!d.restricted?.runs && <button className={tab === "runs" ? "on" : ""} onClick={() => setTab("runs")}>AI chaqiruvlari ({d.runs.length})</button>}
             </div>
 
             {tab === "result" && (

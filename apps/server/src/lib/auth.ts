@@ -3,7 +3,7 @@ import type { Permission, Role } from "@sag/shared";
 import type { Db } from "../db/db.js";
 import { now } from "../db/db.js";
 import { token } from "./ids.js";
-import { verifyPassword } from "./passwords.js";
+import { dummyHash, verifyPassword } from "./passwords.js";
 
 export interface Grant {
   permission: Permission;
@@ -65,15 +65,13 @@ export async function login(db: Db, username: string, password: string): Promise
   const row = db.get<{ id: string; password_hash: string; is_active: number; status: string; activation_status: string }>(
     "SELECT id, password_hash, is_active, status, activation_status FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)", username, username.toLowerCase(),
   );
-  // Verify against a dummy hash when the user is missing (or has no password yet: pending activation), so timing
-  // does not reveal valid usernames.
-  const hash = row?.password_hash.startsWith("scrypt$") ? row.password_hash : DUMMY_HASH;
-  const ok = await verifyPassword(password, hash);
-  if (!row || !row.is_active || row.status !== "active" || row.activation_status !== "ACTIVE" || hash === DUMMY_HASH || !ok) return null;
+  // Verify against a dummy hash (current work factor) when the user is missing or has no password yet (pending
+  // activation), so timing does not reveal valid usernames.
+  const real = !!row?.password_hash.startsWith("scrypt$");
+  const ok = await verifyPassword(password, real ? row!.password_hash : dummyHash());
+  if (!row || !row.is_active || row.status !== "active" || row.activation_status !== "ACTIVE" || !real || !ok) return null;
   return loadUser(db, row.id);
 }
-
-const DUMMY_HASH = "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 export function createSession(db: Db, userId: string, ttlHours: number): { token: string; expiresAt: string } {
   const raw = token(32);
@@ -95,24 +93,4 @@ export function userForSession(db: Db, raw: string | undefined): AuthUser | null
 
 export function destroySession(db: Db, raw: string | undefined) {
   if (raw) db.run("DELETE FROM sessions WHERE token_hash = ?", sha(raw));
-}
-
-/** Small in-memory limiter for login attempts (per key, sliding window). */
-export class AttemptLimiter {
-  private hits = new Map<string, number[]>();
-  constructor(private max: number, private windowMs: number) {}
-  allow(key: string): boolean {
-    const t = Date.now();
-    const arr = (this.hits.get(key) ?? []).filter((x) => t - x < this.windowMs);
-    if (arr.length >= this.max) {
-      this.hits.set(key, arr);
-      return false;
-    }
-    arr.push(t);
-    this.hits.set(key, arr);
-    return true;
-  }
-  reset(key: string) {
-    this.hits.delete(key);
-  }
 }
