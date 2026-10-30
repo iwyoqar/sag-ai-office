@@ -7,6 +7,8 @@ import type { NetworkDto, UnitCardDto } from "@sag/shared";
 import { Tweens, ease } from "../tween";
 import { StoreDistrict, type StoreOccupant } from "./district";
 import { landMaterial } from "../campus/materials";
+import { buildWorldGraph } from "../world/network";
+import { renderRoads } from "../world/roadRender";
 
 export type { StoreOccupant } from "./district";
 
@@ -29,6 +31,7 @@ export class NetworkScene {
   private controls: OrbitControls;
   private district = new StoreDistrict();
   private ground: THREE.Mesh | null = null;
+  private roads: THREE.Object3D[] = [];
   private ray = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
   private frame = 0;
@@ -58,9 +61,15 @@ export class NetworkScene {
     this.camera = new THREE.PerspectiveCamera(40, 1, 0.5, 5000);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.maxPolarAngle = Math.PI * 0.44;
+    // same city-builder camera as the campus: fixed tilt, left drag pans over the ground, wheel zooms
+    this.controls.minPolarAngle = this.controls.maxPolarAngle = THREE.MathUtils.degToRad(54);
+    this.controls.enableRotate = false;
+    this.controls.screenSpacePanning = false;
+    this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    this.controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
+    this.controls.zoomToCursor = true;
     this.controls.minDistance = 40;
-    this.controls.maxDistance = 1600;
+    this.controls.maxDistance = 900;
 
     this.scene.add(new THREE.HemisphereLight(0xd6e6fb, 0xa8a68a, 0.8));
     const sun = new THREE.DirectionalLight(0xffeed6, 3.2);
@@ -84,7 +93,13 @@ export class NetworkScene {
 
   setNetwork(net: NetworkDto) {
     this.overview = null;
-    this.district.setNetwork(net);
+    const plan = this.district.setNetwork(net);
+    // the district streets from the same road graph as the campus view (only the district part is drawn here)
+    for (const r of this.roads) r.removeFromParent();
+    const b = plan.bounds;
+    const inside = (x: number, z: number) => x >= b.x0 - 1 && x <= b.x1 + 1 && z >= b.z0 - 1 && z <= b.z1 + 1;
+    this.roads = renderRoads(buildWorldGraph(plan), (ax, az, bx, bz) => inside(ax, az) && inside(bx, bz));
+    this.scene.add(...this.roads);
     const size = this.district.bounds.getSize(new THREE.Vector3());
     const center = this.district.bounds.getCenter(new THREE.Vector3());
     if (this.ground) this.ground.removeFromParent();
@@ -95,8 +110,9 @@ export class NetworkScene {
     this.scene.add(this.ground);
     this.shadowKey = "";
     this.controls.target.copy(center);
-    const span = Math.max(size.x, size.z, 160);
-    this.camera.position.set(center.x + span * 0.1, span * 0.55, center.z + span * 0.7);
+    const span = Math.min(Math.max(size.x, size.z, 160), 800);
+    const po = THREE.MathUtils.degToRad(54), az = THREE.MathUtils.degToRad(24);
+    this.camera.position.set(Math.sin(po) * Math.sin(az), Math.cos(po), Math.sin(po) * Math.cos(az)).multiplyScalar(span * 0.95).add(center);
   }
 
   /** Fly into the store and open it as a cut-away; `null` leaves it and flies back out. */
@@ -115,7 +131,9 @@ export class NetworkScene {
     }
     if (!this.overview) this.overview = { pos: this.camera.position.clone(), target: this.controls.target.clone() };
     this.controls.minDistance = 6;
-    void this.fly(view.pos, view.target);
+    // keep the fixed tilt: same direction as the current view, at the distance the store view asks for
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    void this.fly(view.target.clone().addScaledVector(dir, view.pos.distanceTo(view.target)), view.target);
   }
 
   setOccupants(unitId: string, people: StoreOccupant[]) {

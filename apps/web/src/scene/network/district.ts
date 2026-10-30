@@ -1,7 +1,7 @@
-// The SAG store network as a district of buildings: one plot per region, one building per business unit.
+// The SAG store network as a district of buildings: one block per region, one building per business unit.
 // Used on the campus (next to the head office) and in the stand-alone store view of store accounts.
-// Positions are a SCHEMATIC layout (regions in a grid, stores in rows): the workbook has no addresses or coordinates,
-// and none are invented. Buildings reuse the campus modules (buildBuilding + campus materials + instancer); people
+// Positions are a SCHEMATIC layout (compact rows of stores, districtLayout.ts): the workbook has no addresses or
+// coordinates, and none are invented. Buildings reuse the campus modules (buildBuilding + campus materials + instancer); people
 // reuse the office Character. Opening a store turns it into a cut-away with the people the viewer may see.
 import * as THREE from "three";
 import { CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
@@ -11,14 +11,8 @@ import { Instancer } from "../campus/instancer";
 import { Character } from "../office/character";
 import { buildStore, lookFor } from "./storeLooks";
 import { buildStoreInterior, type Rect, type Spot } from "./storeInterior";
-import { buildBlockGreen, buildRegionPlot, buildStoreLot, buildStreets } from "./storeLot";
-
-const PER_ROW = 3;
-const STORE_PITCH_X = 38;
-const STORE_PITCH_Z = 34;
-const PLOT_PAD = 10;
-const REGION_COLS = 4;
-const REGION_GAP = 22;
+import { buildBlockLamps, buildRegionPlot, buildStoreLot } from "./storeLot";
+import { planDistrict, type DistrictPlan } from "./districtLayout";
 /** lot props (cars, trees, lamps, fences) are drawn only closer than this */
 const DETAIL_DISTANCE = 1400;
 /** lot props are instanced per 120 m tile, so frustum culling drops the off-screen ones */
@@ -102,42 +96,42 @@ export class StoreDistrict {
     return this.buildings.get(unitId)?.unit;
   }
 
-  /** Builds the district with its north-west corner at `origin` (x, z). */
-  setNetwork(net: NetworkDto, origin = new THREE.Vector3()) {
+  /** the current layout (streets for the road graph, store positions) */
+  plan: DistrictPlan | null = null;
+
+  /** Builds the district from the compact layout plan (districtLayout.ts) and returns the plan. */
+  setNetwork(net: NetworkDto): DistrictPlan {
     this.clear();
-    const regions = net.regions.filter((r) => r.units.length);
-    const plots = regions.map((r) => {
-      const cols = Math.min(PER_ROW, r.units.length);
-      const rows = Math.ceil(r.units.length / PER_ROW);
-      return { r, w: cols * STORE_PITCH_X + PLOT_PAD * 2, d: rows * STORE_PITCH_Z + PLOT_PAD * 2 };
-    });
-    // place plots in a grid; each grid row is as deep as its deepest plot
-    const colW = Math.max(...plots.map((p) => p.w), 80);
-    let z = origin.z;
-    this.bounds.makeEmpty();
-    const streetZs: number[] = [];
-    for (let i = 0; i < plots.length; i += REGION_COLS) {
-      const row = plots.slice(i, i + REGION_COLS);
-      const depth = Math.max(...row.map((p) => p.d));
-      row.forEach((p, j) => {
-        const x0 = origin.x + j * (colW + REGION_GAP);
-        // each grid cell is a city block (lawn, sidewalks, street trees) holding the region's plot
-        buildRegionPlot(x0, z, colW, depth, this.lotBatch, this.lotProps, i * 7 + j);
-        const lots = this.addPlot(p.r.name, p.r.units, x0 + (colW - p.w) / 2, z, p.w, p.d);
-        buildBlockGreen({ x0: x0 + 3, x1: x0 + colW - 3, z0: z + 3, z1: z + depth - 3 }, lots, this.lotProps, i * 7 + j);
-        this.bounds.expandByPoint(new THREE.Vector3(x0, 0, z)).expandByPoint(new THREE.Vector3(x0 + colW, 0, z + depth));
+    const plan = planDistrict(net.regions.filter((r) => r.units.length));
+    this.plan = plan;
+    const { cellW, cellD } = plan.cfg;
+    this.bounds.set(new THREE.Vector3(plan.bounds.x0, 0, plan.bounds.z0), new THREE.Vector3(plan.bounds.x1, 0, plan.bounds.z1));
+    plan.blocks.forEach((blk, i) => {
+      const inBlock = plan.stores.filter((s) => s.row === blk.row && s.cx > blk.x0 && s.cx < blk.x1);
+      // keep street trees off the driveways (front) and the loading gates (rear)
+      const front = inBlock.map((s) => ({ x0: s.cx + 9, x1: s.cx + 17 }));
+      const rear = inBlock.map((s) => {
+        const dock = s.cx + lookFor(s.unit.name, s.unit.isHeadOffice).w / 4;
+        return { x0: dock - 4, x1: dock + 4 };
       });
-      z += depth + REGION_GAP;
-      streetZs.push(z - REGION_GAP / 2);
-    }
-    streetZs.pop();
-    if (!this.bounds.isEmpty()) {
-      const cols = Math.min(REGION_COLS, plots.length);
-      buildStreets({
-        x0: this.bounds.min.x, x1: this.bounds.max.x, z0: this.bounds.min.z, z1: this.bounds.max.z, width: REGION_GAP,
-        xs: Array.from({ length: cols - 1 }, (_, j) => origin.x + (j + 1) * (colW + REGION_GAP) - REGION_GAP / 2), zs: streetZs,
-      }, this.lotBatch, this.lotProps);
-    }
+      buildRegionPlot(blk.x0, blk.z0, blk.x1 - blk.x0, blk.z1 - blk.z0, this.lotBatch, this.lotProps, i * 7 + 3, { front, rear });
+      buildBlockLamps(blk.x0, blk.z0, blk.x1 - blk.x0, blk.z1 - blk.z0, this.lotProps);
+      if (blk.label) {
+        const title = label(blk.region, "network-region");
+        title.position.set((blk.x0 + blk.x1) / 2, 1, blk.z1 + plan.cfg.street / 2);
+        this.root.add(title);
+      }
+    });
+    plan.stores.forEach((p, i) => {
+      const u = p.unit;
+      const own = u.ownershipModel === "SAG_OWNED";
+      // the building sits back on its lot: forecourt, a parking row and a drive aisle in front, loading yard behind
+      const look = lookFor(u.name, u.isHeadOffice);
+      const bz = p.cz - 4;
+      const b = buildStore(look, p.cx, bz, true);
+      buildStoreLot({ cx: p.cx, cz: p.cz, cellW, cellD, bz, look, own, seed: i * 3 + 7 }, this.lotBatch, this.lotProps);
+      this.addStore(u, b, p.cx, p.cz, own);
+    });
     this.root.add(...this.lotBatch.build());
     this.details = new THREE.Group();
     this.details.name = "store-lot-props";
@@ -146,28 +140,7 @@ export class StoreDistrict {
     this.root.add(this.details);
     this.lotProps = new Instancer(PROP_TILE);
     this.applyLabels();
-  }
-
-  /** Places the region's stores; returns their lot rectangles. */
-  private addPlot(name: string, units: UnitCardDto[], x0: number, z0: number, w: number, d: number): Rect[] {
-    const title = label(name, "network-region");
-    title.position.set(x0 + w / 2, 1, z0 + d + 4);
-    this.root.add(title);
-
-    const lots: Rect[] = [];
-    units.forEach((u, i) => {
-      const cx = x0 + PLOT_PAD + (i % PER_ROW) * STORE_PITCH_X + STORE_PITCH_X / 2;
-      const cz = z0 + PLOT_PAD + Math.floor(i / PER_ROW) * STORE_PITCH_Z + STORE_PITCH_Z / 2;
-      const own = u.ownershipModel === "SAG_OWNED";
-      // the building sits back on its lot: forecourt, a parking row and a drive aisle in front, loading yard behind
-      const look = lookFor(u.name, u.isHeadOffice);
-      const bz = cz - 4;
-      const b = buildStore(look, cx, bz, true);
-      buildStoreLot({ cx, cz, cellW: STORE_PITCH_X, cellD: STORE_PITCH_Z, bz, look, own, seed: i + units.length * 7 }, this.lotBatch, this.lotProps);
-      this.addStore(u, b, cx, cz, own);
-      lots.push({ x0: cx - STORE_PITCH_X / 2, x1: cx + STORE_PITCH_X / 2, z0: cz - STORE_PITCH_Z / 2, z1: cz + STORE_PITCH_Z / 2 });
-    });
-    return lots;
+    return plan;
   }
 
   private addStore(u: UnitCardDto, b: ReturnType<typeof buildStore>, cx: number, cz: number, own: boolean) {

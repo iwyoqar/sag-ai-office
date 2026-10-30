@@ -19,6 +19,15 @@ const PARK: R = { x0: -44.5, x1: 18.8, z0: -134.5, z1: -14.6 };
 const WEST: R = { x0: -44.5, x1: -21.2, z0: -14.6, z1: 12.6 };
 const VERGE_W: R = { x0: -44.8, x1: -40.2, z0: 12.9, z1: 57.8 };
 const VERGE_S: R = { x0: -40.2, x1: 47.8, z0: 58.2, z1: 59.8 };
+/**
+ * Planted islands in the parking courtyard: row ends on the west, the east ends of the shortened rows, and a median
+ * down the drive aisle. All kept clear of the traffic lanes (world/network.ts: gate lane x 45–49, access diagonal).
+ */
+export const PARKING_ISLANDS: R[] = [
+  { x0: -39.8, x1: -38.3, z0: 15, z1: 20 }, { x0: -39.8, x1: -38.3, z0: 34, z1: 44 }, { x0: -39.8, x1: -38.3, z0: 51.5, z1: 56.5 },
+  { x0: 42.3, x1: 43.6, z0: 34, z1: 44 },
+  { x0: -36, x1: -16, z0: 26.2, z1: 27.8 }, { x0: -8, x1: 20, z0: 26.2, z1: 27.8 }, { x0: 28, x1: 40, z0: 26.2, z1: 27.8 },
+];
 const PATH_X = -14; // north–south footpath through the park
 const PATH_Z = -52; // east–west footpath
 
@@ -98,11 +107,7 @@ export function buildHqLandscape(m: CampusMaterials, inst: Instancer): THREE.Mes
       if (r() < 0.45) shrubAt(long ? x0 + (x1 - x0) * t : (x0 + x1) / 2 + (r() - 0.5) * 0.6, long ? (z0 + z1) / 2 + (r() - 0.5) * 0.6 : z0 + (z1 - z0) * t, 0.6);
     }
   };
-  for (const [z0, z1] of [[15, 20], [34, 44], [51.5, 56.5]]) {
-    island(-39.8, -38.3, z0, z1, true);
-    island(46.3, 47.8, z0, z1, true);
-  }
-  for (const [x0, x1] of [[-36, -16], [-8, 20], [28, 44]]) island(x0, x1, 26.2, 27.8, true);
+  for (const r of PARKING_ISLANDS) island(r.x0, r.x1, r.z0, r.z1, true);
 
   // factory frontage on M37: lawn verge with a clipped hedge and a tree row in front of Factory A
   b.box(444 - 62.4, 0.1, 3.4, m.grass, (62.4 + 444) / 2, -0.02, 58.1, 0, false);

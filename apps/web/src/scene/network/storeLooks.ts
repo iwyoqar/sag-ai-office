@@ -193,6 +193,12 @@ if (typeof Image !== "undefined") {
   img.src = logoUrl;
 }
 
+/** Runs `fn` with the logo canvas (white made transparent) as soon as the image has loaded. */
+export function withLogo(fn: (logo: HTMLCanvasElement) => void) {
+  if (logoCanvas) fn(logoCanvas);
+  else onLogo.push(() => fn(logoCanvas!));
+}
+
 /** The logo alone as a texture (aspect 915 : 298), optionally recoloured white (the blue reception wall). */
 export function logoTexture(white = false): THREE.CanvasTexture {
   const c = document.createElement("canvas");

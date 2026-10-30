@@ -11,8 +11,13 @@ import { OfficeFloor } from "./office/OfficeFloor";
 import { planFor } from "./office/plan";
 import { Tweens, ease, lerp } from "./tween";
 import { CampusScene, type CampusBuildingInfo } from "./campus/CampusScene";
-import { CAMPUS_BOUNDS, STORE_DISTRICT } from "./campus/layout";
+import { CAMPUS_BOUNDS } from "./campus/layout";
 import { landMaterial } from "./campus/materials";
+import { buildWorldGraph } from "./world/network";
+import { renderRoads, renderRoundabout } from "./world/roadRender";
+import { TrafficManager } from "./world/traffic";
+import { hazeRing, worldRect, type WorldRect } from "./world/boundary";
+import type { RoadGraph } from "./world/roads";
 import { StoreDistrict, type StoreOccupant } from "./network/district";
 
 export interface SceneEvents {
@@ -32,8 +37,9 @@ export interface SceneEvents {
   onSelectStore(unitId: string): void;
 }
 
-/** The store district lies across the M37 road from the campus (schematic layout, not real positions). */
-const DISTRICT_ORIGIN = new THREE.Vector3(STORE_DISTRICT.x0 + 20, 0, STORE_DISTRICT.z0 + 48);
+/** City-builder camera outside the office: fixed tilt (degrees from vertical), rotation only in 90° steps (Q / E). */
+const ISO_POLAR = 54;
+const ISO_POLAR_RAD = THREE.MathUtils.degToRad(ISO_POLAR);
 
 export type SceneMode = "intro" | "campus" | "building" | "overview" | "floor";
 
@@ -124,6 +130,19 @@ export class SceneController {
   private shadowFollow = false;
   private shadowKey = "";
   private shadowStore: string | null = null;
+  /** roads drawn from the road graph, the roundabout, the fleet; hidden with the campus in the office diorama */
+  private world = new THREE.Group();
+  private roadMeshes: THREE.Object3D[] = [];
+  readonly traffic = new TrafficManager();
+  private graph: RoadGraph | null = null;
+  private haze: THREE.Mesh | null = null;
+  private worldBox: WorldRect = worldRect(null);
+  // fixed-angle navigation state
+  private isoAz = 24;
+  private zoomGoal: number | null = null;
+  private zoomAnchor = new THREE.Vector3();
+  private keys = new Set<string>();
+  private ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
   constructor(private host: HTMLElement, private ev: SceneEvents) {
     // Log depth keeps ground layers (paving, asphalt, markings) stable from 20 m to 1.5 km away.
@@ -151,7 +170,11 @@ export class SceneController {
 
     this.setupEnvironment();
     this.campus = new CampusScene();
-    this.scene.add(this.campus.root, this.district.root);
+    this.scene.add(this.campus.root, this.district.root, this.world);
+    this.world.name = "world";
+    this.world.add(...renderRoundabout(), this.traffic.root);
+    this.setRoadGraph(buildWorldGraph(null));
+    this.applyWorldBounds();
     this.campus.setActive(false);
     this.setupIntro();
     this.resize();
@@ -212,8 +235,8 @@ export class SceneController {
     this.sun = sun;
     this.frameShadows("campus");
 
-    const outerMat = landMaterial(8000);
-    this.outerGround = new THREE.Mesh(new THREE.CircleGeometry(4000, 64), outerMat);
+    // sized to the developed world in applyWorldBounds(); beyond it the haze ring takes over
+    this.outerGround = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), landMaterial(1000));
     this.outerGround.rotation.x = -Math.PI / 2;
     this.outerGround.position.y = -0.14;
     this.outerGround.receiveShadow = true;
@@ -559,7 +582,7 @@ export class SceneController {
     const projW = w * Math.cos(az) + d * Math.sin(az);
     const projH = (w * Math.sin(az) + d * Math.cos(az)) * Math.cos(po) + 20 * Math.sin(po);
     const dist = this.fitDistance(projW * 0.9, projH * 0.9);
-    return { pos: this.spherical(CAMPUS_TARGET, dist, 24, 54), target: CAMPUS_TARGET.clone() };
+    return { pos: this.spherical(CAMPUS_TARGET, dist, this.isoAz, ISO_POLAR), target: CAMPUS_TARGET.clone() };
   }
 
   private buildingCamera(id: string) {
@@ -567,7 +590,7 @@ export class SceneController {
     const span = Math.max(t.size.x, t.size.z);
     const target = t.center.clone().setY(t.size.y * 0.35);
     const dist = Math.max(45, this.fitDistance(Math.min(span, 220) * 1.05, t.size.y * 2.2 + 20));
-    return { pos: this.spherical(target, dist, 28, 64), target };
+    return { pos: this.spherical(target, dist, this.isoAz, ISO_POLAR), target };
   }
 
   private overviewCamera() {
@@ -592,10 +615,10 @@ export class SceneController {
     const c = this.controls;
     switch (kind) {
       case "campus":
-        c.minDistance = 40; c.maxDistance = 1500; c.maxPolarAngle = 1.38; c.enablePan = true;
+        c.minDistance = 40; c.maxDistance = 950; c.maxPolarAngle = 1.38; c.enablePan = true;
         break;
       case "building":
-        c.minDistance = 20; c.maxDistance = 700; c.maxPolarAngle = 1.45; c.enablePan = true;
+        c.minDistance = 20; c.maxDistance = 950; c.maxPolarAngle = 1.45; c.enablePan = true;
         break;
       case "overview":
         c.minDistance = 30; c.maxDistance = 220; c.maxPolarAngle = 1.42; c.enablePan = false;
@@ -604,20 +627,86 @@ export class SceneController {
         c.minDistance = 14; c.maxDistance = 120; c.maxPolarAngle = basement ? 1.25 : 1.42; c.enablePan = false;
         break;
     }
+    // Outside the office: city-builder navigation. Fixed tilt, left drag pans over the ground, the wheel zooms
+    // smoothly toward the cursor (stepZoom), Q / E turn the view in 90° steps. The office keeps its orbit camera.
+    const iso = kind === "campus" || kind === "building";
+    c.minPolarAngle = iso ? ISO_POLAR_RAD : 0;
+    if (iso) c.maxPolarAngle = ISO_POLAR_RAD;
+    c.enableRotate = !iso;
+    c.enableZoom = !iso;
+    c.mouseButtons = iso
+      ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }
+      : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    c.touches = iso ? { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN } : { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    this.zoomGoal = null;
+  }
+
+  private get worldNav() {
+    return (this.mode === "campus" || this.mode === "building") && this.controls.enabled;
+  }
+
+  /** Smooth wheel zoom: the distance eases toward its goal and the ground point under the cursor stays put. */
+  private stepZoom(dt: number): boolean {
+    if (this.zoomGoal === null) return false;
+    const t = this.controls.target, cam = this.camera.position;
+    const dist = cam.distanceTo(t);
+    let nd = dist + (this.zoomGoal - dist) * (1 - Math.exp(-dt * 9));
+    if (Math.abs(this.zoomGoal - nd) < 0.05) {
+      nd = this.zoomGoal;
+      this.zoomGoal = null;
+    }
+    const f = nd / dist;
+    const dir = cam.clone().sub(t).normalize();
+    t.x = this.zoomAnchor.x + (t.x - this.zoomAnchor.x) * f;
+    t.z = this.zoomAnchor.z + (t.z - this.zoomAnchor.z) * f;
+    this.clampTarget();
+    cam.copy(t).addScaledVector(dir, nd);
+    return true;
+  }
+
+  /** WASD / arrow keys pan along the ground, faster when zoomed out. */
+  private stepKeys(dt: number): boolean {
+    const k = this.keys;
+    const f = (k.has("w") || k.has("arrowup") ? 1 : 0) - (k.has("s") || k.has("arrowdown") ? 1 : 0);
+    const r = (k.has("d") || k.has("arrowright") ? 1 : 0) - (k.has("a") || k.has("arrowleft") ? 1 : 0);
+    if (!f && !r) return false;
+    const t = this.controls.target, cam = this.camera.position;
+    const off = cam.clone().sub(t);
+    const fwd = new THREE.Vector3(-off.x, 0, -off.z).normalize();
+    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    const speed = off.length() * 0.9 * dt;
+    t.addScaledVector(fwd, f * speed).addScaledVector(right, r * speed);
+    this.clampTarget();
+    cam.copy(t).add(off);
+    return true;
+  }
+
+  /** Q / E: turn the fixed view by a quarter around the current target. */
+  private turnView(deg: number) {
+    if (!this.worldNav || this.tweens.active) return;
+    this.isoAz = (this.isoAz + deg + 360) % 360;
+    const t = this.controls.target.clone();
+    const off0 = this.camera.position.clone().sub(t);
+    const a = THREE.MathUtils.degToRad(deg);
+    void this.tweens.run(this.reducedMotion ? 0 : 500, (k) => {
+      this.camera.position.copy(t).add(off0.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), a * k));
+      this.camera.lookAt(this.controls.target);
+    }, ease.inOutCubic);
   }
 
   /** Keep the orbit target on the campus (and the store district) so panning never drifts into empty land. */
   private clampTarget() {
     if (this.mode !== "campus" && this.mode !== "building") return;
     const t = this.controls.target;
-    const d = this.district.bounds;
-    t.x = THREE.MathUtils.clamp(t.x, Math.min(CAMPUS_BOUNDS.x0, d.isEmpty() ? Infinity : d.min.x), Math.max(CAMPUS_BOUNDS.x1, d.isEmpty() ? -Infinity : d.max.x));
-    t.z = THREE.MathUtils.clamp(t.z, CAMPUS_BOUNDS.z0, Math.max(CAMPUS_BOUNDS.z1, d.isEmpty() ? -Infinity : d.max.z));
+    const w = this.worldBox;
+    t.x = THREE.MathUtils.clamp(t.x, w.x0, w.x1);
+    t.z = THREE.MathUtils.clamp(t.z, w.z0, w.z1);
     t.y = THREE.MathUtils.clamp(t.y, 0, 30);
   }
 
   private async flyTo(pos: THREE.Vector3, target: THREE.Vector3, ms: number) {
     this.controls.enabled = false;
+    this.zoomGoal = null;
     const p0 = this.camera.position.clone(), t0 = this.controls.target.clone();
     // Long hops (campus ↔ office) arc upward a little instead of skimming the roofs.
     const lift = Math.min(120, p0.distanceTo(pos) * 0.15);
@@ -659,10 +748,49 @@ export class SceneController {
     for (const z of this.zones) z.group.visible = on;
   }
 
+  // ---- road network, traffic, world edge ----------------------------------
+  /** New road graph: redraw the district streets from it and restart the traffic on it. */
+  private setRoadGraph(g: RoadGraph) {
+    this.graph = g;
+    for (const o of this.roadMeshes) o.removeFromParent();
+    this.roadMeshes = renderRoads(g);
+    this.world.add(...this.roadMeshes);
+    this.traffic.setGraph(g);
+  }
+
+  /** Ground plate and haze sized to the developed world (campus + district), and the camera kept inside it. */
+  private applyWorldBounds() {
+    const d = this.district.bounds;
+    this.worldBox = worldRect(d.isEmpty() ? null : { x0: d.min.x, x1: d.max.x, z0: d.min.z, z1: d.max.z });
+    const r = this.worldBox, margin = 260;
+    const w = r.x1 - r.x0 + margin * 2, h = r.z1 - r.z0 + margin * 2;
+    this.outerGround.geometry.dispose();
+    this.outerGround.geometry = new THREE.PlaneGeometry(w, h);
+    (this.outerGround.material as THREE.Material).dispose();
+    this.outerGround.material = landMaterial(Math.max(w, h));
+    this.outerGround.position.set((r.x0 + r.x1) / 2, -0.14, (r.z0 + r.z1) / 2);
+    this.haze?.removeFromParent();
+    this.haze = hazeRing(r);
+    this.scene.add(this.haze);
+  }
+
+  /** Road network and traffic facts for the debug hook and tests. */
+  roadReport() {
+    const g = this.graph!;
+    const v = g.validate();
+    const dests = [...g.dests.keys()];
+    let routes = 0;
+    for (const a of dests) for (const b of dests) if (a !== b && g.route(g.dests.get(a)!, g.dests.get(b)!, "van")) routes++;
+    return { nodes: g.nodes.length, edges: g.edges.length, destinations: dests.length, components: v.components,
+      strayEnds: v.strayEnds.length, unreachable: v.unreachable, validRoutes: routes, traffic: this.traffic.census(), stats: this.traffic.stats };
+  }
+
   // ---- store district ------------------------------------------------------
   /** The SAG store network the viewer may see, as buildings beside the campus. */
   setNetwork(net: NetworkDto) {
-    this.district.setNetwork(net, DISTRICT_ORIGIN);
+    const plan = this.district.setNetwork(net);
+    this.setRoadGraph(buildWorldGraph(plan));
+    this.applyWorldBounds();
     this.renderer.shadowMap.needsUpdate = true;
     this.invalidate();
   }
@@ -679,7 +807,7 @@ export class SceneController {
     const target = this.district.bounds.getCenter(new THREE.Vector3());
     const size = this.district.bounds.getSize(new THREE.Vector3());
     const dist = this.fitDistance(size.x * 0.95, size.z * 0.75 + 30);
-    await this.flyTo(this.spherical(target, dist, 12, 50), target, 1400);
+    await this.flyTo(this.spherical(target, Math.min(dist, 900), this.isoAz, ISO_POLAR), target, 1400);
   }
 
   /** Fly into a store and open it as a cut-away with the people inside. */
@@ -694,7 +822,8 @@ export class SceneController {
     this.campus.setHovered(null);
     this.applyLimits("building");
     this.controls.minDistance = 6;
-    await this.flyTo(view.pos, view.target, 1300);
+    // same fixed angle as everywhere outside the office, at the distance the store view asks for
+    await this.flyTo(this.spherical(view.target, view.pos.distanceTo(view.target), this.isoAz, ISO_POLAR), view.target, 1300);
   }
 
   setStoreOccupants(unitId: string, people: StoreOccupant[]) {
@@ -1004,10 +1133,58 @@ export class SceneController {
       else if (this.mode === "floor" && this.hoveredAgent?.startsWith("emp:")) this.ev.onSelectEmployee(this.hoveredAgent.slice(4));
       else if (this.mode === "floor" && this.hoveredAgent) this.ev.onSelectAgent(this.hoveredAgent);
     });
+    // smooth zoom toward the cursor (outside the office; the office keeps OrbitControls' own dolly)
+    el.addEventListener("wheel", (e) => {
+      if (!this.worldNav) return;
+      e.preventDefault();
+      const c = this.controls;
+      const base = this.zoomGoal ?? this.camera.position.distanceTo(c.target);
+      this.zoomGoal = THREE.MathUtils.clamp(base * Math.exp(e.deltaY * 0.0011), c.minDistance, c.maxDistance);
+      setPointer(e as unknown as PointerEvent);
+      this.raycaster.setFromCamera(this.pointer, this.camera);
+      if (!this.raycaster.ray.intersectPlane(this.ground, this.zoomAnchor)) this.zoomAnchor.copy(c.target);
+      this.invalidate();
+    }, { passive: false });
+    // double-click on open ground: glide there (a single click on a building or store already selects and frames it)
+    el.addEventListener("dblclick", (e) => {
+      if (!this.worldNav) return;
+      setPointer(e as unknown as PointerEvent);
+      this.pick();
+      if (this.hoveredStore || this.hoveredBuilding) return;
+      this.raycaster.setFromCamera(this.pointer, this.camera);
+      const p = new THREE.Vector3();
+      if (!this.raycaster.ray.intersectPlane(this.ground, p)) return;
+      p.x = THREE.MathUtils.clamp(p.x, this.worldBox.x0, this.worldBox.x1);
+      p.z = THREE.MathUtils.clamp(p.z, this.worldBox.z0, this.worldBox.z1);
+      const dist = Math.min(this.camera.position.distanceTo(this.controls.target), 220);
+      void this.flyTo(this.spherical(p, dist, this.isoAz, ISO_POLAR), p, 800);
+    });
+    const typing = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+    };
+    this.onKeyDown = (e: KeyboardEvent) => {
+      if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "q") this.turnView(-90);
+      else if (k === "e") this.turnView(90);
+      else if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k) && this.worldNav) {
+        this.keys.add(k);
+        e.preventDefault();
+      }
+    };
+    this.onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.key.toLowerCase());
+    this.onBlur = () => this.keys.clear();
+    window.addEventListener("keydown", this.onKeyDown);
+    window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("blur", this.onBlur);
     this.onResize = () => this.resize();
     window.addEventListener("resize", this.onResize);
   }
   private onResize = () => {};
+  private onKeyDown = (_e: KeyboardEvent) => {};
+  private onKeyUp = (_e: KeyboardEvent) => {};
+  private onBlur = () => {};
 
   private resize() {
     const w = this.host.clientWidth || window.innerWidth;
@@ -1061,6 +1238,17 @@ export class SceneController {
     }
     if (this.district.update(this.frameDt, t)) animating = true;
     if (this.stepDiorama(this.frameDt)) animating = true;
+    if (this.worldNav) {
+      if (this.stepZoom(this.frameDt)) animating = true;
+      if (this.stepKeys(this.frameDt)) animating = true;
+    }
+    // the fleet drives whenever the world is on screen (not inside the office diorama)
+    this.world.visible = this.campus.root.visible;
+    if (this.haze) this.haze.visible = this.outerGround.visible;
+    if (this.world.visible && this.mode !== "floor") {
+      this.traffic.update(this.frameDt);
+      if (this.traffic.active && !this.traffic.paused) animating = true;
+    }
     if (this.controls.enabled) this.controls.update();
     if (animating) this.needsRender = Math.max(this.needsRender, 1);
     if (this.needsRender > 0) {
@@ -1094,6 +1282,7 @@ export class SceneController {
       camera: this.camera.position.toArray().map((v) => Math.round(v * 10) / 10),
       target: this.controls.target.toArray().map((v) => Math.round(v * 10) / 10),
       renderCalls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles,
+      vehicles: this.traffic.active, isoAzimuth: this.isoAz,
     };
   }
 
@@ -1101,6 +1290,9 @@ export class SceneController {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     window.removeEventListener("resize", this.onResize);
+    window.removeEventListener("keydown", this.onKeyDown);
+    window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.onBlur);
     this.controls.dispose();
     this.clouds?.dispose();
     this.renderer.dispose();

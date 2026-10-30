@@ -1,7 +1,7 @@
 // Outdoor environment: ground, roads, walks, markings, parking + vehicles, lamps, trees, surrounding context.
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { CAMPUS_BOUNDS, PARKING, ROADS, STORE_DISTRICT, WALKS, type Rect } from "./layout";
+import { CAMPUS_BOUNDS, M37_FURNITURE_X, PARKING, ROADS, WALK_GAPS, WALKS } from "./layout";
 import { groundPlaneM, type CampusMaterials } from "./materials";
 import { Instancer, UNIT } from "./instancer";
 
@@ -110,10 +110,6 @@ export function treeGeometries() {
   return { trunk, crown: mergeGeometries([a, b]) };
 }
 
-function inside(x: number, z: number, r: Rect, pad = 0) {
-  return x > r.x0 - pad && x < r.x1 + pad && z > r.z0 - pad && z < r.z1 + pad;
-}
-
 export interface Site {
   root: THREE.Group;
   /** ground-level objects to hide when the basement is opened */
@@ -142,11 +138,25 @@ export function buildSite(m: CampusMaterials, inst: Instancer): Site {
   for (const r of ROADS) flat(groundPlaneM(r.x1 - r.x0, r.z1 - r.z0), m.asphalt, (r.x0 + r.x1) / 2, 0.03, (r.z0 + r.z1) / 2);
 
   for (const w of WALKS) {
-    const walk = new THREE.Mesh(new THREE.BoxGeometry(w.x1 - w.x0, 0.15, w.z1 - w.z0), m.paving);
-    walk.position.set((w.x0 + w.x1) / 2, 0.075, (w.z0 + w.z1) / 2);
-    walk.receiveShadow = true;
-    surface.add(walk);
+    // the M37 sidewalks are cut where a road crosses them
+    const gaps = w.z0 === 60 ? WALK_GAPS.north : w.z0 === 84 ? WALK_GAPS.south : [];
+    const pieces: [number, number][] = [];
+    let x = w.x0;
+    for (const [g0, g1] of [...gaps].sort((a, b) => a[0] - b[0])) {
+      if (g0 > x) pieces.push([x, g0]);
+      x = Math.max(x, g1);
+    }
+    if (x < w.x1) pieces.push([x, w.x1]);
+    for (const [a, b] of pieces) {
+      const walk = new THREE.Mesh(new THREE.BoxGeometry(b - a, 0.15, w.z1 - w.z0), m.paving);
+      walk.position.set((a + b) / 2, 0.075, (w.z0 + w.z1) / 2);
+      walk.receiveShadow = true;
+      surface.add(walk);
+    }
   }
+  const inGap = (x: number, gaps: [number, number][], pad = 2) => gaps.some(([a, b]) => x > a - pad && x < b + pad);
+  const onRoundabout = (x: number) => x > 42 && x < 66;
+  const inWorld = (x: number) => x > M37_FURNITURE_X[0] && x < M37_FURNITURE_X[1];
 
   // ---- markings
   const dash = (x: number, z: number, along: "x" | "z", len: number, mat: THREE.Material, wid = 0.15) =>
@@ -156,12 +166,16 @@ export function buildSite(m: CampusMaterials, inst: Instancer): Site {
   for (const r of ROADS) {
     if (!r.centerLine) continue;
     if (r.id === "m37") {
+      // lane dashes and the double centre line, interrupted by the roundabout at the campus entrance
       for (let x = r.x0; x < r.x1; x += 9) {
+        if (onRoundabout(x) || onRoundabout(x + 3)) continue;
         dash(x, 70.5, "x", 3, m.marking);
         dash(x, 79.5, "x", 3, m.marking);
       }
-      dash((r.x0 + r.x1) / 2, 74.85, "x", r.x1 - r.x0, m.marking, 0.12);
-      dash((r.x0 + r.x1) / 2, 75.15, "x", r.x1 - r.x0, m.marking, 0.12);
+      for (const [a, b] of [[r.x0, 42], [66, r.x1]]) {
+        dash((a + b) / 2, 74.85, "x", b - a, m.marking, 0.12);
+        dash((a + b) / 2, 75.15, "x", b - a, m.marking, 0.12);
+      }
       continue;
     }
     if (r.centerLine === "x") {
@@ -199,10 +213,9 @@ export function buildSite(m: CampusMaterials, inst: Instancer): Site {
     inst.add("lamp", lamp, m.pole, { x, y: 0, z }, undefined, { y: rotY }, null, { cast: true, receive: false });
     inst.add("lamp-head", head, m.lamp, { x, y: 0, z }, undefined, { y: rotY }, null, { cast: false, receive: false });
   };
-  for (let x = -200; x < 630; x += 32) {
-    if (x > 44 && x < 64) continue;
-    addLamp(x, 61.2, -Math.PI / 2);
-    addLamp(x + 16, 88.8, Math.PI / 2);
+  for (let x = -300; x < 880; x += 32) {
+    if (inWorld(x) && !inGap(x, WALK_GAPS.north, 4)) addLamp(x, 61.2, -Math.PI / 2);
+    if (inWorld(x + 16) && !inGap(x + 16, WALK_GAPS.south, 4)) addLamp(x + 16, 88.8, Math.PI / 2);
   }
   for (let x = 70; x < 440; x += 28) {
     addLamp(x, 5.6, -Math.PI / 2);
@@ -219,34 +232,12 @@ export function buildSite(m: CampusMaterials, inst: Instancer): Site {
     inst.add("tree-crown", crown, m.leaves, { x, y: 0.15, z }, { x: s, y: s, z: s }, { y: hash(ti) * 6 },
       new THREE.Color().setHSL(0.24 + hash(ti + 3) * 0.05, 0.35, 0.3 + hash(ti + 5) * 0.08));
   };
-  for (let x = -210; x < 630; x += 11) {
-    if (!(x > 42 && x < 66)) addTree(x + 5, 63);
-    addTree(x, 87);
+  for (let x = -300; x < 880; x += 11) {
+    if (inWorld(x + 5) && !inGap(x + 5, WALK_GAPS.north, 4)) addTree(x + 5, 63);
+    if (inWorld(x) && !inGap(x, WALK_GAPS.south, 4)) addTree(x, 87);
   }
 
-  // ---- surrounding context: low residential blocks (satellite), muted, outside the campus
-  const houseBody = new THREE.BoxGeometry(1, 1, 1);
-  houseBody.translate(0, 0.5, 0);
-  const houseRoof = new THREE.ConeGeometry(0.72, 0.45, 4);
-  houseRoof.rotateY(Math.PI / 4);
-  houseRoof.translate(0, 1.22, 0);
-  const keepOut: Rect[] = [{ x0: CAMPUS_BOUNDS.x0 - 8, x1: CAMPUS_BOUNDS.x1 + 8, z0: CAMPUS_BOUNDS.z0 - 8, z1: 92 }, STORE_DISTRICT];
-  let hi = 0;
-  for (let x = -330; x < 760; x += 17) {
-    for (let z = -330; z < 260; z += 17) {
-      hi++;
-      const jx = x + (hash(hi) - 0.5) * 6, jz = z + (hash(hi + 0.3) - 0.5) * 6;
-      if (keepOut.some((r) => inside(jx, jz, r))) continue;
-      if (hash(hi + 0.6) < 0.38) continue; // gardens / gaps
-      const w = 9 + hash(hi + 0.1) * 5, d = 8 + hash(hi + 0.2) * 5, h = 3.4 + hash(hi + 0.4) * 2.4;
-      // Context only: low contrast so the SAG campus stays the subject.
-      const wall = new THREE.Color().setHSL(0.09, 0.1, 0.7 + hash(hi + 0.8) * 0.08);
-      const roofHue = hash(hi + 0.9);
-      const roofCol = new THREE.Color(roofHue < 0.4 ? 0x9a7468 : roofHue < 0.8 ? 0x8d9095 : 0x7c8577).multiplyScalar(0.9 + hash(hi + 0.95) * 0.15);
-      inst.add("house", houseBody, m.white, { x: jx, y: 0, z: jz }, { x: w, y: h, z: d }, {}, wall, { cast: true, receive: true });
-      inst.add("house-roof", houseRoof, m.white, { x: jx, y: 0, z: jz }, { x: w, y: h, z: d }, {}, roofCol, { cast: false, receive: true });
-    }
-  }
+  // (no surrounding residential filler: the world shows only the designed districts, see world/boundary.ts)
 
   return { root, surface };
 }

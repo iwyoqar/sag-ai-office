@@ -172,21 +172,33 @@ export interface Rect { x0: number; x1: number; z0: number; z1: number }
 
 /** Asphalt surfaces. Internal roads end at buildings' loading doors or yards, never inside a building. */
 export const ROADS: (Rect & { id: string; centerLine?: "x" | "z" })[] = [
-  { id: "m37", x0: -220, x1: 640, z0: 66, z1: 84, centerLine: "x" },
+  // the M37 runs on through the corporate perimeter ring (perimeter/layout.ts) and fades out in the world haze
+  { id: "m37", x0: -330, x1: 900, z0: 66, z1: 84, centerLine: "x" },
   { id: "access", x0: 48, x1: 60, z0: 31.5, z1: 66, centerLine: "z" }, // parking ↔ M37
   { id: "front-lot", x0: -40, x1: 62, z0: 12.8, z1: 58 }, // parking courtyard (office front)
   { id: "gate-lane", x0: 40, x1: 54, z0: 1, z1: 12.8 }, // parking → main gate
   { id: "yard", x0: 19.4, x1: 62, z0: -80, z1: -4 }, // service yard behind the gate
   { id: "yard-2", x0: 62, x1: 122, z0: -62, z1: -26 }, // behind the admin block
   { id: "road-1", x0: 62, x1: 444, z0: -10, z1: 6, centerLine: "x" }, // courtyard road (photos 4, 5, 7)
-  { id: "road-2", x0: 63, x1: 444, z0: -78, z1: -62, centerLine: "x" }, // back road, reached through the passage (photo 6)
+  { id: "road-2", x0: 63, x1: 490, z0: -78, z1: -62, centerLine: "x" }, // back road, reached through the passage (photo 6)
+  // industrial access: road 2 continues past the warehouse to the M37, so trucks need not cross the office forecourt
+  { id: "east", x0: 478, x1: 490, z0: -62, z1: 66, centerLine: "z" },
   { id: "loading", x0: 420, x1: 444, z0: -10, z1: 6 },
 ];
 
+/** Where roads cross the M37 sidewalks (x spans): the walks, trees and lamps leave these open. */
+// [-128, -112] and [552, 568]: the perimeter ring road (centre lines x = -120 and 560, 16 m wide) crossing the M37
+export const WALK_GAPS = {
+  north: [[-128, -112], [48, 60], [478, 490], [552, 568]] as [number, number][],
+  south: [[-128, -112], [48, 60], [552, 568]] as [number, number][],
+};
+/** Street furniture along the M37 stops at the edge of the visible world (world/boundary.ts hides the rest). */
+export const M37_FURNITURE_X: [number, number] = [-300, 880];
+
 /** Pedestrian walkways (paving). */
 export const WALKS: Rect[] = [
-  { x0: -220, x1: 640, z0: 60, z1: 66 }, // M37 sidewalk
-  { x0: -220, x1: 640, z0: 84, z1: 90 },
+  { x0: -330, x1: 900, z0: 60, z1: 66 }, // M37 sidewalk
+  { x0: -330, x1: 900, z0: 84, z1: 90 },
   { x0: -24, x1: 34, z0: 12.85, z1: 14.6 }, // in front of the office podium (its steps sit on this walk)
   { x0: 19.4, x1: 34, z0: 9, z1: 12.85 }, // annex entrance forecourt
 ];
@@ -201,11 +213,12 @@ export interface ParkingRow {
 /** 2.6 m bays, 5 m deep. Rows in the front lot; the GLB's centre dashes at z = 27 mark the drive aisle. */
 export const PARKING: ParkingRow[] = [
   { x0: -38, x1: 8, z: 17.5, facing: -1, fill: 0.8 },
-  { x0: 24, x1: 46, z: 17.5, facing: -1, fill: 0.85 },
-  { x0: -38, x1: 46, z: 36.5, facing: 1, fill: 0.75 },
-  { x0: -38, x1: 46, z: 41.5, facing: -1, fill: 0.6 },
+  // rows end short of x = 44 so the drive to the gate (x 45–49) and the access lane stay clear
+  { x0: 24, x1: 43.4, z: 17.5, facing: -1, fill: 0.85 },
+  { x0: -38, x1: 42, z: 36.5, facing: 1, fill: 0.75 },
+  { x0: -38, x1: 42, z: 41.5, facing: -1, fill: 0.6 },
   { x0: -30, x1: 46, z: 54, facing: 1, fill: 0.5 },
-  { x0: 22, x1: 60, z: -60, facing: 1, fill: 0.5 }, // yard
+  { x0: 22, x1: 40, z: -60, facing: 1, fill: 0.5 }, // yard (west of the yard lane at x = 47)
 ];
 
 /** Campus footprint used for camera framing and pan limits. */

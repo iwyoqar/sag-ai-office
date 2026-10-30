@@ -120,7 +120,12 @@ export function buildStoreLot(s: LotSpec, batch: Batch, inst: Instancer) {
 
   // ---- surfaces (non-overlapping rectangles, so nothing z-fights)
   slab(x0, x1, walkZ, aisleZ, m.asphalt); // parking + drive aisle
-  slab(x0, x1, aisleZ, z1, m.grass, TOP + 0.04); // front verge
+  // front verge with a driveway cut at the right-hand corner, and its dropped kerb across the block sidewalk
+  slab(x0, x1 - 8, aisleZ, z1, m.grass, TOP + 0.04);
+  slab(x1 - 2, x1, aisleZ, z1, m.grass, TOP + 0.04);
+  slab(x1 - 8, x1 - 2, aisleZ, z1, m.asphalt);
+  batch.box(6, 0.1, 4.2, m.asphalt, x1 - 5, 0.42, z1 + 2.1, 0, false);
+  batch.add(new THREE.BoxGeometry(6, 0.1, 1.2), m.asphalt, { x: x1 - 5, y: 0.27, z: z1 + 4.7 }, { x: 0.36 }, false);
   slab(x0, x1, z0, rz - 0.01, m.asphalt); // loading yard
   slab(x0, bx0, rz - 0.01, walkZ, m.grass, TOP + 0.04); // side strips
   slab(bx1, x1, rz - 0.01, walkZ, m.grass, TOP + 0.04);
@@ -238,52 +243,16 @@ export function buildStoreLot(s: LotSpec, batch: Batch, inst: Instancer) {
   fenceRun(x1, z0, x1, rz);
 }
 
-// ---- district fabric: streets between the region plots, and each plot as a block with sidewalks and street trees
+// ---- district fabric: each region block with sidewalks, street trees and corner lamps (streets: world/roadRender.ts)
 
-export interface StreetGrid {
-  /** outer edge of the plots (the streets run round and between them) */
-  x0: number; x1: number; z0: number; z1: number;
-  /** centre lines of the streets between plot columns (x) and plot rows (z) */
-  xs: number[]; zs: number[];
-  width: number;
-}
+interface Span { x0: number; x1: number }
 
-export function buildStreets(s: StreetGrid, batch: Batch, inst: Instancer) {
-  const m = lotMaterials(), g = geos();
-  const half = s.width / 2;
-  const X0 = s.x0 - s.width, X1 = s.x1 + s.width, Z0 = s.z0 - s.width, Z1 = s.z1 + s.width;
-  batch.box(X1 - X0, 0.06, Z1 - Z0, m.asphalt, (X0 + X1) / 2, 0, (Z0 + Z1) / 2, 0, false);
-  const xs = [s.x0 - half, ...s.xs, s.x1 + half], zs = [s.z0 - half, ...s.zs, s.z1 + half];
-  const dash = (x: number, z: number, w: number, d: number, mat: THREE.Material = m.marking) => batch.box(w, 0.02, d, mat, x, 0.06, z, 0, false);
-  // centre dashes, stopping short of every crossing; a zebra crossing on each approach
-  for (const z of zs)
-    for (let i = 0; i + 1 < xs.length; i++)
-      for (let x = xs[i] + half + 4; x < xs[i + 1] - half - 4; x += 8) dash(x + 1.5, z, 3, 0.15);
-  for (const x of xs)
-    for (let i = 0; i + 1 < zs.length; i++)
-      for (let z = zs[i] + half + 4; z < zs[i + 1] - half - 4; z += 8) dash(x, z + 1.5, 0.15, 3);
-  for (const x of xs)
-    for (const z of zs)
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const cx = x + dx * (half + 1.6), cz = z + dz * (half + 1.6);
-        if (cx < X0 + 2 || cx > X1 - 2 || cz < Z0 + 2 || cz > Z1 - 2) continue; // approach leads off the street grid
-        for (let k = -half + 1.5; k < half - 1; k += 1.1)
-          dx ? dash(cx, z + k, 2.4, 0.55) : dash(x + k, cz, 0.55, 2.4);
-      }
-  // street lamps on the block corners, arms reaching over the crossing
-  for (const x of xs)
-    for (const z of zs)
-      for (const [sx, sz] of [[1, 1], [-1, -1]]) {
-        const lx = x + sx * (half + 1.2), lz = z + sz * (half + 1.2);
-        if (lx < s.x0 || lx > s.x1 || lz < s.z0 || lz > s.z1) continue; // only on a block
-        const rot = Math.atan2(sz, -sx);
-        inst.add("lot-lamp", g.lamp, m.pole, { x: lx, y: 0.5, z: lz }, undefined, { y: rot }, null, { cast: true, receive: false });
-        inst.add("lot-lamp-head", g.lampHead, m.lamp, { x: lx, y: 0.5, z: lz }, undefined, { y: rot }, null, { cast: false, receive: false });
-      }
-}
-
-/** A region plot as a city block: lawn, a 3 m sidewalk round it behind a curb, street trees and lamps along it. */
-export function buildRegionPlot(x0: number, z0: number, w: number, d: number, batch: Batch, inst: Instancer, seed: number) {
+/**
+ * A region block: lawn, a 3 m sidewalk round it behind a kerb, street trees along it. `avoid` keeps trees off the
+ * driveways on the front sidewalk and off the loading gates on the rear one.
+ */
+export function buildRegionPlot(x0: number, z0: number, w: number, d: number, batch: Batch, inst: Instancer, seed: number,
+  avoid: { front: Span[]; rear: Span[] } = { front: [], rear: [] }) {
   const m = lotMaterials(), g = geos();
   const x1 = x0 + w, z1 = z0 + d, sw = 3;
   batch.box(w, 0.44, d, m.grass, x0 + w / 2, 0, z0 + d / 2, 0, false);
@@ -303,9 +272,10 @@ export function buildRegionPlot(x0: number, z0: number, w: number, d: number, ba
     inst.add("lot-tree-crown", g.tree.crown, m.leaves, { x, y: 0.5, z }, { x: s2, y: s2, z: s2 }, { y: r() * 6 },
       new THREE.Color().setHSL(0.22 + r() * 0.07, 0.42, 0.3 + r() * 0.08));
   };
+  const clear = (x: number, spans: Span[]) => !spans.some((s) => x > s.x0 - 1.5 && x < s.x1 + 1.5);
   for (let x = x0 + 5; x < x1 - 3; x += 11) {
-    tree(x, z0 + 0.9);
-    tree(x + 5.5, z1 - 0.9);
+    if (clear(x, avoid.rear)) tree(x, z0 + 0.9);
+    if (clear(x + 5.5, avoid.front)) tree(x + 5.5, z1 - 0.9);
   }
   for (let z = z0 + 8; z < z1 - 6; z += 11) {
     tree(x0 + 0.9, z);
@@ -313,22 +283,12 @@ export function buildRegionPlot(x0: number, z0: number, w: number, d: number, ba
   }
 }
 
-interface Rect { x0: number; x1: number; z0: number; z1: number }
-
-/** Groves on the unused lawn of a block (outside every store lot), so large blocks never read as empty platforms. */
-export function buildBlockGreen(block: Rect, lots: Rect[], inst: Instancer, seed: number) {
+/** Street lamps on the four corners of a block, arms reaching over the junctions. */
+export function buildBlockLamps(x0: number, z0: number, w: number, d: number, inst: Instancer) {
   const m = lotMaterials(), g = geos();
-  let n = seed * 173 + 11;
-  const r = () => hash(n++);
-  const free = (x: number, z: number) => !lots.some((l) => x > l.x0 - 4 && x < l.x1 + 4 && z > l.z0 - 4 && z < l.z1 + 4);
-  for (let x = block.x0 + 7; x < block.x1 - 6; x += 9)
-    for (let z = block.z0 + 7; z < block.z1 - 6; z += 9) {
-      const tx = x + (r() - 0.5) * 4, tz = z + (r() - 0.5) * 4;
-      if (!free(tx, tz) || r() < 0.4) continue;
-      const s2 = 0.8 + r() * 0.5;
-      inst.add("lot-tree-trunk", g.tree.trunk, m.trunk, { x: tx, y: 0.44, z: tz }, { x: s2, y: s2, z: s2 });
-      inst.add("lot-tree-crown", g.tree.crown, m.leaves, { x: tx, y: 0.44, z: tz }, { x: s2, y: s2, z: s2 }, { y: r() * 6 },
-        new THREE.Color().setHSL(0.2 + r() * 0.09, 0.42, 0.27 + r() * 0.1));
-      if (r() < 0.5) inst.add("lot-shrub", g.shrub, m.shrub, { x: tx + 1.6, y: 0.44, z: tz + 0.8 }, { x: 1.2, y: 1, z: 1.2 }, { y: r() * 6 });
-    }
+  for (const [x, z, sx, sz] of [[x0 + 1, z0 + 1, -1, -1], [x0 + w - 1, z0 + 1, 1, -1], [x0 + 1, z0 + d - 1, -1, 1], [x0 + w - 1, z0 + d - 1, 1, 1]]) {
+    const rot = Math.atan2(-sz, sx);
+    inst.add("lot-lamp", g.lamp, m.pole, { x, y: 0.5, z }, undefined, { y: rot }, null, { cast: true, receive: false });
+    inst.add("lot-lamp-head", g.lampHead, m.lamp, { x, y: 0.5, z }, undefined, { y: rot }, null, { cast: false, receive: false });
+  }
 }

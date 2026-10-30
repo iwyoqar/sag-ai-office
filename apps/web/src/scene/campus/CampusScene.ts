@@ -6,6 +6,7 @@ import { campusMaterials } from "./materials";
 import { Instancer } from "./instancer";
 import { buildBuilding, type BuiltBuilding } from "./buildings";
 import { buildSite } from "./site";
+import { PerimeterDistrict } from "../perimeter/PerimeterDistrict";
 import { buildHqLandscape } from "./landscape";
 
 export interface CampusBuildingInfo {
@@ -96,6 +97,9 @@ export class CampusScene {
       this.labels.push(l);
       this.detailLabels.add(l);
     }
+
+    // the SAG group's companies on a ring round the campus and the store district (context, not business units)
+    this.root.add(new PerimeterDistrict().root);
 
     const site = buildSite(m, inst);
     this.surface = site.surface;
