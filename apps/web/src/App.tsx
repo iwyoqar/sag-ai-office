@@ -12,6 +12,7 @@ import { BrainPanel } from "./ui/BrainPanel";
 import { CalendarPanel } from "./ui/CalendarPanel";
 import { AccountDialog } from "./ui/AccountDialog";
 import { PeoplePanel } from "./ui/people/PeoplePanel";
+import { MarketplacePanel } from "./ui/marketplace/MarketplacePanel";
 import { EmployeeProfile } from "./ui/people/Employees";
 import { NewWork, WorkDetail } from "./ui/people/Work";
 import { TopBar } from "./ui/TopBar";
@@ -63,6 +64,7 @@ export function App() {
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
+  const [marketplaceOpen, setMarketplaceOpen] = useState(false);
   const [employeeId, setEmployeeId] = useState<string | null>(null);
   const [workId, setWorkId] = useState<string | null>(null);
   const [newWork, setNewWork] = useState<{ assigneeId?: string } | null>(null);
@@ -247,6 +249,7 @@ export function App() {
         onCalendar={ready ? () => setCalendarOpen(true) : undefined}
         onAccount={() => setAccountOpen(true)}
         onPeople={ready ? () => setPeopleOpen(true) : undefined}
+        onMarketplace={ready ? () => setMarketplaceOpen(true) : undefined}
         onNetwork={ready ? showStores : undefined}
         onOpenWork={ready ? setWorkId : undefined}
         system={ready ? system : null}
@@ -293,6 +296,7 @@ export function App() {
       {accountOpen && auth === "authenticated" && <AccountDialog onClose={() => setAccountOpen(false)} />}
       {ready && calendarOpen && <CalendarPanel onClose={() => setCalendarOpen(false)} onOpenTask={setTaskId} />}
       {ready && taskId && <TaskDetail taskId={taskId} onClose={() => setTaskId(null)} onOpen={setTaskId} />}
+      {ready && marketplaceOpen && <MarketplacePanel onClose={() => setMarketplaceOpen(false)} />}
       {ready && peopleOpen && (
         <PeoplePanel onClose={() => setPeopleOpen(false)} onOpenEmployee={setEmployeeId} onOpenTask={setWorkId} onNewTask={() => setNewWork({})} />
       )}

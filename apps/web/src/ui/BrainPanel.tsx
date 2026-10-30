@@ -447,7 +447,6 @@ function AgentsTab() {
   const { office, can, refresh } = useOffice();
   const [dep, setDep] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [form, setForm] = useState({ name: "", role: "", departmentId: "", instructions: "", model: "" });
   const deps = Object.values(office?.departments ?? {});
   const agents = useMemo(() => (office?.agents ?? []).filter((a) => !dep || a.departmentId === dep), [office, dep]);
   const manage = can("agents:manage");
@@ -477,26 +476,7 @@ function AgentsTab() {
     <>
       <Msg m={msg} />
       {manage && (
-        <form className="ins-card new" onSubmit={(e) => {
-          e.preventDefault();
-          void run(() => api.post("/api/agents", { name: form.name.trim(), role: form.role.trim(), departmentId: form.departmentId, instructions: form.instructions.trim() || undefined, model: form.model.trim() || undefined }),
-            setMsg, `${form.name} ishga olindi.`).then((ok) => ok && (setForm({ name: "", role: "", departmentId: form.departmentId, instructions: "", model: "" }), void refresh()));
-        }}>
-          <b>Yangi agentni ishga olish</b>
-          <div className="nt-row">
-            <input placeholder="Ism" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={80} />
-            <input placeholder="Lavozim (masalan: SMM menejer)" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} maxLength={120} />
-          </div>
-          <div className="nt-row">
-            <select value={form.departmentId} onChange={(e) => setForm({ ...form, departmentId: e.target.value })}>
-              <option value="">Bo'lim…</option>
-              {deps.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
-            <input placeholder="Model (ixtiyoriy, standart: Gemini)" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
-          </div>
-          <textarea rows={2} placeholder="Shaxsiy ko'rsatma (ixtiyoriy)" value={form.instructions} onChange={(e) => setForm({ ...form, instructions: e.target.value })} />
-          <div className="row-end"><button className="primary small" disabled={!form.name.trim() || !form.role.trim() || !form.departmentId}>Ishga olish</button></div>
-        </form>
+        <p className="hint">Yangi agentlar endi <b>Marketplace</b> orqali yollanadi (tepadagi “Marketplace” tugmasi): tasdiqlangan andozadan, bo'lim limitlari va tekshiruvlar bilan.</p>
       )}
       <div className="nt-row">
         <select value={dep} onChange={(e) => setDep(e.target.value)}>
