@@ -114,8 +114,8 @@ Procedure for any other working copy and for future synchronisations:
 6. Never push the old history; never force-push without explicit approval.
 
 Auto-pull: the Claude scheduled task `sag-ai-world-auto-pull` only fetches and fast-forwards; it never resets,
-rebases, stashes or pushes, and skips on uncommitted changes or diverged history. Recommended interval 30–60
-minutes (owner approval pending). Note: `scripts/auto-pull.ps1` in the repository (added from the other computer)
+rebases, stashes or pushes, and skips on uncommitted changes or diverged history. Interval: every 30
+minutes (approved by the owner 2026-10-30). Note: `scripts/auto-pull.ps1` in the repository (added from the other computer)
 **does** stash and rebase; it does not meet these rules and should be aligned or retired by its owner.
 
 Repository changes in W0.1:
@@ -344,7 +344,7 @@ PostgreSQL migration phase (decision 1). If measured load ever exceeds the SQLit
 2. Review the git synchronisation record and procedure (W0.1).
 3. Open the GitHub Support request for cached objects (or authorise preparing its text).
 4. Review the W0.2 authorisation changes (model confirmed; implementation waits for this review).
-5. Approve the auto-pull interval (30 or 60 minutes).
+5. ~~Approve the auto-pull interval~~ — done: every 30 minutes.
 6. Choose backup storage (provider, bucket, region) and create credentials + `BACKUP_KEY` (put them in `.env` /
    Render env yourself; never in chat).
 7. Answer architecture §13 questions Q1–Q5 and name the SAP contact.
