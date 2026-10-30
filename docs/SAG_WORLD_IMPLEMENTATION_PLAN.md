@@ -80,9 +80,43 @@ Credential rotation checklist (owner actions, nothing is revoked by Claude witho
 6. **SECRETS_KEY / Google / Slack / Notion** — not set yet, nothing to rotate; set fresh values only in env.
 7. **GitHub** — open a GitHub Support request to remove cached views and dangling objects of the rewritten history
    (`d3605b2`); check repository collaborators, deploy keys and Actions secrets.
-8. **Every working copy** — this computer: reset local `main` to the cleaned `origin/main` (`git reset --hard
-   origin/main` after confirming no unique local work; the other computer `D:\sag-ai-office` already follows the
-   new history). Never push from an old clone: it would re-upload the secrets.
+8. **Every working copy** — see "Git synchronisation" below. Never push from a clone that still has the old
+   history: it would re-upload the secrets.
+
+Full checklist with a status column: [CREDENTIAL_ROTATION.md](CREDENTIAL_ROTATION.md).
+
+#### Git synchronisation
+
+Record of this computer (`D:\SAG\SAG AI World v2`), done 2026-10-30 with the owner's explicit approval:
+
+| Step | Result |
+|---|---|
+| Branch / working tree inspected | `main`, six modified documentation files, nothing untracked |
+| Old commit SHA recorded | `1018634` (old local `main`; recoverable through the reflog until it expires) |
+| Local work compared with the cleaned history | file tree of old `main` identical to `origin/main~2`; the two newer GitHub commits only add `scripts/auto-pull.ps1` and `scripts/register-auto-pull.ps1` — no unique local work |
+| Documentation changes preserved | `git stash`, restored with `git stash pop` after the reset (no conflicts); all six files verified |
+| Synchronised | `git reset --hard origin/main` (local only), documentation committed as `6a50866` on `main`, pushed as a fast-forward (`8ae696f..6a50866`); no force-push |
+| Old history on GitHub | verified absent: `d3605b2`, `b4462c7`, `e15aa50`, `1018634` are not ancestors of `origin/main`; no local branch contains `d3605b2` |
+
+Deviation from the procedure below (the procedure was confirmed after this sync): the documentation was restored
+onto `main` directly rather than a separate review branch, and the stash was consumed rather than kept as a
+second backup.
+
+Procedure for any other working copy and for future synchronisations:
+1. `git status`, `git branch --show-current`, record `git rev-parse HEAD`.
+2. Back up uncommitted work recoverably: `git stash push -m "pre-sync <date>"` **and** a patch file
+   (`git diff > ../pre-sync-<date>.patch`) outside the repository.
+3. `git fetch origin`; compare `git log --oneline --left-right HEAD...origin/main` and `git diff HEAD origin/main`.
+4. Unique local commits → re-create them on a new branch from `origin/main` (cherry-pick only commits checked to
+   contain no secret). Otherwise move to `origin/main` **only after the owner approves the reset**.
+5. Restore uncommitted work on a separate branch (`git switch -c sync/<date> origin/main`, `git stash apply`),
+   review every diff, commit, then merge after review.
+6. Never push the old history; never force-push without explicit approval.
+
+Auto-pull: the Claude scheduled task `sag-ai-world-auto-pull` only fetches and fast-forwards; it never resets,
+rebases, stashes or pushes, and skips on uncommitted changes or diverged history. Recommended interval 30–60
+minutes (owner approval pending). Note: `scripts/auto-pull.ps1` in the repository (added from the other computer)
+**does** stash and rebase; it does not meet these rules and should be aligned or retired by its owner.
 
 Repository changes in W0.1:
 - `scripts/scan-secrets.mjs` (no dependency): scans tracked files and staged changes for secret assignments, token
@@ -102,19 +136,31 @@ calendar, reports/stats, approvals, memory. Fixes:
 
 | Path | Today | After |
 |---|---|---|
-| `GET /api/agents/:id/chat` | all users' chat with the agent | own conversation only; unit director (later) audited read |
-| `GET /api/events` (SSE) | every AI event to everyone | each event delivered only if the user may see the underlying task/agent/approval; stream closed on logout/deactivation |
-| AI tasks (`canSeeTask`, list endpoints, deliverables, task detail) | visible to every `tasks:read` holder | creator, assignee chain, the task's department members, department heads, `tasks:read_all` — **owner confirmation needed** (behaviour change) |
-| Knowledge list/search, memory | company-wide | own department + company-wide documents; all with `brain:manage` |
-| Approvals list | all payloads to `tasks:read` | approvers (`brain:manage`/task owner) and the task's participants |
-| Connector activity (`/api/connectors/activity`) | every agent's tool inputs/outputs to `tasks:read` | `brain:manage`; participants see their own tasks' executions |
-| Stats (`/api/stats`) | usage and cost to `tasks:read` | directors/`audit:read`; others their own department |
-| Calendar | (to verify in the inventory) | same rule as tasks |
-| Agent tools | (to verify) | same functions, same checks, agent actor |
+Access model **confirmed by the owner on 2026-10-30**: [security model §3.5](SAG_WORLD_SECURITY_MODEL.md#35-confirmed-task-access-model-owner-2026-10-30).
 
-Tests: a matrix of users (admin, director, head of A, employee of A, employee of B, viewer) × each path, proving
-B cannot read A's conversations, events, tasks, employee details or restricted documents, and that admin and
-department-level access still work.
+| Path | Today | After |
+|---|---|---|
+| AI and human tasks (`canSeeTask`, `visibleTaskSql`, lists, detail, deliverables, comments) | AI tasks visible to every `tasks:read` holder | §3.5 levels for both kinds: creator (+ subtree progress), assignee (+ parent context only), department head, unit director (`director` today); `tasks:read_all` evaluated within the unit |
+| `GET /api/agents/:id/chat` | all users' chat with the agent | own conversation; others only with `agent_chat:read_others` (audited) |
+| `GET /api/events` (SSE) | every AI event to everyone | ids/status only for tasks the user may see; detail fields need `ai_runs:read` / `tool_io:read`; stream closed on logout/deactivation |
+| Run records, prompts, stage history | via task detail to any viewer | `ai_runs:read` |
+| Approvals list / detail | all payloads to `tasks:read` | approvers and participants see the action; the payload needs `tool_io:read` or being the approver |
+| Connector activity (`/api/connectors/activity`) | every agent's tool inputs/outputs to `tasks:read` | metadata for `brain:manage` and participants; payloads only with `tool_io:read`; secrets never |
+| Knowledge list/search, memory | company-wide | own department + company-wide documents; everything with `brain:manage` |
+| Stats (`/api/stats`) | company usage and cost to `tasks:read` | computed over the caller's visible tasks; cost needs `budget:read` (director today) |
+| Calendar (routines, scheduled tasks) | to verify in the inventory | same scope as tasks |
+| Employee profiles | existing person rules | unchanged; regression-tested |
+| Notifications | addressee only | unchanged; regression-tested |
+| Agent tools | to verify | same domain checks with the agent actor |
+
+New permissions: `agent_chat:read_others`, `ai_runs:read`, `tool_io:read`, `budget:read` (seeded; defaults per
+§3.5). Existing roles keep their current reach except where this table narrows it.
+
+Tests, one per access level × path: creator, assignee (parent context but not parent comments or siblings),
+department head (own vs. other department), director (whole unit), viewer, employee of another department, admin;
+plus: another user's conversation unreachable; SSE never carries another department's task detail; tool payloads
+hidden without `tool_io:read`; the connector log never contains secrets; stats totals equal the sum over visible
+tasks.
 
 ### W0.3 Reliable agent execution
 
@@ -293,10 +339,12 @@ PostgreSQL migration phase (decision 1). If measured load ever exceeds the SQLit
 
 ## Owner actions needed now
 
-1. Rotate the Telegram token, Gemini key and admin password; plan employee password resets (W0.1 checklist).
-2. Confirm resetting this computer's local `main` to the cleaned `origin/main`.
+1. Review and carry out [CREDENTIAL_ROTATION.md](CREDENTIAL_ROTATION.md) (Telegram token, Gemini key, admin
+   password, employee password resets, sessions). Claude revokes or changes nothing without explicit approval.
+2. Review the git synchronisation record and procedure (W0.1).
 3. Open the GitHub Support request for cached objects (or authorise preparing its text).
-4. Confirm the new AI-task visibility rule (W0.2).
-5. Choose backup storage (provider, bucket, region) and create credentials + `BACKUP_KEY` (put them in `.env` /
+4. Review the W0.2 authorisation changes (model confirmed; implementation waits for this review).
+5. Approve the auto-pull interval (30 or 60 minutes).
+6. Choose backup storage (provider, bucket, region) and create credentials + `BACKUP_KEY` (put them in `.env` /
    Render env yourself; never in chat).
-6. Answer architecture §13 questions Q1–Q5 and name the SAP contact.
+7. Answer architecture §13 questions Q1–Q5 and name the SAP contact.

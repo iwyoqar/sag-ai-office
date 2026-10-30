@@ -89,6 +89,41 @@ allowed(person, permission, unit) =
 | Reports / stats | `budget:read`/`finance:read`/directors; others see only their own work | aggregates via §3.3 |
 | Audit log | `audit:read_unit` | none |
 
+### 3.5 Confirmed task access model (owner, 2026-10-30)
+
+| Level | May access | Notes |
+|---|---|---|
+| Task creator | tasks they created, and the progress of all subtasks below them | still bounded by their unit permissions (a creator moved to another unit keeps no reach by creatorship alone across units) |
+| Assignee | tasks assigned to them + **parent context**: the parent's title, description, priority, deadline, status and owner | not the parent's comments, attachments, deliverables or sibling subtasks |
+| Department head | tasks of the departments they head or were granted (`deptsFor`, exists) | inside their unit |
+| Business unit director | every task of their unit | role `unit_director` (today: role `director` on the single unit `hq`) |
+| Region director | tasks of units in their region **that they are authorised for** | role at REGION with `include_descendants`, filtered by business type and agreements (§3.3) |
+| Group director | only what group policies explicitly authorise | role at GROUP; no implicit company-wide read |
+| System administrator | administration per system policy (users, roles, settings, recovery) | sensitive content reads (below) are separate permissions and audited |
+
+Rules that apply to every level:
+- **`tasks:read_all` is unit-scoped.** It means "all tasks in the units where this role is held", never "all
+  tasks in the system". Cross-unit reach always needs an explicit membership/grant with `include_descendants`
+  plus the business-type rule or an agreement.
+- **Parent creators see subtask progress** (status, progress, stage, assignee, deadline) for the whole subtree,
+  even when a subtask is in another department of the same unit; across units they see the UnitRequest fields only.
+- **Sensitive AI data needs its own permission**, independent of task visibility:
+  - `agent_chat:read_others` — read other people's conversations with agents (default: nobody; grantable per unit,
+    audited). Everyone reads their own.
+  - `ai_runs:read` — run records, prompts, stage history, model/token detail of tasks one can see (default: unit
+    director, `platform_admin`).
+  - `tool_io:read` — tool inputs and outputs (e.g. e-mail bodies, sheet contents) of tasks one can see (default:
+    approvers of that action, unit director; audited).
+  - Realtime events carry ids and status only; event details are filtered by the same three permissions.
+- **Connector activity log** shows connector, tool, status, time, task and agent; payloads are redacted unless the
+  reader has `tool_io:read` for that task; credentials, tokens and secret fields are never returned by any API.
+- **Statistics** are computed only over the rows the caller may see (same scope predicate as the task list);
+  cost/usage figures need `budget:read` in that scope.
+
+Mapping before business units exist (W0.2 runs on today's single organisation, which W1 turns into unit `hq`):
+creator, assignee and department head as above; `director` = business unit director of `hq`; `admin` = system
+administrator; region and group directors do not exist until W1; `tasks:read_all` is evaluated as "within `hq`".
+
 ## 4. Enforcement layers (SQLite, no RLS)
 
 ```mermaid
