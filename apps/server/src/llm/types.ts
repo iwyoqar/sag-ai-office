@@ -3,6 +3,27 @@
 export interface LlmMessage {
   role: "user" | "model";
   text: string;
+  /** model turn that asked for tools */
+  toolCalls?: ToolCall[];
+  /** user turn carrying tool results back to the model */
+  toolResults?: ToolResult[];
+}
+
+/** A function the model may call (JSON-schema parameters, Gemini/OpenAPI subset). */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+}
+
+export interface ToolCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  name: string;
+  response: Record<string, unknown>;
 }
 
 export interface LlmRequest {
@@ -12,6 +33,8 @@ export interface LlmRequest {
   temperature?: number;
   /** ask the model for a JSON object (structured output) */
   json?: boolean;
+  /** functions the model may call; its answer then has `toolCalls` instead of (or besides) text */
+  tools?: ToolSpec[];
   timeoutMs?: number;
   correlationId: string;
   signal?: AbortSignal;
@@ -19,6 +42,9 @@ export interface LlmRequest {
 
 export interface LlmResult {
   text: string;
+  toolCalls?: ToolCall[];
+  /** agent_runs id (set by the runner) */
+  runId?: string;
   inputTokens: number;
   outputTokens: number;
   finishReason: string;
@@ -36,6 +62,8 @@ export interface LlmClient {
   /** text embeddings (unit length); absent when the provider has no embedding model configured */
   embed?(texts: string[], kind: "document" | "query"): Promise<Float32Array[]>;
   readonly embeddingModel?: string;
+  /** web search grounded by the provider (Gemini: google_search); absent when not supported */
+  searchWeb?(query: string, correlationId: string): Promise<{ text: string; sources: { title: string; url: string }[] }>;
 }
 
 export class LlmError extends Error {

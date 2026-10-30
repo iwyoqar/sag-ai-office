@@ -663,3 +663,17 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   .people-grid { grid-template-columns: 1fr; }
   .top-status .tasks-btn { padding: 6px 8px; font-size: 12px; }
 }
+
+/* ---- agent actions (connectors) ---- */
+.conn-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.conn-card { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
+.conn-card.on { border-color: #bbf7d0; background: #f0fdf4; }
+.conn-card code { font-family: var(--mono); font-size: 10.5px; background: #f1f5f9; padding: 0 4px; border-radius: 4px; margin-right: 4px; }
+.tool-chip { font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 6px; background: #eef2ff; color: #3730a3; }
+.tool-chip.write { background: #fff7ed; color: #9a3412; }
+.google-row { justify-content: space-between; }
+.google-row a.primary { text-decoration: none; display: inline-block; }
+.tool-approval { border-color: #fed7aa; background: #fffbf5; }
+pre.args { font-family: var(--mono); font-size: 11.5px; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 4px 0 0; }
+.grants { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.grant-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }

@@ -42,6 +42,18 @@ export const config = {
     webhookUrl: process.env.TELEGRAM_WEBHOOK_URL || undefined,
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || undefined,
   },
+  /** agent actions through connectors (credentials only here / in the host env, never in the database) */
+  connectors: {
+    publicUrl: process.env.PUBLIC_URL || "http://localhost:5173",
+    secretsKey: process.env.SECRETS_KEY || undefined,
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID || undefined,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || undefined,
+      refreshToken: process.env.GOOGLE_REFRESH_TOKEN || undefined,
+    },
+    slackToken: process.env.SLACK_BOT_TOKEN || undefined,
+    notionToken: process.env.NOTION_TOKEN || undefined,
+  },
   worker: {
     enabled: process.env.WORKER_ENABLED !== "false",
     concurrency: int(process.env.WORKER_CONCURRENCY, 2),

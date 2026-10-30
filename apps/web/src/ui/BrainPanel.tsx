@@ -374,7 +374,10 @@ function MemoryTab() {
 }
 
 // ---------------------------------------------------------------- approvals
-interface Approval { id: string; taskId: string | null; agentId: string | null; action: string; requestedAt: string; taskTitle: string | null }
+interface Approval {
+  id: string; taskId: string | null; agentId: string | null; action: string; requestedAt: string; taskTitle: string | null;
+  payload: { summary?: string; connector?: string; tool?: string; args?: Record<string, unknown> };
+}
 
 export function ApprovalsTab({ taskId, compact }: { taskId?: string; compact?: boolean }) {
   const { office, can } = useOffice();
@@ -382,30 +385,57 @@ export function ApprovalsTab({ taskId, compact }: { taskId?: string; compact?: b
   const [reason, setReason] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const list = (data?.approvals ?? []).filter((a) => !taskId || a.taskId === taskId);
-  const decide = (id: string, decision: "approve" | "reject") =>
-    void run(() => api.post(`/api/approvals/${id}/decide`, { decision, reason: reason[id] }), setMsg, decision === "approve" ? "Tasdiqlandi." : "Qayta ishlashga qaytarildi.").then(reload);
+  const decide = async (a: Approval, decision: "approve" | "reject") => {
+    const tool = a.action.startsWith("tool:");
+    try {
+      const r = await api.post<{ execution?: { status: string; error: string | null } }>(`/api/approvals/${a.id}/decide`, { decision, reason: reason[a.id] });
+      const ex = r.execution;
+      setMsg(
+        !tool ? { ok: true, text: decision === "approve" ? "Tasdiqlandi." : "Qayta ishlashga qaytarildi." }
+        : decision === "reject" ? { ok: true, text: "Amal rad etildi — bajarilmadi." }
+        : ex?.status === "succeeded" ? { ok: true, text: "Tasdiqlandi va bajarildi." }
+        : { ok: false, text: `Tasdiqlandi, lekin bajarilmadi: ${ex?.error ?? "xato"}` },
+      );
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    }
+    reload();
+  };
   if (compact && !list.length) return null;
   return (
     <div className={compact ? "approval-box" : ""}>
       <Msg m={msg} />
       {!compact && !list.length && <p className="hint">Tasdiq kutayotgan narsa yo'q.</p>}
-      {list.map((a) => (
-        <div key={a.id} className="ins-card">
+      {list.map((a) => {
+        const tool = a.action.startsWith("tool:");
+        return (
+        <div key={a.id} className={`ins-card${tool ? " tool-approval" : ""}`}>
           <div className="ins-head">
-            <b>{compact ? "Natija tasdiqlashni kutmoqda" : a.taskTitle}</b>
+            {tool && <span className="ai-chip mock">Agent amali · {a.payload.connector}</span>}
+            <b>{tool ? a.payload.summary : compact ? "Natija tasdiqlashni kutmoqda" : a.taskTitle}</b>
             <span className="muted">{office?.agents.find((x) => x.id === a.agentId)?.name} · {new Date(a.requestedAt).toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" })}</span>
           </div>
+          {tool && (
+            <>
+              {a.taskTitle && <span className="muted">Vazifa: {a.taskTitle}</span>}
+              <details open>
+                <summary className="muted">Aynan nima yuboriladi / yoziladi</summary>
+                <pre className="args">{JSON.stringify(a.payload.args, null, 2)}</pre>
+              </details>
+            </>
+          )}
           {can("tasks:manage") ? (
             <>
               <input placeholder="Rad etish sababi / tuzatish (rad etishda majburiy)" value={reason[a.id] ?? ""} onChange={(e) => setReason({ ...reason, [a.id]: e.target.value })} />
               <div className="row-end">
-                <button className="link danger" disabled={!reason[a.id]?.trim()} onClick={() => decide(a.id, "reject")}>Qayta ishlashga qaytarish</button>
-                <button className="primary small" onClick={() => decide(a.id, "approve")}>Tasdiqlash</button>
+                <button className="link danger" disabled={!reason[a.id]?.trim()} onClick={() => void decide(a, "reject")}>{tool ? "Rad etish" : "Qayta ishlashga qaytarish"}</button>
+                <button className="primary small" onClick={() => void decide(a, "approve")}>{tool ? "Tasdiqlash va bajarish" : "Tasdiqlash"}</button>
               </div>
             </>
           ) : <p className="hint">Tasdiqlash uchun "tasks:manage" ruxsati kerak.</p>}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -522,8 +552,9 @@ function ConnectorsTab() {
     <>
       <Msg m={msg} />
       <TelegramCard info={tg.data} onChange={tg.reload} />
+      <AgentActions />
       <h3>Connectorlar va bo'lim ruxsatlari</h3>
-      <p className="hint">Faqat haqiqatan ulangan va tekshirilgan connector "ulangan" deb ko'rsatiladi. Hozircha Telegram amalga oshirilgan; qolganlari keyingi bosqichlarda.</p>
+      <p className="hint">Faqat haqiqatan ulangan va tekshirilgan connector "ulangan" deb ko'rsatiladi. Agent connectordan foydalanishi uchun: bo'lim ruxsati (shu jadval) + agent profilida o'qish/yozish ruxsati.</p>
       <div className="md-table">
         <table className="runs conn-matrix">
           <thead><tr><th>Connector</th><th>Holat</th>{deps.map((d) => <th key={d.id} title={d.name}>{d.short.slice(0, 5)}</th>)}</tr></thead>
@@ -543,6 +574,83 @@ function ConnectorsTab() {
         </table>
       </div>
     </>
+  );
+}
+
+interface ConnState {
+  id: string; name: string; implemented: boolean; connected: boolean; reason: string | null; account: string | null; setup: string[];
+  tools: { name: string; kind: "read" | "write"; description: string }[];
+}
+interface Activity {
+  id: string; tool: string; connectorId: string; status: string; error: string | null; startedAt: string; agentName: string | null; taskTitle: string | null;
+}
+const EXEC_LABEL: Record<string, string> = { succeeded: "bajarildi", failed: "xato", denied: "rad etildi", pending_approval: "tasdiq kutmoqda", running: "bajarilmoqda" };
+
+/** Real connection state per connector, the tools it gives agents, setup steps, and the agent action log. */
+function AgentActions() {
+  const { can } = useOffice();
+  const st = useLoad<{ connectors: ConnState[]; google: { configured: boolean; connected: boolean; account: string | null; canStore: boolean } }>("/api/connectors/status");
+  const act = useLoad<{ items: Activity[] }>("/api/connectors/activity?limit=30");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const flag = new URLSearchParams(location.search).get("connectors");
+  const g = st.data?.google;
+  const list = (st.data?.connectors ?? []).filter((c) => c.implemented);
+  const later = (st.data?.connectors ?? []).filter((c) => !c.implemented);
+  const verify = (id: string) => void api.post<{ ok: boolean; detail: string }>(`/api/connectors/${id}/verify`).then((r) => { setMsg({ ok: r.ok, text: r.detail }); st.reload(); }).catch((e) => setMsg({ ok: false, text: e.message }));
+  return (
+    <section className="ins-card">
+      <div className="ins-head"><b>Agent amallari (connectorlar orqali)</b></div>
+      <p className="hint">O'qish vositalari darhol ishlaydi. Yozish/yuborish (email, xabar, jadvalga yozish, tadbir) har safar <b>Tasdiqlar</b> bo'limida odam tasdiqlagandan keyingina bajariladi. Hammasi jurnalga yoziladi.</p>
+      {flag === "google_connected" && <div className="notice ok">Google hisobi ulandi.</div>}
+      {flag === "google_error" && <div className="notice warn">Google ulanmadi: {new URLSearchParams(location.search).get("reason")}</div>}
+      <Msg m={msg} />
+      {g && (
+        <div className="row-end google-row">
+          <span className="muted">Google Workspace (Gmail, Drive, Sheets, Calendar): {g.connected ? <b>ulangan — {g.account}</b> : g.configured ? "ulanmagan" : "OAuth ilovasi sozlanmagan"}</span>
+          {can("brain:manage") && g.configured && !g.connected && (g.canStore
+            ? <a className="primary small" href="/api/connectors/google/start">Google bilan ulash</a>
+            : <span className="err">SECRETS_KEY kerak</span>)}
+          {can("brain:manage") && g.connected && <button className="link danger" onClick={() => void run(() => api.del("/api/connectors/google"), setMsg, "Google uzildi.").then(st.reload)}>Uzish</button>}
+        </div>
+      )}
+      <div className="conn-cards">
+        {list.map((c) => (
+          <div key={c.id} className={`conn-card ${c.connected ? "on" : "off"}`}>
+            <div className="ins-head">
+              <b>{c.name}</b>
+              <span className={`ai-chip ${c.connected ? "on" : "off"}`}>{c.connected ? "ulangan" : "ulanmagan"}</span>
+              {can("brain:manage") && ["gmail", "drive", "sheets", "calendar", "slack", "notion"].includes(c.id) && <button className="link" onClick={() => verify(c.id)}>Tekshirish</button>}
+            </div>
+            {c.account && <span className="muted">{c.account}</span>}
+            {!c.connected && c.reason && <span className="muted">{c.reason}</span>}
+            {c.setup.length > 0 && <span className="muted">Kerak: {c.setup.map((x) => <code key={x}>{x}</code>)}</span>}
+            <div className="chips">
+              {c.tools.map((t) => <span key={t.name} className={`tool-chip ${t.kind}`} title={t.description}>{t.kind === "write" ? "✎ " : ""}{t.name}</span>)}
+            </div>
+          </div>
+        ))}
+      </div>
+      {later.length > 0 && <p className="hint">Hali yozilmagan: {later.map((c) => c.name).join(", ")} — {later[0].reason}.</p>}
+      <h3>Amallar jurnali</h3>
+      {!act.data?.items.length ? <p className="hint">Agentlar hali connector ishlatmagan.</p> : (
+        <div className="md-table">
+          <table className="runs">
+            <thead><tr><th>Vaqt</th><th>Agent</th><th>Vosita</th><th>Vazifa</th><th>Holat</th></tr></thead>
+            <tbody>
+              {act.data.items.map((e) => (
+                <tr key={e.id}>
+                  <td>{new Date(e.startedAt).toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent", hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })}</td>
+                  <td>{e.agentName ?? "—"}</td>
+                  <td className="mono">{e.tool}</td>
+                  <td>{e.taskTitle ?? "—"}</td>
+                  <td className={e.status === "failed" ? "err" : ""} title={e.error ?? ""}>{EXEC_LABEL[e.status] ?? e.status}{e.error ? `: ${e.error.slice(0, 60)}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 

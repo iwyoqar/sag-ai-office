@@ -10,6 +10,8 @@ export function AgentProfile({ agentId, onClose }: { agentId: string; onClose: (
   const [p, setP] = useState<AgentProfileDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [n, setN] = useState(0);
+  const reload = () => setN((x) => x + 1);
 
   useEffect(() => {
     let alive = true;
@@ -20,7 +22,7 @@ export function AgentProfile({ agentId, onClose }: { agentId: string; onClose: (
     return () => {
       alive = false;
     };
-  }, [agentId, tick]);
+  }, [agentId, tick, n]);
 
   const act = async (action: "pause" | "resume" | "stop") => {
     if (action === "stop" && !window.confirm("Agentning joriy ishini to'xtatasizmi? Faqat shu agentning vazifalari BLOCKED holatiga o'tadi.")) return;
@@ -75,9 +77,9 @@ export function AgentProfile({ agentId, onClose }: { agentId: string; onClose: (
               </dd>
               <dt>Connectorlar</dt>
               <dd className="conn-list">
-                {p.connectors.map((c) => (
+                {can("agents:manage") ? <ConnectorGrants agentId={a.id} departmentId={a.departmentId} connectors={p.connectors} onSaved={reload} /> : p.connectors.filter((c) => c.granted).map((c) => (
                   <span key={c.id} className={`connector-tag ${c.status === "connected" ? "on" : "off"}`}>
-                    {c.name} · {c.status === "connected" ? "ulangan" : "ulanmagan"}{c.granted ? "" : " · ruxsat yo'q"}
+                    {c.name} · {c.allowedActions.includes("write") ? "o'qish + yozish" : "o'qish"} · {c.status === "connected" ? "ulangan" : "ulanmagan"}
                   </span>
                 ))}
               </dd>
@@ -164,6 +166,45 @@ function AgentChat({ agentId, name, canSend }: { agentId: string; name: string; 
         <input value={text} onChange={(e) => setText(e.target.value)} placeholder={`${name}ga xabar…`} disabled={!canSend || busy} maxLength={4000} />
         <button disabled={!canSend || busy || !text.trim()}>Yuborish</button>
       </form>
+    </div>
+  );
+}
+
+/**
+ * Which connectors this agent may use: only ones its department is allowed; "yozish" lets it propose write actions,
+ * each of which still needs a person's approval. Internal knowledge/people tools are always available.
+ */
+function ConnectorGrants({ agentId, departmentId, connectors, onSaved }: {
+  agentId: string; departmentId: string; onSaved: () => void;
+  connectors: { id: string; name: string; status: string; granted: boolean; allowedActions: string[] }[];
+}) {
+  const { office } = useOffice();
+  const allowed = new Set(office?.departments[departmentId]?.connectors ?? []);
+  const mine = connectors.filter((c) => allowed.has(c.id));
+  const [read, setRead] = useState(() => new Set(mine.filter((c) => c.granted).map((c) => c.id)));
+  const [write, setWrite] = useState(() => new Set(mine.filter((c) => c.allowedActions.includes("write")).map((c) => c.id)));
+  const [msg, setMsg] = useState<string | null>(null);
+  const flip = (set: Set<string>, id: string, on: boolean) => { const n = new Set(set); if (on) n.add(id); else n.delete(id); return n; };
+  if (!mine.length) return <span className="muted">Bo'limga connector ruxsat etilmagan (The Brain → Connectorlar).</span>;
+  const save = async () => {
+    try {
+      await api.put(`/api/agents/${agentId}/connectors`, { connectorIds: [...read], writeIds: [...write].filter((w) => read.has(w)) });
+      setMsg("Saqlandi.");
+      onSaved();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <div className="grants">
+      {mine.map((c) => (
+        <div key={c.id} className="grant-row">
+          <span className={`status-dot ${c.status}`} /><b>{c.name}</b>
+          <label className="check"><input type="checkbox" checked={read.has(c.id)} onChange={(e) => { setRead(flip(read, c.id, e.target.checked)); if (!e.target.checked) setWrite(flip(write, c.id, false)); }} />o'qish</label>
+          <label className="check"><input type="checkbox" checked={write.has(c.id)} disabled={!read.has(c.id)} onChange={(e) => setWrite(flip(write, c.id, e.target.checked))} />yozish (tasdiq bilan)</label>
+        </div>
+      ))}
+      <div className="row-end">{msg && <span className="muted">{msg}</span>}<button className="link" onClick={() => void save()}>Ruxsatlarni saqlash</button></div>
     </div>
   );
 }

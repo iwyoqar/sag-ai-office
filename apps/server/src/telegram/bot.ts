@@ -346,7 +346,7 @@ export class TelegramBot {
       case "reject": {
         const [idArg, ...rest] = args.split(/\s+/);
         const t = this.findTask(idArg ?? "");
-        const apr = t && this.ctx.db.get<{ id: string }>("SELECT id FROM approvals WHERE task_id = ? AND status = 'PENDING' ORDER BY requested_at DESC LIMIT 1", t.id);
+        const apr = t && this.ctx.db.get<{ id: string }>("SELECT id FROM approvals WHERE task_id = ? AND status = 'PENDING' AND action = 'result_review' ORDER BY requested_at DESC LIMIT 1", t.id); // agent actions (tool:*) are approved in The Brain only
         if (!t || !apr) {
           reply("Tasdiq kutayotgan vazifa topilmadi.");
           return "not_found";
@@ -485,6 +485,16 @@ export class TelegramBot {
   }
 
   /** Queued, spaced sends (group limit ≈ 20 msg/min) with 429 retry_after handling. */
+  /** the bot is connected and polling/receiving */
+  get active() {
+    return this.status.running;
+  }
+
+  /** Agent action approved in The Brain: post plain text to the company group (escaped, labelled). */
+  postToGroup(text: string) {
+    this.send(this.o.groupId, `🤖 ${esc(text)}`);
+  }
+
   send(chatId: string, text: string, doc?: { name: string; content: string }) {
     this.queue.push({ chatId, text: text.slice(0, 4000), doc });
     void this.drain();

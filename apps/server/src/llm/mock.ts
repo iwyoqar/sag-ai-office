@@ -1,8 +1,10 @@
 // Scripted test double. Used by automated tests (and only by explicit LLM_PROVIDER=mock).
 // Every run made with it is stored with mode = "mock" and the UI labels it — never presented as real work.
-import { LlmError, type LlmClient, type LlmRequest, type LlmResult } from "./types.js";
+import { LlmError, type LlmClient, type LlmRequest, type LlmResult, type ToolCall } from "./types.js";
 
-export type MockReply = string | LlmError | ((req: LlmRequest) => string | LlmError | Promise<string>);
+/** A scripted answer: text, an error, or a tool-call turn. */
+export type MockAnswer = string | LlmError | { text?: string; toolCalls: ToolCall[] };
+export type MockReply = MockAnswer | ((req: LlmRequest) => MockAnswer | Promise<MockAnswer>);
 
 /** Dev default: a fixed sample plan for orchestration, otherwise an explicitly labelled placeholder answer. */
 function defaultMockReply(req: LlmRequest): string {
@@ -37,6 +39,10 @@ export class MockLlm implements LlmClient {
     const out = await (typeof this.reply === "function" ? this.reply(req) : this.reply);
     if (out instanceof LlmError) throw out;
     const inTok = Math.ceil((req.system.length + req.messages.reduce((n, m) => n + m.text.length, 0)) / 4);
+    if (typeof out !== "string") {
+      const text = out.text ?? "";
+      return { text, toolCalls: out.toolCalls, inputTokens: inTok, outputTokens: Math.ceil((text.length + 40) / 4), finishReason: "STOP", model: this.model };
+    }
     return { text: out, inputTokens: inTok, outputTokens: Math.ceil(out.length / 4), finishReason: "STOP", model: this.model };
   }
 
@@ -54,6 +60,11 @@ export class MockLlm implements LlmClient {
       const n = Math.hypot(...v) || 1;
       return v.map((x) => x / n);
     });
+  }
+
+  /** Labelled fake search results (tests and mock mode only). */
+  async searchWeb(query: string) {
+    return { text: `MOCK qidiruv natijasi: ${query}`, sources: [{ title: "MOCK manba", url: "https://example.test/mock" }] };
   }
 
   async health() {

@@ -21,8 +21,17 @@ export interface GeminiOptions {
   log?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
+interface GeminiPart {
+  text?: string;
+  thought?: boolean;
+  functionCall?: { name: string; args?: Record<string, unknown> };
+}
+
 interface GeminiResponse {
-  candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
+  candidates?: {
+    content?: { parts?: GeminiPart[] }; finishReason?: string;
+    groundingMetadata?: { groundingChunks?: { web?: { uri?: string; title?: string } }[] };
+  }[];
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
   promptFeedback?: { blockReason?: string };
   modelVersion?: string;
@@ -30,6 +39,10 @@ interface GeminiResponse {
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Longest in-process wait for a rate limit before giving up (per-minute limits reset well within this). */
+export const MAX_RETRY_WAIT_MS = 90_000;
+const formatWait = (ms: number) => (ms >= 3_600_000 ? `${Math.round(ms / 3_600_000)} soat` : `${Math.ceil(ms / 60_000)} daqiqa`);
 
 export class GeminiClient implements LlmClient {
   readonly provider = "gemini" as const;
@@ -66,12 +79,22 @@ export class GeminiClient implements LlmClient {
   async generate(req: LlmRequest): Promise<LlmResult> {
     const body = {
       systemInstruction: { parts: [{ text: req.system }] },
-      contents: req.messages.map((m) => ({ role: m.role, parts: [{ text: m.text }] })),
+      contents: req.messages.map((m) => ({
+        role: m.role,
+        parts: m.toolCalls?.length
+          ? m.toolCalls.map((c) => ({ functionCall: { name: c.name, args: c.args } }))
+          : m.toolResults?.length
+            ? m.toolResults.map((r) => ({ functionResponse: { name: r.name, response: r.response } }))
+            : [{ text: m.text }],
+      })),
       generationConfig: {
         maxOutputTokens: req.maxOutputTokens ?? 4096,
         temperature: req.temperature ?? 0.6,
         ...(req.json ? { responseMimeType: "application/json" } : {}),
       },
+      ...(req.tools?.length
+        ? { tools: [{ functionDeclarations: req.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }], toolConfig: { functionCallingConfig: { mode: "AUTO" } } }
+        : {}),
     };
     const retries = this.o.maxRetries ?? 3;
     let lastErr: LlmError | null = null;
@@ -86,7 +109,9 @@ export class GeminiClient implements LlmClient {
         if (!err.retryable || attempt === retries) throw err;
         const backoff = err.retryAfterMs ?? Math.min(30_000, 1500 * 2 ** attempt) + Math.floor(Math.random() * 400);
         this.o.log?.("gemini retry", { attempt: attempt + 1, code: err.code, waitMs: backoff, correlationId: req.correlationId });
-        await this.sleep(backoff);
+        // abortable: cancelling the task or its timeout must not wait out a back-off
+        await Promise.race([this.sleep(Math.min(backoff, MAX_RETRY_WAIT_MS)), abortPromise(req.signal)]);
+        if (req.signal?.aborted) throw new LlmError("Bekor qilindi", "aborted", false);
       }
     }
     throw lastErr ?? new LlmError("Noma'lum xato", "server", false);
@@ -120,20 +145,48 @@ export class GeminiClient implements LlmClient {
     if (data.promptFeedback?.blockReason)
       throw new LlmError(`So'rov Gemini tomonidan bloklandi: ${data.promptFeedback.blockReason}`, "blocked", false);
     const cand = data.candidates?.[0];
-    const text = (cand?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? "").join("").trim();
-    if (!text) {
+    const parts = cand?.content?.parts ?? [];
+    const text = parts.filter((p) => !p.thought).map((p) => p.text ?? "").join("").trim();
+    const toolCalls = parts.filter((p) => p.functionCall).map((p) => ({ name: p.functionCall!.name, args: p.functionCall!.args ?? {} }));
+    if (!text && !toolCalls.length) {
       const reason = cand?.finishReason ?? "EMPTY";
       throw new LlmError(`Gemini bo'sh javob qaytardi (${reason})`, reason === "SAFETY" ? "blocked" : "bad_response", reason !== "SAFETY");
     }
     const u = data.usageMetadata ?? {};
     return {
       text,
+      ...(toolCalls.length ? { toolCalls } : {}),
       inputTokens: u.promptTokenCount ?? 0,
       // thinking tokens are billed as output
       outputTokens: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0),
       finishReason: cand?.finishReason ?? "STOP",
       model: data.modelVersion ?? this.model,
     };
+  }
+
+  /** Grounded web search: a separate call with the google_search tool (it cannot be mixed with functions). */
+  async searchWeb(query: string, correlationId: string) {
+    await this.waitTurn();
+    const res = await this.fetch(`${BASE}/models/${encodeURIComponent(this.model)}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": this.o.apiKey, "x-request-id": correlationId },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: `Internetdan qidir va qisqa, faktlarga asoslangan xulosa ber (manbalar bilan): ${query}` }] }],
+        tools: [{ google_search: {} }],
+        generationConfig: { maxOutputTokens: 1200, temperature: 0.2 },
+      }),
+    }).catch((e) => {
+      throw new LlmError(`Tarmoq xatosi: ${(e as Error).message}`, "server", true);
+    });
+    const data = (await res.json().catch(() => ({}))) as GeminiResponse;
+    if (!res.ok) throw toError(res.status, data);
+    const cand = data.candidates?.[0];
+    const text = (cand?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? "").join("").trim();
+    const sources = (cand?.groundingMetadata?.groundingChunks ?? [])
+      .map((c) => ({ title: c.web?.title ?? "", url: c.web?.uri ?? "" }))
+      .filter((s) => s.url)
+      .slice(0, 8);
+    return { text, sources };
   }
 
   get embeddingModel() {
@@ -170,7 +223,7 @@ export class GeminiClient implements LlmClient {
         }
         const err = toError(res.status, data);
         if (!err.retryable || ++attempt > (this.o.maxRetries ?? 3)) throw err;
-        await this.sleep(err.retryAfterMs ?? 1500 * 2 ** attempt);
+        await this.sleep(Math.min(err.retryAfterMs ?? 1500 * 2 ** attempt, MAX_RETRY_WAIT_MS));
       }
     }
     return out;
@@ -190,6 +243,14 @@ export class GeminiClient implements LlmClient {
   }
 }
 
+function abortPromise(signal?: AbortSignal): Promise<void> {
+  return new Promise((r) => {
+    if (!signal) return;
+    if (signal.aborted) return r();
+    signal.addEventListener("abort", () => r(), { once: true });
+  });
+}
+
 function normalise(v: number[]): Float32Array {
   let n = 0;
   for (const x of v) n += x * x;
@@ -205,6 +266,10 @@ function toError(status: number, data: GeminiResponse): LlmError {
   if (status === 429) {
     const delay = data.error?.details?.find((d) => d.retryDelay)?.retryDelay;
     const ms = delay ? Math.ceil(parseFloat(delay) * 1000) : undefined;
+    // A long retryDelay means a quota window (e.g. the free tier's daily limit), not a burst: waiting in-process
+    // for hours would freeze the task. Fail clearly instead; the task can be retried later.
+    if (ms !== undefined && ms > MAX_RETRY_WAIT_MS)
+      return new LlmError(`Gemini limiti tugadi (429): taxminan ${formatWait(ms)} dan keyin qayta urinib ko'ring`, "rate_limit", false, ms);
     return new LlmError("Gemini limiti tugadi (429)", "rate_limit", true, ms);
   }
   if (status >= 500) return new LlmError(`Gemini server xatosi (${status})`, "server", true);

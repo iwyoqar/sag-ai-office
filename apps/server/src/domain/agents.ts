@@ -180,14 +180,16 @@ export function updateAgent(
   return getAgent(ctx, id);
 }
 
-export function setAgentConnectors(ctx: Ctx, id: string, connectorIds: string[], actor: Actor) {
+/** Grants: read for every listed connector; `writeIds` (a subset) may also propose write actions (still approved per call). */
+export function setAgentConnectors(ctx: Ctx, id: string, connectorIds: string[], actor: Actor, writeIds: string[] = []) {
   const a = row(ctx, id);
   checkConnectors(ctx, a.department_id, connectorIds);
+  const write = new Set(writeIds.filter((w) => connectorIds.includes(w)));
   ctx.db.tx(() => {
     ctx.db.run("DELETE FROM agent_connector_permissions WHERE agent_id = ?", id);
     for (const c of connectorIds)
-      ctx.db.run("INSERT INTO agent_connector_permissions (agent_id, connector_id, allowed_actions) VALUES (?, ?, '[\"read\"]')", id, c);
-    audit(ctx.db, actor, "agent.connectors.set", { type: "agent", id }, { connectorIds });
+      ctx.db.run("INSERT INTO agent_connector_permissions (agent_id, connector_id, allowed_actions) VALUES (?, ?, ?)", id, c, JSON.stringify(write.has(c) ? ["read", "write"] : ["read"]));
+    audit(ctx.db, actor, "agent.connectors.set", { type: "agent", id }, { connectorIds, writeIds: [...write] });
   });
   ctx.bus.emit("agent.updated", { agentId: id, departmentId: a.department_id }, { change: "connectors" }, actor.id);
   return getAgentProfile(ctx, id);

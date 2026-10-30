@@ -137,7 +137,11 @@ export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
   app.post("/api/approvals/:id/decide", async (req) => {
     const u = requirePerm(req, "tasks:manage");
     const body = parse(z.object({ decision: z.enum(["approve", "reject"]), reason: z.string().max(2000).optional() }), req.body);
-    return { task: decideApproval(d, parse(Id, req.params).id, body.decision, body.reason, actorOf(u), "web") };
+    const { id } = parse(Id, req.params);
+    // agent actions through connectors (tool:*) run now when approved; result approvals move the task
+    const action = d.db.get<{ action: string }>("SELECT action FROM approvals WHERE id = ?", id)?.action;
+    if (action?.startsWith("tool:")) return { execution: await d.connectors.decide(id, body.decision, body.reason, u) };
+    return { task: decideApproval(d, id, body.decision, body.reason, actorOf(u), "web") };
   });
 
   // ---------------------------------------------------------------- connectors

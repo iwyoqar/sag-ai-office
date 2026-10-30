@@ -49,6 +49,8 @@ export interface EmployeeDto extends EmployeeCardDto {
 export type PresenceState = "available" | "working" | "reviewing" | "blocked" | "away";
 export interface PresenceDto {
   id: string; displayName: string; jobTitle: string; departmentId: string; floorId: string | null; state: PresenceState;
+  /** stable desk number inside the department (people are seated from the far end of its desks) */
+  desk: number | null;
 }
 
 export interface NotificationDto {

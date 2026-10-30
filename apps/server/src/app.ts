@@ -22,6 +22,8 @@ import { touchActivity } from "./domain/employees.js";
 import type { TelegramBot } from "./telegram/bot.js";
 import type { LlmSetup } from "./llm/index.js";
 import type { AgentRunner } from "./agents/runner.js";
+import { ConnectorHub, type ConnectorConfig } from "./connectors/hub.js";
+import { connectorRoutes } from "./routes/connectors.js";
 import { randomUUID } from "node:crypto";
 
 export const SESSION_COOKIE = "sag_session";
@@ -40,6 +42,9 @@ export interface AppOptions {
   llm?: LlmSetup;
   /** behind Render / Vercel: take the client IP from X-Forwarded-For (login rate limit) */
   trustProxy?: boolean;
+  connectors?: ConnectorConfig;
+  /** HTTP client for connector calls (tests inject a fake) */
+  http?: typeof fetch;
 }
 
 export interface Deps extends Ctx {
@@ -50,6 +55,7 @@ export interface Deps extends Ctx {
   runner?: AgentRunner;
   llmHealth?: { ok: boolean; model: string; detail?: string; checkedAt: string };
   telegram?: TelegramBot;
+  connectors: ConnectorHub;
 }
 
 export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
@@ -82,7 +88,10 @@ export async function buildApp(opts: AppOptions) {
     sessionTtlHours: opts.sessionTtlHours ?? 24 * 7,
     cookieSecure: opts.cookieSecure ?? false,
     llm: opts.llm ?? { client: null, pricing: { inputPerM: 0, outputPerM: 0 }, reason: "LLM sozlanmagan" },
-  };
+  } as Deps;
+  deps.connectors = new ConnectorHub(deps, opts.connectors ?? { publicUrl: "http://localhost:5173", google: {} }, {
+    llm: () => deps.llm.client, telegram: () => deps.telegram, http: opts.http,
+  });
 
   await app.register(cookie);
   await app.register(multipart, { limits: { fileSize: 15 * 1024 * 1024, files: 1, fields: 10 } });
@@ -112,6 +121,7 @@ export async function buildApp(opts: AppOptions) {
   await app.register(agentRoutes(deps));
   await app.register(taskRoutes(deps));
   await app.register(peopleRoutes(deps));
+  await app.register(connectorRoutes(deps));
   await app.register(eventRoutes(deps));
   await app.register(runtimeRoutes(deps));
   await app.register(brainRoutes(deps));

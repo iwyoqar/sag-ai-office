@@ -14,6 +14,8 @@ import { buildSystemPrompt, buildTaskMessage, type Grounding, type PriorResult }
 import type { KnowledgeHit } from "../knowledge/service.js";
 import { embedderOf, retrieve } from "../knowledge/semantic.js";
 import { addMemory, approvedMemory, requestApproval } from "../domain/brain.js";
+import type { ConnectorHub } from "../connectors/hub.js";
+import type { LlmMessage } from "../llm/types.js";
 
 export interface RunnerOptions {
   concurrency: number;
@@ -24,9 +26,13 @@ export interface RunnerOptions {
   /** how long COMPLETED / ERROR stays visible on the agent before it returns to IDLE */
   settleMs?: number;
   log?: (msg: string, meta?: Record<string, unknown>) => void;
+  /** connector tools for agents (omit = text only) */
+  tools?: ConnectorHub;
 }
 
 const MAX_SUBTASKS = 6;
+/** model ↔ tool round trips per task before a final answer is forced */
+const MAX_TOOL_STEPS = 4;
 const RUN_LEASE_MS = 15 * 60_000;
 
 const PlanSchema = z.object({
@@ -132,8 +138,41 @@ export class AgentRunner {
     const system = buildSystemPrompt(this.ctx, task.agentId!);
     this.setAgent(task.agentId!, "WORKING");
     this.stage(task, g.hits.length ? `Natija yozilmoqda (${g.hits.length} ta hujjat parchasi bilan)` : "Natija yozilmoqda");
-    const res = await this.call(task, { system, messages: [{ role: "user", text: message }] }, signal);
-    this.finish(task, withSources(res.text, g.hits), "Natija");
+    const res = await this.withTools(task, system, message, signal);
+    this.finish(task, withSources(res.text, g.hits) + res.actions, "Natija");
+  }
+
+  /**
+   * Model ↔ tools loop: the model may call its tools a few times (read tools answer at once, write tools become
+   * approval requests), then must write the deliverable. Every action is listed truthfully under the result.
+   */
+  private async withTools(task: TaskDto, system: string, message: string, signal: AbortSignal): Promise<{ text: string; actions: string }> {
+    const hub = this.o.tools;
+    const tools = hub ? hub.toolsFor(task.agentId!) : [];
+    const specs = hub ? hub.specs(tools) : [];
+    const messages: LlmMessage[] = [{ role: "user", text: message }];
+    const log: string[] = [];
+    for (let step = 0; ; step++) {
+      const last = step >= MAX_TOOL_STEPS || !specs.length;
+      const res = await this.call(task, { system, messages, ...(last ? {} : { tools: specs }) }, signal);
+      if (!res.toolCalls?.length || last) {
+        const text = res.text.trim() || "Natija yozilmadi.";
+        return { text, actions: log.length ? `\n\n## Amallar\n${log.join("\n")}` : "" };
+      }
+      this.setAgent(task.agentId!, "COMMUNICATING");
+      this.stage(task, `Vositalar: ${res.toolCalls.map((c) => c.name).join(", ")}`);
+      const results = [];
+      for (const c of res.toolCalls.slice(0, 5)) {
+        const out = await hub!.invoke({ taskId: task.id, agentId: task.agentId!, runId: res.runId!, correlationId: res.runId! }, c);
+        const def = tools.find((t) => t.name === c.name);
+        const what = def ? def.summary((def.schema.safeParse(c.args).data ?? c.args) as Record<string, unknown>) : c.name;
+        log.push(`- ${what} — ${out.error ? `xato: ${String(out.error)}` : out.status === "pending_approval" ? "tasdiqqa yuborildi (The Brain → Tasdiqlar)" : "bajarildi"}`);
+        results.push({ name: c.name, response: out });
+      }
+      messages.push({ role: "model", text: "", toolCalls: res.toolCalls.slice(0, 5) }, { role: "user", text: "", toolResults: results });
+      this.setAgent(task.agentId!, "WORKING");
+      this.assertStillMine(task);
+    }
   }
 
   /** Orchestrator step 1: split the job across departments, create subtasks + dependency graph. */
@@ -239,7 +278,7 @@ export class AgentRunner {
           maxOutputTokens: Math.max(256, Math.min(req.maxOutputTokens ?? 6000, 8192, budget.tokensLeft)),
         });
         this.recordUsage(task, runId, res, Date.now() - started);
-        return res;
+        return { ...res, runId };
       } catch (e) {
         const err = e instanceof LlmError ? e : new LlmError(String(e), "server", false);
         this.ctx.db.run(

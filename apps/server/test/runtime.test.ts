@@ -240,6 +240,48 @@ describe("Gemini client (fake fetch, no network)", () => {
     await expect(bad.generate({ system: "", messages: [], correlationId: "c" })).rejects.toMatchObject({ code: "auth", retryable: false });
   });
 
+  it("does not sleep for hours on a quota-window 429 (daily limit): fails clearly at once", async () => {
+    const waits: number[] = [];
+    let calls = 0;
+    const g = new GeminiClient({
+      apiKey: "k", model: "m", minIntervalMs: 0, sleep: async (ms) => void waits.push(ms),
+      fetchImpl: async () => {
+        calls++;
+        return ok({ error: { code: 429, message: "quota", details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "33887s" }] } }, 429);
+      },
+    });
+    await expect(g.generate({ system: "", messages: [], correlationId: "c" })).rejects.toMatchObject({ code: "rate_limit", retryable: false });
+    expect(calls).toBe(1);
+    expect(waits).toEqual([]);
+    await expect(g.generate({ system: "", messages: [], correlationId: "c" })).rejects.toThrow(/soat/);
+  });
+
+  it("returns function calls from the model and sends tool results back in Gemini's format", async () => {
+    const bodies: { contents: { role: string; parts: Record<string, unknown>[] }[]; tools?: unknown[] }[] = [];
+    const g = new GeminiClient({
+      apiKey: "k", model: "m", minIntervalMs: 0, sleep: async () => {},
+      fetchImpl: async (_u: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return ok({ candidates: [{ content: { parts: [{ functionCall: { name: "search_company_knowledge", args: { query: "dastgoh" } } }] } }] });
+      },
+    });
+    const r = await g.generate({
+      system: "s", correlationId: "c",
+      tools: [{ name: "search_company_knowledge", description: "d", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } }],
+      messages: [
+        { role: "user", text: "savol" },
+        { role: "model", text: "", toolCalls: [{ name: "search_company_knowledge", args: { query: "a" } }] },
+        { role: "user", text: "", toolResults: [{ name: "search_company_knowledge", response: { results: [] } }] },
+      ],
+    });
+    expect(r.toolCalls).toEqual([{ name: "search_company_knowledge", args: { query: "dastgoh" } }]);
+    expect(r.text).toBe("");
+    const b = bodies[0];
+    expect(b.tools).toHaveLength(1);
+    expect(b.contents[1].parts[0]).toEqual({ functionCall: { name: "search_company_knowledge", args: { query: "a" } } });
+    expect(b.contents[2].parts[0]).toEqual({ functionResponse: { name: "search_company_knowledge", response: { results: [] } } });
+  });
+
   it("treats a safety block as non-retryable", async () => {
     const g = new GeminiClient({
       apiKey: "k", model: "m", minIntervalMs: 0, sleep: async () => {},

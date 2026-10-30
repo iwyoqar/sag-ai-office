@@ -52,8 +52,8 @@ export const agentRoutes = (d: Deps) => async (app: FastifyInstance) => {
 
   app.put("/api/agents/:id/connectors", async (req) => {
     const u = requirePerm(req, "agents:manage");
-    const body = parse(z.object({ connectorIds: z.array(z.string()).max(30) }), req.body);
-    return setAgentConnectors(d, parse(Id, req.params).id, body.connectorIds, actorOf(u));
+    const body = parse(z.object({ connectorIds: z.array(z.string()).max(30), writeIds: z.array(z.string()).max(30).optional() }), req.body);
+    return setAgentConnectors(d, parse(Id, req.params).id, body.connectorIds, actorOf(u), body.writeIds);
   });
 
   app.post("/api/agents/:id/pause", async (req) => {

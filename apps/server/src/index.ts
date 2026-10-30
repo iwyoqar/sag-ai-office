@@ -18,6 +18,7 @@ const llm = createLlm(config, (m, meta) => llmLog(m, meta));
 const { app, deps } = await buildApp({
   db,
   llm,
+  connectors: config.connectors,
   sessionTtlHours: config.sessionTtlHours,
   cookieSecure: config.cookieSecure,
   trustProxy: config.trustProxy,
@@ -56,6 +57,7 @@ if (llm.client) {
       concurrency: config.worker.concurrency,
       pollMs: config.worker.pollMs,
       taskTimeoutMs: config.worker.taskTimeoutMs,
+      tools: deps.connectors,
       log: (msg, meta) => app.log.warn(meta ?? {}, msg),
     });
     deps.runner = runner;
@@ -88,6 +90,9 @@ if (config.telegram.token && config.telegram.groupId && config.telegram.enabled)
 } else {
   app.log.warn("Telegram not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_GROUP_ID)");
 }
+
+// ---- connectors: mirror the real credential state into The Brain
+deps.connectors.sync();
 
 const shutdown = async () => {
   clearInterval(leaseTimer);
