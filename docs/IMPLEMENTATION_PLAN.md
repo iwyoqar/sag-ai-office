@@ -20,8 +20,8 @@ Status legend: ✅ done & verified · 🟡 partial · ⬜ not started
 | 7 — Telegram | Bot API, group, commands, idempotency, notifications, approvals | ✅ | long polling (dev) or webhook with secret header (prod); commands, approvals, notifications, admin/allowed IDs in The Brain |
 | 8 — Calendar & analytics | routines scheduler, calendar views, usage | ✅ | RRULE routines (Asia/Tashkent), server-side scheduler, month/week/day calendar, stats |
 | 8b — Human employees & workflow | employee accounts, org hierarchy, scoped/delegable permissions, human task lifecycle with review, subtasks + parent aggregation, workload indicator, notifications, People UI, employees in 3D | ✅ | [plan](HUMAN_EMPLOYEES_PLAN.md) · [report](reports/2026-10-30-human-employees.md) · [workload](WORKLOAD.md) |
-| 9 — Integration & production | Postgres adapter, security review, perf, deploy docs | 🟡 | 2026-10-30: stabilisation done (flaky tests root-caused and fixed: test hashing cost, "Run now" double-run bug) and security/production audit written up — [findings](SAG_WORLD_SECURITY_MODEL.md#7-current-state-findings-2026-10-30-audit). Remaining work is phase **W0** and phase **P** of the SAG World plan |
-| SAG AI WORLD | multi-business platform: business units, unit directors + AI Directors, agent marketplace, isolation, cross-unit requests, budgets/KPIs | ⬜ proposal | [architecture](SAG_WORLD_ARCHITECTURE.md) · [data model](SAG_WORLD_DATA_MODEL.md) · [security](SAG_WORLD_SECURITY_MODEL.md) · [plan W0–V](SAG_WORLD_IMPLEMENTATION_PLAN.md) — awaiting review; no structural change before approval |
+| 9 — Integration & production | security review, production hardening on **SQLite** (owner decision 2026-10-30: no PostgreSQL), backups, deploy docs | 🟡 | stabilisation done (flaky tests root-caused and fixed: test hashing cost, "Run now" double-run bug); audit written up — [findings](SAG_WORLD_SECURITY_MODEL.md#8-current-state-findings-audit-2026-10-30-updated). Remaining work = SAG World phase **W0** (W0.1–W0.8), planned, not started |
+| SAG AI WORLD | GROUP → REGION → UNIT (SAG_BRANCH / INDEPENDENT_DEALER / SUBSIDIARY) → DEPARTMENT → EMPLOYEE/AGENT; unit directors + AI Directors; hiring policies AUTO/APPROVAL/RESTRICTED; isolation; cross-unit requests; UZS money; SAP after discovery | ⬜ proposal | [architecture](SAG_WORLD_ARCHITECTURE.md) · [data model](SAG_WORLD_DATA_MODEL.md) · [security](SAG_WORLD_SECURITY_MODEL.md) · [plan W0–V](SAG_WORLD_IMPLEMENTATION_PLAN.md) — revised with owner decisions; awaiting review; no BusinessUnit work before W0 is done |
 
 ## Phase 2 — design decisions
 
@@ -72,6 +72,6 @@ seeded in roster order, next free index on hire/transfer, freed on archive.
 - Rigged licensed character assets are not available offline; the procedural rig is the documented fallback.
 - Telegram: the previously exposed bot token must be revoked; the new one goes only into `.env`.
 - Commit `d3605b2` put the Gemini key, Telegram token, admin password and the dev DB into GitHub history
-  (removed from the tree in `b4462c7`): rotate all three; history purge is an owner decision (force-push).
+  (removed from the tree in `b4462c7`, now `062d037` after the history rewrite). GitHub history was rewritten on 2026-10-30 and is clean, but the old commit is still retrievable by SHA and the credentials are compromised until rotated — see SAG World plan W0.1.
 - Production blockers from the 2026-10-30 audit (lease renewal / double runs, queue stall after deploy, login
   throttling behind the proxy, off-site backups) are scheduled as SAG World phase W0.

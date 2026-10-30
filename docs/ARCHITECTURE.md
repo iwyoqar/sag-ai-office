@@ -23,7 +23,7 @@
 │  └─ Event bus → SSE + TaskEvent/AuditLog persist                 │
 └───────────────┬──────────────────────────────────────────────────┘
                 │ Prisma
-        SQLite (dev)  /  PostgreSQL (prod)
+        SQLite (dev va prod)        
 ```
 
 ## 2. Texnologiya tanlovi (va sababi)
@@ -35,11 +35,11 @@
 | Animatsiya | O'zimizning kichik tween util | GSAP faqat kamera tween uchun ortiqcha bog'liqlik. |
 | Stil | Oddiy CSS + design tokenlar | Komponentlar kam; Tailwind keyin kerak bo'lsa qo'shiladi. |
 | Backend | Node 24 + TS + Fastify | Yengil, tez, schema validatsiya; NestJS bu hajm uchun og'ir. |
-| DB | **Node 24 `node:sqlite` + SQL migratsiyalar** (dev), PostgreSQL (prod, Phase 8) | Phase 2 da o'zgartirildi: Prisma engine'ni yuklab olish npm install-scripts siyosati bilan bloklanadi va native binary qo'shadi. O'rnatilgan `node:sqlite` (FTS5 bilan) hech qanday bog'liqliksiz ishlaydi. SQL portativ yozilgan (positional params, TEXT ISO vaqt, JSON → TEXT, `RETURNING`, CHECK constraintlar). Postgres uchun `Db` wrapper'ga `pg` adapteri qo'shiladi. |
+| DB | **Node 24 `node:sqlite` + SQL migratsiyalar** (dev va prod; 2026-10-30 egasi qarori: PostgreSQL yo'q — [SAG World arxitekturasi §10](SAG_WORLD_ARCHITECTURE.md)) | Phase 2 da o'zgartirildi: Prisma engine'ni yuklab olish npm install-scripts siyosati bilan bloklanadi va native binary qo'shadi. O'rnatilgan `node:sqlite` (FTS5 bilan) hech qanday bog'liqliksiz ishlaydi. SQL portativ yozilgan (positional params, TEXT ISO vaqt, JSON → TEXT, `RETURNING`, CHECK constraintlar). |
 | Queue | DB-backed jobs | Redis yo'q; yuklama kichik. Interfeys ajratilgan — BullMQ'ga almashtirish mumkin. |
 | Realtime | SSE | Bir tomonlama oqim yetarli; buyruqlar REST orqali. Proxy/HTTP2 bilan mos. |
 | LLM | `@anthropic-ai/sdk`, faqat backend | Kalit `.env` da; frontendga hech qachon chiqmaydi. |
-| Search | SQLite FTS5 / Postgres `tsvector` | Haqiqiy ishlaydigan BM25 qidiruv; embedding provayderi sozlansa pgvector. |
+| Search | SQLite FTS5 | Haqiqiy ishlaydigan BM25 qidiruv; Gemini embeddinglar + gibrid qidiruv (SQLite ichida). |
 | Testlar | Vitest (web + server), API integratsiya testlari | Kalitsiz — mock Claude client, natijalar "mock" deb belgilanadi. |
 
 ## 3. Repo tuzilishi (npm workspaces)

@@ -1,91 +1,129 @@
 # SAG AI WORLD — Architecture
 
-Status: **proposal, awaiting review** (2026-10-30). Nothing in this document is implemented yet unless it says
-"exists today". Companion documents: [data model](SAG_WORLD_DATA_MODEL.md) · [security model](SAG_WORLD_SECURITY_MODEL.md) ·
-[implementation plan](SAG_WORLD_IMPLEMENTATION_PLAN.md).
+Status: **proposal, revised with the owner's decisions of 2026-10-30, awaiting review.** Nothing here is
+implemented unless it says "exists today". Companion documents: [data model](SAG_WORLD_DATA_MODEL.md) ·
+[security model](SAG_WORLD_SECURITY_MODEL.md) · [implementation plan](SAG_WORLD_IMPLEMENTATION_PLAN.md).
+
+## 0. Confirmed decisions (owner, 2026-10-30)
+
+| # | Decision | Consequence in this design |
+|---|---|---|
+| 1 | **SQLite stays** the database for the foreseeable future; no PostgreSQL work | single database file, single writer process; isolation enforced in the app layer + constraints + tests (no RLS); strong backup/restore |
+| 2 | Business types are exactly **SAG_BRANCH**, **INDEPENDENT_DEALER**, **SUBSIDIARY** | type drives governance and default data sharing; kept separate from hierarchy and from legal ownership |
+| 3 | Hierarchy **SAG GROUP → REGION → BUSINESS UNIT → DEPARTMENT → EMPLOYEE / AGENT** | one tree table for group/region/unit; existing departments, users and agents hang under units |
+| 4 | **SAP** is the ERP target; no assumed connector | discovery first (product, APIs, auth, network), then an ERP port with SAP as first adapter |
+| 5 | Reporting currency **UZS**; explicit currency codes; no float money | integer minor units, transaction vs reporting amounts, stored FX rates with date and source |
+| 6 | Agent hiring policies **AUTO / APPROVAL / RESTRICTED**, default **APPROVAL** | policy per unit; every hire validated against template approval, permissions, caps, budget, providers, tokens, tools |
 
 ## 1. Goal and non-goals
 
 SAG AI OFFICE today runs **one organisation** (SAG Holding HQ): departments on floors of one building, AI agents
 per department, human employees, tasks, The Brain, connectors, Telegram, calendar.
 
-SAG AI WORLD turns that into a **multi-business operating platform**: headquarters, dealers, retail stores,
-warehouses, factories, logistics centres and future unit types, each running its own people, AI agents, work,
-knowledge, connectors and budget, with strict data boundaries between them and authorised, structured channels
-across them.
+SAG AI WORLD turns it into a **multi-business operating platform** for the SAG Group: branches, independent
+dealers and subsidiaries, grouped by region, each with its own people, AI agents, work, knowledge, connectors and
+budget, with strict data boundaries and authorised, structured channels between them.
 
-Non-goals for this stage: a visual "3D city" (the world view is a late, optional presentation layer over the
-same data); a general chat between agents; agents that manage people.
+Non-goals now: a visual "3D city" (a late presentation layer over the same data); free chat between agents;
+agents that manage people; PostgreSQL; multi-region or multi-instance hosting.
 
-## 2. Core idea in one paragraph
+## 2. Core idea
 
-Introduce one new first-class entity, the **BusinessUnit (BU)**, arranged as a tree. Everything that today
-belongs to "the company" gets an owning `business_unit_id`: departments, agents, tasks, knowledge, instructions,
-connectors, budgets, usage, routines, approvals, events, audit. All reads and writes go through a **scope**
-(the set of BUs the caller may touch for a given permission), resolved once per request and enforced in the
-domain layer, with composite foreign keys that make cross-unit rows impossible to write and (after the
-PostgreSQL phase) row-level security as a second line of defence. Work crosses unit boundaries only as a
-**UnitRequest** — a typed, audited contract between two BUs — never as shared rows or free agent chat.
+One new first-class structure, the **organisation tree** (`org_nodes`: GROUP → REGION → BUSINESS UNIT). Every
+row that today belongs to "the company" gets an owning `business_unit_id`: departments, agents, tasks, knowledge,
+instructions, connectors, budgets, usage, routines, approvals, events, audit. Every read and write goes through a
+**scope** resolved once per request (or per agent run) and enforced in the domain layer; composite foreign keys
+make cross-unit references impossible to write. Work crosses unit boundaries only as a **UnitRequest** — a typed,
+audited contract between two units. What a group or region may see of a unit depends on the unit's **business
+type** and on explicit **data-sharing agreements**, never on tree position alone.
 
 ## 3. System context
 
 ```mermaid
 flowchart LR
   subgraph People
-    HQU[HQ staff / owner]
-    BUD[Unit directors<br/>dealer, store, warehouse, factory]
+    GRP[Group / HQ staff]
+    REG[Regional managers]
+    BUD[Unit directors<br/>branch, dealer, subsidiary]
     EMP[Unit employees]
   end
-  subgraph Platform["SAG AI WORLD platform"]
-    WEB[Web app<br/>React + Three.js]
-    API[API service<br/>Fastify]
-    WRK[Worker service<br/>agent runner, scheduler, sweeps]
-    DB[(Database<br/>SQLite → PostgreSQL)]
-    OBJ[(Object storage<br/>attachments, documents)]
+  subgraph Host["One host (Render service + persistent disk)"]
+    WEB[Web app on Vercel<br/>React + Three.js] 
+    APP[Server process<br/>API + worker + scheduler + Telegram]
+    DB[(SQLite file, WAL)]
   end
+  BK[(Off-site encrypted backups<br/>owner-chosen storage)]
   LLM[LLM providers<br/>Gemini, Claude]
   TG[Telegram Bot API]
-  EXT[External systems per unit<br/>Google, Slack, Notion, CRM/ERP]
+  EXT[Unit connectors<br/>Google, Slack, Notion]
+  SAP[SAP<br/>after discovery]
 
-  HQU & BUD & EMP --> WEB --> API
-  API <--> DB
-  WRK <--> DB
-  API --> OBJ
-  WRK --> LLM
-  WRK --> EXT
-  API <--> TG
+  GRP & REG & BUD & EMP --> WEB --> APP
+  APP <--> DB
+  APP --> BK
+  APP --> LLM & EXT & SAP
+  APP <--> TG
 ```
 
-API and worker are the **same codebase** with two entry points (exists today as one process: `apps/server/src/index.ts`
-starts HTTP, runner, scheduler and Telegram together). Splitting them is a deployment change, not a rewrite.
+The server is one process today (`apps/server/src/index.ts` starts HTTP, runner, scheduler and Telegram). With
+SQLite it stays **one writer process per database file** (see §10); the worker can optionally run as a second
+process on the same host and disk, never on another machine.
 
-## 4. Business-unit hierarchy
+## 4. Organisation tree
 
 ```mermaid
 flowchart TD
-  HQ["SAG Holding HQ<br/>type: HEADQUARTERS"]
-  HQ --> F1["Carpet factory<br/>FACTORY"]
-  HQ --> W1["Central warehouse<br/>WAREHOUSE"]
-  HQ --> L1["Logistics centre<br/>LOGISTICS"]
-  HQ --> R1["Region: Tashkent<br/>REGION (optional grouping)"]
-  R1 --> D1["Dealer A<br/>DEALER"]
-  R1 --> S1["Store: Chilonzor<br/>RETAIL_STORE"]
-  D1 --> S2["Dealer A store #1<br/>RETAIL_STORE"]
+  G["SAG GROUP<br/>level GROUP"]
+  G --> RT["Toshkent<br/>REGION"]
+  G --> RS["Samarqand<br/>REGION"]
+  RT --> HO["SAG Head Office<br/>UNIT · SAG_BRANCH · functions: HEAD_OFFICE"]
+  RT --> F["Carpet factory<br/>UNIT · SAG_BRANCH or SUBSIDIARY · FACTORY"]
+  RT --> D1["Dealer A LLC<br/>UNIT · INDEPENDENT_DEALER · RETAIL"]
+  RS --> S1["SAG Samarqand store<br/>UNIT · SAG_BRANCH · RETAIL"]
+  RS --> SUB["SAG Logistics LLC<br/>UNIT · SUBSIDIARY · LOGISTICS, WAREHOUSE"]
+  HO --> DEP["Departments (existing: Marketing, Finance, IT, ...)"]
+  DEP --> P["Employees & AI agents (existing)"]
 ```
 
-- Exactly one root (`HEADQUARTERS`). Every other BU has one parent. Depth is bounded (≤ 6).
-- Types are rows in `business_unit_types`, not an enum in code, so a new type (e.g. `SERVICE_CENTER`) is data:
-  it carries a default department template, default agent templates, default KPIs and policy defaults.
-- The existing organisation becomes the root BU `hq`; its current departments, agents, people and data move
-  under it unchanged (see migration, [data model §7](SAG_WORLD_DATA_MODEL.md#7-migration-from-the-current-schema)).
-- Parent ≠ access. Being an ancestor gives **aggregate** visibility by default (KPIs, usage, request status), not
-  raw data. Raw access to a descendant requires an explicit subtree grant ([security model §3](SAG_WORLD_SECURITY_MODEL.md#3-permission-model)).
+Four independent attributes describe a unit; none is derived from another:
 
-## 5. Inside one business unit
+| Attribute | Values | Answers |
+|---|---|---|
+| **Level / position** | GROUP (one), REGION, UNIT | where it sits in the org tree (`parent_id`) |
+| **Business type** (units only) | `SAG_BRANCH`, `INDEPENDENT_DEALER`, `SUBSIDIARY` | how it is governed and what it shares by default |
+| **Legal entity** | `legal_entities` row (name, TIN, group-owned or not) | who legally owns the data and signs agreements |
+| **Functions** | `HEAD_OFFICE`, `RETAIL`, `WHOLESALE`, `WAREHOUSE`, `FACTORY`, `LOGISTICS`, `SERVICE` (extensible) | what it does: drives department/agent/KPI templates and request routes |
+
+Rules:
+- Exactly one GROUP. REGION parents are the GROUP. UNIT parents are a REGION. Departments belong to a UNIT
+  only. (Whether a unit may sit directly under the GROUP — e.g. a group-level subsidiary not tied to a region —
+  is open question Q1.)
+- The current organisation migrates to: GROUP `sag-group` → REGION `toshkent` → UNIT `hq` (SAG Head Office,
+  `SAG_BRANCH`, `HEAD_OFFICE`) with all existing departments, people, agents and data, unchanged.
+- **Tree position grants nothing on its own.** Group and region roles see into units only as §5 and the security
+  model allow.
+
+## 5. Business types and governance
+
+| | SAG_BRANCH | SUBSIDIARY | INDEPENDENT_DEALER |
+|---|---|---|---|
+| Legal entity | SAG's own entity | its own entity, group-owned | its own entity, **not** group-owned |
+| Default group/region visibility | full operational read for group/region roles that hold a subtree grant | aggregates (KPIs, AI spend, request status); details only via agreement | **nothing** beyond request records both sides are party to; even aggregates need an agreement |
+| Who appoints the unit director | group/region (human) | subsidiary board via group admin (human) | the dealer itself; SAG admin creates the account on the dealer's instruction |
+| Knowledge from the group | inherits group policies marked "share down" | inherits marked group documents | only documents explicitly published to dealers (catalogue, price lists, brand rules) |
+| Connectors | may use group installations shared down | own installations; group shared ones if allowed | own installations only |
+| Budget for AI | set by the group | set by the subsidiary within group cap | set by the dealer (who pays: open question Q3) |
+| Hiring policy default | APPROVAL | APPROVAL | APPROVAL |
+
+**Data-sharing agreements** (`data_sharing_agreements`) are the only way to widen what a group/region sees of a
+SUBSIDIARY or INDEPENDENT_DEALER: data classes, level (AGGREGATE or DETAIL), validity dates, signed-by, and a
+reference to the contract. They are created by humans, audited, and expire.
+
+## 6. Inside one business unit
 
 ```mermaid
 flowchart LR
-  subgraph BU["Business unit (e.g. Dealer A)"]
+  subgraph BU["Business unit"]
     HD[Human director]
     AID[AI Director agent<br/>exactly one, auto-provisioned]
     DEP[Departments]
@@ -94,12 +132,12 @@ flowchart LR
     T[Tasks & workflows]
     K[Knowledge & instructions]
     C[Connector installations]
-    B[Budget & AI limits]
+    B[Budget & AI limits, in UZS]
     KPI[KPIs]
   end
   HD -- invites / manages --> HE
-  HD -- approves hires, sensitive actions --> AID
-  AID -- requests hires from catalog --> AG
+  HD -- approves hires and sensitive actions --> AID
+  AID -- hires per policy AUTO/APPROVAL --> AG
   AID -- plans, delegates --> T
   T --> HE & AG
   AG -- uses granted --> C
@@ -108,196 +146,196 @@ flowchart LR
   B -. caps .-> AID & AG
 ```
 
-Two identities lead a unit and they are never merged:
-
 | | Human director | AI Director agent |
 |---|---|---|
-| Kind | `users` row with a BU membership role `unit_director` | `agents` row with `is_primary_director = 1` |
-| Created by | an authorised human (HQ admin or parent unit director) | the system, automatically, when the BU is created |
-| Can manage people | yes, within the unit | **never** (no tool, no API path, enforced on `Actor.type`) |
-| Can hire AI agents | yes | may **request**; executes only within policy, else waits for the human director |
-| Answers to | parent unit / HQ | its human director |
+| Kind | `users` row with a `unit_director` membership | `agents` row with `is_primary_director = 1` |
+| Created by | an authorised human | the system, when the unit is provisioned |
+| Manages people | yes, within the unit | **never** (no tool, no API path; domain functions refuse non-human actors) |
+| Hires AI agents | yes (all policies) | AUTO: within limits · APPROVAL: requests only · RESTRICTED: cannot |
+| Answers to | region / group per business type | its human director |
 
-## 6. Lifecycles
+## 7. Lifecycles
 
-### 6.1 Business unit and director provisioning
+### 7.1 Unit provisioning
 
 ```mermaid
 stateDiagram-v2
-  [*] --> PROVISIONING: authorised human creates BU (type, parent, human director)
-  PROVISIONING --> ACTIVE: one transaction succeeded
-  PROVISIONING --> [*]: transaction rolled back (nothing persists)
-  ACTIVE --> SUSPENDED: parent/HQ suspends (budget, compliance)
-  SUSPENDED --> ACTIVE: reinstated
-  ACTIVE --> ARCHIVED: closed (data kept read-only, agents archived)
+  [*] --> PROVISIONING: authorised human creates unit (region, type, legal entity, functions, human director)
+  PROVISIONING --> ACTIVE: single transaction committed
+  PROVISIONING --> [*]: rolled back, nothing persists
+  ACTIVE --> SUSPENDED: suspended by an authorised human
+  SUSPENDED --> ACTIVE
+  ACTIVE --> ARCHIVED: closed; data kept read-only, agents archived
   SUSPENDED --> ARCHIVED
 ```
 
-Provisioning is **one database transaction** (`provisionBusinessUnit`), idempotent by a client-supplied key:
+`provisionBusinessUnit` runs in **one SQLite write transaction** (`BEGIN IMMEDIATE`, exists in `db.tx`), idempotent
+by a client key:
 
-1. Check the caller may create a child under `parent_id` (`units:create` on the parent scope) and the type is
-   allowed under that parent type.
-2. Insert `business_units` (status `PROVISIONING`), materialised path, policy and budget rows from type defaults.
-3. Create departments from the type's department template (generated ids, not slugs).
-4. Attach the **human director**: an existing active user gets a `unit_director` membership; a new person gets an
-   invitation (`user_invitations`) — the account is created only when the person accepts. An AI agent can never
-   call this step (Actor must be `user`).
-5. Create the **AI Director agent** from the `director` template (pinned template version), in the unit's
-   management department, `is_primary_director = 1` (partial unique index: exactly one per BU), with its
-   default instructions and the unit's limits.
-6. Seed default KPIs for the type, audit `unit.provision`, set status `ACTIVE`, emit `unit.created`.
+1. Caller holds `units:create` on the target region; the region exists and is active.
+2. Insert the unit (status `PROVISIONING`), its legal-entity link, functions, policy (hiring policy `APPROVAL`)
+   and the budget row in UZS from templates.
+3. Departments from the function templates (generated ids, not slugs).
+4. Human director: existing user → `unit_director` membership; new person → invitation (account created only when
+   they accept). Refused for non-human actors.
+5. AI Director agent from the approved `director` template version, `is_primary_director = 1` (partial unique
+   index: one per unit).
+6. Default KPIs, audit `unit.provision`, status `ACTIVE`, event `unit.created`.
 
-Failure in any step rolls back everything; there is no half-created unit. Re-sending the same idempotency key
-returns the existing unit.
+No LLM or network call happens inside the transaction; any failure rolls everything back.
 
-### 6.2 Agent hiring
+### 7.2 Agent hiring
+
+| Policy | Who may start a hire | Who decides |
+|---|---|---|
+| `AUTO` | AI Director or human director | the platform, if every check passes and the template is on the unit's pre-approved list; otherwise falls back to the human director |
+| `APPROVAL` (default) | AI Director or human director | the human director, for every hire |
+| `RESTRICTED` | human director only (AI Director's hire tool is not offered) | the human director |
 
 ```mermaid
 sequenceDiagram
   participant AID as AI Director
-  participant P as Hiring policy
+  participant V as Hire validator
   participant HD as Human director
   participant SYS as Platform
-  AID->>SYS: request_hire(template, justification, expected workload) [tool]
-  SYS->>P: check catalog availability for BU type, caps, budget, models, permissions
-  alt violates hard cap (max agents, budget, template not allowed)
-    P-->>AID: rejected with reason (recorded)
-  else within auto-approve policy
-    P-->>SYS: approved (policy)
-    SYS->>SYS: create agent from template version, grant template connectors ∩ BU installations
-  else needs a human
+  AID->>SYS: request_hire(template, department, justification) [tool; absent under RESTRICTED]
+  SYS->>V: template approved & published? unit permission? max agents? budget in UZS? provider allowed? token limits? tools ⊆ template ∩ unit installations?
+  alt any check fails
+    V-->>AID: rejected, reason recorded
+  else policy AUTO and template pre-approved
+    V-->>SYS: approved (policy), recorded with the policy snapshot
+    SYS->>SYS: create agent from template version
+  else policy APPROVAL
     SYS->>HD: approval card (web + Telegram)
-    HD-->>SYS: approve / reject
+    HD-->>SYS: approve / reject (validator runs again at decision time)
   end
   SYS-->>AID: result as task event
 ```
 
-- Hiring creates an ordinary `agents` row (existing table) with `template_id` + `template_version`; the existing
-  workstation, lifecycle, archive and transfer code keeps working.
-- Hard limits (never overridable by an agent): max active agents per BU, monthly token and cost budget,
-  allowed models, templates allowed for the BU type, no hiring of another director, hired agents cannot hire,
-  at most N pending hire requests per BU, cool-down after a rejection.
-- Auto-approve is **off** by default; a human director may enable it for specific templates under a cost ceiling.
+Hard limits nobody but a human can change: max active agents, period AI budget, allowed providers/models,
+per-agent token limits, approved templates. Additionally: a director template can only be instantiated by
+provisioning; hired agents never get the hire tool; at most N pending requests per unit; cool-down after a
+rejection.
 
-### 6.3 Work across units
+### 7.3 Work across units
 
 ```mermaid
 sequenceDiagram
-  participant HQT as HQ task (HQ)
+  participant A as Requester task (unit A)
   participant UR as UnitRequest
-  participant DT as Dealer task (Dealer A)
-  participant DS as Dealer subtasks (people & agents)
-  HQT->>UR: create request(kind=assignment, to=Dealer A, due, acceptance criteria)
-  UR->>DT: on accept, a task is created inside Dealer A (owned by Dealer A)
-  DT->>DS: dealer splits work internally (existing parent/child + aggregation)
-  DS-->>DT: progress aggregates (existing logic)
-  DT-->>UR: status, progress %, result summary (only these fields cross)
-  UR-->>HQT: HQ task waits on the request like a dependency
+  participant B as Fulfilling task (unit B)
+  participant BS as Unit B subtasks
+  A->>UR: create (kind, typed payload, due) — allowed only on a configured route
+  UR->>B: on human accept, a task is created inside unit B (owned by B)
+  B->>BS: unit B splits work internally (existing parent/child + aggregation)
+  BS-->>B: progress aggregates (existing logic)
+  B-->>UR: status, progress %, result summary — only these fields cross
+  UR-->>A: requester task waits on the request like a dependency
 ```
 
-The **UnitRequest** is the only object both sides see. It carries the contract (kind, typed payload, due date,
-status, progress, result summary, linked task ids) — not the fulfilling unit's internal subtasks, comments,
-attachments or agent conversations. Kinds start with:
-
-| Kind | From → To | Payload (validated by schema per kind) |
+| Kind | Typical route | Payload |
 |---|---|---|
-| `assignment` | parent → descendant | title, description, acceptance criteria, due |
-| `stock_request` | store/dealer → warehouse | lines: SKU, quantity, needed-by; delivery address |
-| `production_availability` | factory → HQ/dealer (report) | SKU/collection, available quantity, lead time, valid until |
-| `transfer_request` | warehouse → logistics | shipment lines, pickup, drop-off, window |
-| `information_request` | any → authorised peer | question, needed-by; answer is a result summary |
+| `assignment` | group/region → SAG_BRANCH; to SUBSIDIARY/DEALER only if their agreement allows | title, description, acceptance criteria, due |
+| `stock_request` | retail unit → linked warehouse unit | lines: material number (SAP when available), quantity, unit of measure, needed-by |
+| `production_availability` | factory → requester | material, available quantity, lead time, valid until |
+| `transfer_request` | warehouse → logistics unit | shipment lines, pickup, drop-off, window |
+| `information_request` | any → linked unit | question, needed-by |
 
-Routing rules (who may send what to whom) are data (`unit_request_routes`), e.g. "RETAIL_STORE may send
-`stock_request` to the WAREHOUSE it is linked to". Requests that move money, stock or commitments require human
-acceptance on the receiving side; agents may draft and propose, not accept.
+Requests that commit stock, money or delivery need human acceptance on the receiving side; agents may draft.
 
-## 7. Agent runtime in a multi-unit world (changes to existing code)
+## 8. Agent runtime changes
 
-The current runner (`apps/server/src/agents/runner.ts`) stays the engine. Changes:
+The runner (`apps/server/src/agents/runner.ts`) stays the engine:
 
-1. **Scope per run.** A claimed task carries `business_unit_id`; the runner builds a `UnitScope` once and every
-   context read (instructions, knowledge, memory, department list for planning, connectors) goes through it.
-   Today `buildSystemPrompt` reads `GLOBAL` instructions and the planner lists *all* departments — both become
-   "this unit + inherited-down from ancestors".
-2. **Orchestrator per unit.** Today `ORCHESTRATOR_DEPARTMENT = "director"` is a single global department. It
-   becomes "the unit's primary director agent". The planner may only create subtasks in its own unit; to involve
-   another unit it creates a UnitRequest draft (subject to routing and approval).
-3. **Budget gate.** Before each LLM call, besides the existing per-task limits (`checkLimits`), check the unit's
-   period budget (`unit_budgets`) and the platform-wide ceiling; exceeding pauses the unit's queue, notifies its
-   human director and records why.
-4. **Loop prevention.** Task depth limit (parent chain ≤ 4 for AI tasks), per-unit cap on AI tasks created per
-   hour, per-unit concurrency slot cap, at most one orchestrate task in planning per director, and a request
-   fan-out cap. Existing protections stay: one task per agent at a time, `MAX_SUBTASKS`, `MAX_TOOL_STEPS`,
-   per-task token/cost/time/call limits, human approval on write tools.
-5. **Lease correctness** (also a current bug, see plan W0): renew `lease_until` during long runs and guard every
-   runner write with `lease_owner`.
+1. **Scope per run** from the task's `business_unit_id`: instructions, knowledge, memory, departments for planning,
+   connectors — all through the unit scope (today `buildSystemPrompt` uses GLOBAL instructions and the planner
+   lists all departments).
+2. **Orchestrator per unit**: the unit's primary director agent replaces the single global
+   `ORCHESTRATOR_DEPARTMENT = "director"`; it plans only inside its unit and drafts UnitRequests for others.
+3. **Budget gate** before each LLM call: per-task limits (exist) + unit period budget in UZS (AI cost recorded in
+   USD micro-units and converted with the stored rate) + platform daily ceiling.
+4. **Loop prevention**: task depth ≤ 4 for AI tasks, AI tasks created per unit per hour, per-unit concurrency
+   slots, one planning orchestration per director at a time, request fan-out cap; plus existing one-task-per-agent,
+   `MAX_SUBTASKS`, `MAX_TOOL_STEPS`, per-task limits, approval on write tools.
+5. **Reliable execution** (W0.3): heartbeat leases with fencing epoch, execution records, idempotent side effects.
 
-## 8. Module reuse map
+## 9. Module reuse map
 
 | Existing module | Verdict | Change |
 |---|---|---|
-| `db/db.ts` (sync `node:sqlite` wrapper) | reuse now, replace in P-phase | introduce an async `Db` port before PostgreSQL (see §10) |
-| `lib/auth.ts`, sessions, `passwords.ts` | reuse | `AuthUser` gains memberships + scoped grants; no second auth system |
-| `domain/access.ts` | **extend** (it is the right place) | department scope → unit + department scope; `visibleTaskSql` gains BU predicate |
-| `users` / `domain/employees.ts` | reuse | home BU + memberships; invitations; "actor must be human" guard |
-| `departments`, `floors` | reuse | departments get `business_unit_id`; `floor_id` becomes optional (non-HQ units have no 3D floors yet) |
-| `agents` / `domain/agents.ts` | reuse | `business_unit_id`, `template_id/version`, `is_primary_director` |
-| `tasks` / `domain/tasks.ts`, `work.ts` | reuse (one task system) | `business_unit_id`; cross-unit only via UnitRequest; depth/rate limits |
-| `agents/runner.ts`, `prompt.ts` | reuse | unit scope, unit orchestrator, budget gate, lease renewal |
-| `connectors/hub.ts`, `tools.ts`, `google.ts`, `secrets.ts` | reuse | `connector_secrets` (one row per provider today) → per-unit `connector_installations` |
-| `knowledge/*`, `domain/brain.ts` | reuse | documents, chunks/FTS, memory, instructions get unit ownership + downward sharing |
+| `db/db.ts` (sync `node:sqlite`) | **keep** | add SQLITE_BUSY retry around write transactions, pre-migration backup, backup job; no async port needed |
+| `lib/auth.ts`, sessions, `passwords.ts` | reuse | `AuthUser` gains memberships + scoped grants; idle timeout; no second auth system |
+| `domain/access.ts` | **extend** | department scope → node/unit + department scope; business-type and agreement rules |
+| `users`, `domain/employees.ts` | reuse | home unit + memberships; invitations; human-only guard |
+| `departments`, `floors` | reuse | `business_unit_id`; `floor_id` optional (only HQ has 3D floors) |
+| `agents`, `domain/agents.ts` | reuse | `business_unit_id`, template id/version, `is_primary_director` |
+| `tasks`, `domain/tasks.ts`, `work.ts` | reuse (one task system) | `business_unit_id`, depth, request link; cross-unit only via UnitRequest |
+| `agents/runner.ts`, `prompt.ts` | reuse | unit scope, unit orchestrator, budget gate, heartbeat leases |
+| `connectors/*` | reuse | `connector_secrets` (one row per provider) → per-unit installations; ERP port for SAP later |
+| `knowledge/*`, `domain/brain.ts` | reuse | unit ownership + explicit share-down |
 | `schedule/*` | reuse | routines owned by a unit |
-| `telegram/bot.ts` | reuse | one bot, many groups: `telegram_chats` maps a group to a unit |
-| `lib/events.ts` + `routes/events.ts` (SSE) | reuse | every event carries `business_unit_id`; stream filters by scope (today AI events go to everyone) |
-| `lib/audit.ts` | reuse | `business_unit_id` on audit rows; HQ audit view by scope |
-| `domain/stats.ts`, `workload.ts` | reuse | per-unit, plus rollups for ancestors |
-| `apps/web` campus/office scene | reuse for HQ | other units start as 2D views; a world map is a late phase |
+| `telegram/bot.ts` | reuse | one bot, many groups mapped to units |
+| `lib/events.ts`, `routes/events.ts` | reuse | events carry `business_unit_id`; stream filters by scope (in-process bus is enough with one process) |
+| `lib/audit.ts` | reuse | `business_unit_id` on audit rows |
+| `domain/stats.ts`, `workload.ts` | reuse | per unit + permitted rollups; money in UZS minor units |
+| `apps/web` campus/office | reuse for HQ | other units start with 2D views |
 
-Nothing is duplicated: there is still one user table, one agent table, one task table, one connector hub,
-one auth/session system and one permission evaluator.
+No duplicate user, agent, task, connector, auth or permission system.
 
-## 9. API boundaries
+## 10. Production architecture on SQLite
 
-- **Unit-scoped resources** live under `/api/units/:unitId/...` (departments, agents, tasks, people, knowledge,
-  connectors, routines, budget, KPIs, approvals, hire requests). The route resolves the scope for `:unitId`
-  first and refuses before any query when the caller has no permission there.
-- **Existing routes** (`/api/tasks`, `/api/agents`, `/api/people`, ...) keep working during migration as
-  aliases for the caller's home unit, then are deprecated. The web app moves to unit-scoped routes.
-- **Cross-unit resources**: `/api/unit-requests` (lists only requests where caller's unit is sender or receiver
-  and caller has the permission), `/api/units` (tree filtered to what the caller may see),
-  `/api/rollups/...` (aggregate-only endpoints for ancestors: KPIs, usage, request SLAs — never raw rows).
-- **Agent tools** call the same domain functions with an `Actor{type:"agent"}` and the run's `UnitScope`;
-  there is no separate "agent API" with weaker checks.
-- **Public endpoints** stay minimal: health, login, logout, OAuth callback (state-bound), Telegram webhook
-  (secret header).
+| Concern | Design |
+|---|---|
+| Topology | Vercel (web, proxies `/api`) → one Render web service with a persistent disk. One server process owns the DB file. Optional second **worker process on the same host and disk** (WAL allows several processes on one machine); never two machines, never a network filesystem. |
+| Concurrency | WAL, `busy_timeout` (5 s today), all writes in short `BEGIN IMMEDIATE` transactions, no network or LLM calls inside a transaction, bounded retry with jitter on `SQLITE_BUSY` at transaction start. One writer at a time is the throughput ceiling; reads are concurrent. |
+| Limits to respect | write rate in the low thousands of small transactions per second at best on this disk; long transactions block all writers; the synchronous API blocks the Node event loop for the query's duration, so every hot query must be indexed and paginated; large imports run in chunks. |
+| Scaling path | vertical (bigger instance, faster disk), moving heavy reads (analytics) to a periodic read-only snapshot, archiving old events/usage. Revisit the database decision only if measured write latency or availability needs exceed this. |
+| Availability | one instance ⇒ deploys and crashes cause short downtime; heartbeat leases + startup recovery make work resume within seconds of restart. |
+| Job queue | `tasks` table + leases (exists), heartbeat + fencing epoch (W0.3). |
+| Realtime | in-process EventBus + SSE replay from `task_events` (exists), scope-filtered. |
+| Webhooks | Telegram (exists, secret header) and Google OAuth (state-bound); inbound webhook inbox table for idempotent processing. |
+| Files | attachments/avatars as BLOBs today; acceptable at current volume, revisit size limits; included in backups. |
+| Secrets | platform env (Render secrets); per-unit connector credentials AES-256-GCM with key version; backup key separate from connector key. |
+| Backups | encrypted snapshots (`VACUUM INTO` → compress → AES-256-GCM) uploaded to owner-chosen storage, retention, automatic restore verification (W0.6). |
+| Monitoring | structured logs with request/correlation id, readiness endpoint (DB writable, queue lag, last backup age, bot), error reporting (self-hosted log alerts by default; external service only with approval). |
+| Audit | `audit_logs` (exists) + unit id, retention and export. |
 
-## 10. Production architecture
+## 11. SAP integration (decision 4)
 
-| Concern | Today | Target |
-|---|---|---|
-| Database | SQLite file on a Render disk, single instance, WAL | **PostgreSQL** (managed), RLS on unit-owned tables, PITR backups |
-| DB access | synchronous `DatabaseSync` everywhere | async `Db` port with two adapters (SQLite for dev/tests, Postgres for prod); all domain functions `async` |
-| Migrations | ordered `.sql`, transactional, FK check | same runner, dialect-specific files where needed; pre-migration backup; tested on a copy of prod |
-| Job queue | `tasks` table leases, in-process timers | same table, `SELECT ... FOR UPDATE SKIP LOCKED`, lease renewal, separate worker service |
-| Realtime | in-process EventBus + SSE replay from `task_events` | `task_events` stays the log; cross-instance fan-out via Postgres `LISTEN/NOTIFY`; scope-filtered streams |
-| Webhooks | Telegram webhook with secret; Google callback | same, plus an inbox table (store, then process idempotently) for every external webhook |
-| Files | BLOBs in the DB (attachments, avatars) | object storage (S3-compatible), DB keeps metadata + key; signed, short-lived download URLs |
-| Secrets | `.env`, AES-GCM `SECRETS_KEY` for connector tokens | platform secret manager for env; per-unit connector credentials encrypted with a key-encryption key, key versioning |
-| Topology | Vercel (web) + 1 Render service | Vercel web → API (≥2 instances) + worker (1–N) + managed Postgres + object storage |
-| Monitoring | logs, `/api/health` (no DB check) | structured logs with request/correlation id, readiness check (DB, queue lag), error tracking, alerts on queue lag, budget, failed runs |
-| Audit | `audit_logs` (good coverage) | + `business_unit_id`, retention policy, export, append-only in Postgres |
+No connector code until discovery answers:
 
-Recommendation on timing: build the BU model on the current SQLite stack first (it is portable SQL and the test
-suite is fast), but **complete the PostgreSQL phase before the first external dealer or store gets accounts**.
-External tenants are where cross-unit leakage stops being theoretical, and RLS is the second line of defence we
-want in place by then.
+| Question | Why it matters |
+|---|---|
+| Which product and version: S/4HANA Cloud (public/private), S/4HANA on-premise, ECC 6.0, Business One? | API surface differs completely |
+| Which APIs are licensed and exposed: OData v2/v4 services (e.g. material stock, sales orders, production orders), BAPI/RFC, IDoc, SAP Business One Service Layer? | defines what `stock_request` / `production_availability` can read or write |
+| Authentication: OAuth 2.0 client credentials (BTP / Cloud), basic auth with a technical user, X.509, SAP Cloud Connector? | credential storage and rotation |
+| Network: is the SAP system reachable from Render (public endpoint, VPN, Cloud Connector)? | may require a relay in SAG's network |
+| Which org units in SAP (company codes, plants, storage locations, sales orgs) map to our units? | unit ↔ SAP mapping table |
+| Read-only first, or are any write operations wanted (create sales order, stock transfer)? | approval and idempotency design |
+| Test system (sandbox/QA client) available? | we never develop against production SAP |
 
-## 11. Open questions for review
+Architecture once answered: an **ERP port** (`ErpConnector` interface: read stock, read availability, read
+documents; write operations only behind human approval and idempotency keys) with **SAP as the first adapter**;
+unit ↔ SAP org mapping table; all ERP data stays owned by the unit whose SAP org it belongs to.
 
-1. Are dealers separate legal companies (external accounts, their own connectors) or SAG-owned branches? This
-   decides default visibility of HQ into dealer data (aggregate-only vs. full).
-2. Is a `REGION` grouping unit wanted, or is the tree HQ → units directly?
-3. Which system is the source of truth for stock and production (1C, SAP, a spreadsheet)? `stock_request` and
-   `production_availability` should read from it through a connector rather than invent numbers.
-4. Budget currency and period: USD per month per unit, with HQ able to move budget between units?
-5. Should a unit's human director be able to enable auto-approve for hires at all, or always approve manually?
+## 12. Money and currency (decision 5)
+
+- Amounts are **integers in minor units** with an explicit ISO 4217 code (`amount_minor`, `currency`). UZS minor
+  unit = tiyin (1/100). AI provider costs are stored as integer **USD micro-units** (today `cost_usd REAL` —
+  migrated, see data model).
+- Every monetary record keeps the **original transaction amount and currency**. Reports use a **reporting
+  amount in UZS** computed with a stored rate: `fx_rates (base, quote, rate as scaled integer, rate_date, source)`.
+  Default source: Central Bank of Uzbekistan official rate for the transaction date; the rate id is stored on the
+  converted record so a report can always be reproduced.
+- Rounding: half-even, applied once, at conversion; sums are of already-converted integers.
+- Budgets for AI are set in UZS per unit per month; the budget gate compares UZS spend (converted per usage
+  record) with the limit.
+
+## 13. Open questions for review
+
+1. **Q1** May a unit sit directly under SAG GROUP (no region), e.g. a group-level subsidiary?
+2. **Q2** Which SAP product/version and access (see §11)? Who on SAG's side can answer?
+3. **Q3** Do independent dealers pay for their own AI usage, or does SAG fund it within a cap?
+4. **Q4** Should SAG_BRANCH units give region managers full operational read by default, or also via explicit
+   grant only?
+5. **Q5** FX source and timing: CBU daily rate on the transaction date, or month-end rate for reports?
