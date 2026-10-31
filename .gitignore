@@ -14,3 +14,9 @@ data/
 
 # local secrets (generated logins/passwords, local backups) — never committed
 private/
+
+# development database: employee personal data and password hashes, and its automatic backups — never committed
+data/sag.db
+data/sag.db-wal
+data/sag.db-shm
+data/backups/
