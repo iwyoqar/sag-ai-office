@@ -75,7 +75,7 @@ export function WorkforcePanel({ onClose, onOpenTask }: { onClose: () => void; o
               </div>
               {s.usage.mock > 0 && <p className="hint">Shundan {s.usage.mock} ta chaqiruv MOCK (sinov) rejimida bo'lgan.</p>}
 
-              {can("tasks:create") && (
+              {can("ai_tasks:create") && (
                 <form className="ins-card new" onSubmit={(e) => {
                   e.preventDefault();
                   void run(() => api.post("/api/tasks", {

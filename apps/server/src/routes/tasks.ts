@@ -108,7 +108,8 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   app.post("/api/tasks", async (req, reply) => {
-    const u = requirePerm(req, "tasks:create");
+    // every task here is AI work (human work goes through /api/work)
+    const u = requirePerm(req, "ai_tasks:create");
     const body = parse(CreateBody, req.body);
     if (body.parentId) agentTaskOnly(body.parentId);
     reply.status(201);

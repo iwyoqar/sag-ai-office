@@ -104,7 +104,7 @@ export function AgentProfile({ agentId, onClose }: { agentId: string; onClose: (
               <button disabled={!control || busy} onClick={() => act("stop")} className="danger">Stop</button>
             </div>
             {!control && <p className="hint">Boshqarish uchun "agents:control" ruxsati kerak.</p>}
-            <AgentChat agentId={a.id} name={a.name} canSend={can("tasks:create")} />
+            <AgentChat agentId={a.id} name={a.name} canSend={can("ai_tasks:create")} />
           </>
         )}
       </div>

@@ -187,7 +187,7 @@ export function CalendarPanel({ onClose, onOpenTask }: { onClose: () => void; on
             </div>
           </div>
           <aside className="cal-side">
-            {selected !== null && can("tasks:create") && (
+            {selected !== null && can("ai_tasks:create") && (
               <ScheduleForm day={selected} onDone={() => (setSelected(null), reload())} onCancel={() => setSelected(null)} canRepeat={can("tasks:manage")} />
             )}
             <RoutineList routines={routines} onChange={reload} onOpenTask={onOpenTask} />

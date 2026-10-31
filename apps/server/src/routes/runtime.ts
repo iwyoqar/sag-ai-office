@@ -44,7 +44,7 @@ export const runtimeRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   app.post("/api/agents/:id/chat", async (req) => {
-    const u = requirePerm(req, "tasks:create");
+    const u = requirePerm(req, "ai_tasks:create");
     const { id } = parse(Id, req.params);
     const { message } = parse(z.object({ message: z.string().trim().min(1).max(4000) }), req.body);
     const agent = d.db.get<{ id: string; department_id: string; lifecycle: string }>("SELECT id, department_id, lifecycle FROM agents WHERE id = ?", id);

@@ -87,6 +87,8 @@ export type Role = (typeof ROLES)[number];
 
 export const PERMISSIONS = [
   "tasks:read", "tasks:create", "tasks:manage",
+  // giving work to AI agents (tasks, agent chat, the AI Director) — spends the AI budget
+  "ai_tasks:create",
   "agents:read", "agents:manage", "agents:control",
   "departments:manage", "audit:read", "users:manage", "brain:manage",
   // people & human workflow
@@ -105,13 +107,13 @@ export const SCOPABLE_PERMISSIONS: readonly Permission[] = ["employees:manage_de
 export const DEFAULT_ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   admin: PERMISSIONS,
   director: [
-    "tasks:read", "tasks:create", "tasks:manage", "agents:read", "agents:control", "audit:read", "brain:manage",
+    "tasks:read", "tasks:create", "tasks:manage", "ai_tasks:create", "agents:read", "agents:control", "audit:read", "brain:manage",
     "employees:read_all", "tasks:assign_any", "tasks:read_all", "permissions:delegate", "workload:configure",
     "ai_runs:read", "tool_io:read", "budget:read",
   ],
-  department_head: ["tasks:read", "tasks:create", "agents:read", "employees:manage_dept", "tasks:assign_dept"],
+  department_head: ["tasks:read", "tasks:create", "ai_tasks:create", "agents:read", "employees:manage_dept", "tasks:assign_dept"],
   employee: ["tasks:read", "tasks:create", "agents:read"],
-  hr: ["tasks:read", "tasks:create", "agents:read", "agents:manage", "agents:control"],
+  hr: ["tasks:read", "tasks:create", "ai_tasks:create", "agents:read", "agents:manage", "agents:control"],
   member: ["tasks:read", "tasks:create", "agents:read"],
   viewer: ["tasks:read", "agents:read"],
 };

@@ -11,3 +11,6 @@ data/
 *.db-shm
 .vercel/
 .claude/settings.local.json
+
+# local secrets (generated logins/passwords, local backups) — never committed
+private/

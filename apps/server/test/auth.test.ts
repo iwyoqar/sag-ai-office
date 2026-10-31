@@ -54,17 +54,19 @@ describe("authorization", () => {
 
     expect((await v.get("/api/agents")).status).toBe(200);
     expect((await v.post("/api/tasks", { title: "x", departmentId: "it" })).status).toBe(403);
-    expect((await m.post("/api/tasks", { title: "x", departmentId: "it" })).status).toBe(201);
+    // AI work needs ai_tasks:create (leads and HR), not plain membership
+    expect((await m.post("/api/tasks", { title: "x", departmentId: "it" })).status).toBe(403);
+    expect((await h.post("/api/tasks", { title: "x", departmentId: "it" })).status).toBe(201);
     expect((await m.post("/api/agents", { name: "N", role: "R", departmentId: "it" })).status).toBe(403);
     expect((await h.post("/api/agents", { name: "N", role: "R", departmentId: "it" })).status).toBe(201);
     expect((await m.get("/api/audit")).status).toBe(403);
     expect((await m.post("/api/agents/it-aziz/pause")).status).toBe(403);
   });
 
-  it("lets a member edit/cancel only their own tasks", async () => {
+  it("lets a user edit/cancel only their own AI tasks", async () => {
     const { app, db } = await makeApp();
-    const a = await addUser(db, "ann", "member");
-    const b = await addUser(db, "bob", "member");
+    const a = await addUser(db, "ann", "hr");
+    const b = await addUser(db, "bob", "hr");
     const ca = client(app, await loginCookie(app, a.username, a.password));
     const cb = client(app, await loginCookie(app, b.username, b.password));
     const t = (await ca.post("/api/tasks", { title: "mine", departmentId: "sales" })).body.task;

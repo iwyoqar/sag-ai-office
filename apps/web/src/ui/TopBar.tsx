@@ -11,6 +11,9 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
   const { user, live, auth, logout, unitAccount, can } = useOffice();
   // the marketplace is for the admin and department heads (they hire into their own departments)
   const marketplace = !!onMarketplace && (can("users:manage") || !!user?.headOf?.length);
+  // sections follow the server permissions: a plain employee sees the office, their own work and notifications only
+  const lead = can("users:manage") || can("brain:manage") || can("employees:read_all") || !!user?.headOf?.length;
+  const aiWork = can("ai_tasks:create") || can("tasks:read_all");
   return (
     <header className="topbar">
       <div className="brand">
@@ -43,13 +46,13 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
       {auth === "authenticated" && (
         <div className="top-status">
           {system && <AiChip s={system} />}
-          {onNetwork && <button className="tasks-btn" onClick={onNetwork} title="Home Design do'konlar tarmog'i (3D)">Do'konlar</button>}
+          {onNetwork && lead && <button className="tasks-btn" onClick={onNetwork} title="Home Design do'konlar tarmog'i (3D)">Do'konlar</button>}
           {onPeople && <button className="tasks-btn" onClick={onPeople}>Xodimlar</button>}
-          {onBrain && <button className="tasks-btn" onClick={onBrain}>The Brain</button>}
+          {onBrain && lead && <button className="tasks-btn" onClick={onBrain}>The Brain</button>}
           {marketplace && <button className="tasks-btn" onClick={onMarketplace} title="AI agentlarni andozalardan yollash">Marketplace</button>}
           {onWorkforce && (can("brain:manage") || can("users:manage")) && <button className="tasks-btn" onClick={onWorkforce} title="AI Direktor va agentlar ishi">AI ishchi kuchi</button>}
-          {onCalendar && <button className="tasks-btn" onClick={onCalendar}>Kalendar</button>}
-          {onTasks && (
+          {onCalendar && (lead || aiWork) && <button className="tasks-btn" onClick={onCalendar}>Kalendar</button>}
+          {onTasks && (lead || aiWork) && (
             <button className={`tasks-btn${tasksOpen ? " on" : ""}`} onClick={onTasks} title="AI agentlar vazifalari">
               AI vazifalar{system?.worker.active ? <b>{system.worker.active}</b> : null}
             </button>

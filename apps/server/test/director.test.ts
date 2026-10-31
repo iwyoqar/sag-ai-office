@@ -340,3 +340,22 @@ describe("staffing and request_hire", () => {
     expect(db.get<{ provider: string }>("SELECT provider FROM agents WHERE id = 'marketing-javohir'")!.provider).toBe("anthropic");
   });
 });
+
+describe("who may give work to AI agents", () => {
+  it("a plain employee cannot create AI tasks or chat with agents; a department head and the admin can", async () => {
+    const { app, db } = await makeApp();
+    const emp = await addUser(db, "ai.emp", "employee");
+    const head = await addUser(db, "ai.head", "employee");
+    const admin = await adminClient(app);
+    expect((await admin.put("/api/departments/marketing/head", { userId: head.id })).status).toBe(200);
+    const ec = client(app, await loginCookie(app, emp.username, emp.password));
+    const hc = client(app, await loginCookie(app, head.username, head.password));
+    expect((await ec.post("/api/tasks", { title: "AI ish", agentId: "marketing-javohir" })).status).toBe(403);
+    expect((await ec.post("/api/agents/marketing-javohir/chat", { message: "salom" })).status).toBe(403);
+    expect((await ec.get("/api/auth/me")).body.user.permissions).not.toContain("ai_tasks:create");
+    expect((await hc.post("/api/tasks", { title: "AI ish", agentId: "marketing-javohir" })).status).toBe(201);
+    expect((await admin.post("/api/tasks", { title: "AI ish 2", agentId: "marketing-javohir" })).status).toBe(201);
+    // human work stays open to employees
+    expect((await ec.get("/api/work")).status).toBe(200);
+  });
+});

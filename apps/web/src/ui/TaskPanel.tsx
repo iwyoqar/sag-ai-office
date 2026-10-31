@@ -48,7 +48,7 @@ export function TaskPanel({ onClose, onOpen, system }: { onClose: () => void; on
         </div>
       )}
       {system?.llm.mode === "mock" && <div className="notice">MOCK rejim: javoblar sinov uchun, haqiqiy AI emas.</div>}
-      {can("tasks:create") && <NewTask />}
+      {can("ai_tasks:create") && <NewTask />}
       <div className="seg wide" role="group" aria-label="Filtr">
         {FILTERS.map(([k, l]) => (
           <button key={k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>{l}</button>
