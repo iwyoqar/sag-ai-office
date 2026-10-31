@@ -10,6 +10,7 @@ import { uid } from "../lib/ids.js";
 import { LlmError, estimateCost } from "../llm/types.js";
 import { embedderOf, retrieve } from "../knowledge/semantic.js";
 import { approvedMemory } from "../domain/brain.js";
+import { readsDeptKnowledge } from "../domain/access.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 
@@ -63,10 +64,12 @@ export const runtimeRoutes = (d: Deps) => async (app: FastifyInstance) => {
       "Bu foydalanuvchi bilan qisqa suhbat. Aniq va qisqa javob ber (odatda 1–3 paragraf).",
       "Katta hajmli ish so'ralsa, uni vazifa (task) sifatida yaratishni tavsiya qil.",
     ]);
-    // Company documents (only this agent's department scope) and approved memory, passed as data.
+    // Company documents and approved memory, passed as data: the agent's department only when this person may read
+    // that department's knowledge themselves (asking another department's agent opens company-wide items only).
     const unitId = d.db.get<{ u: string }>("SELECT business_unit_id u FROM agents WHERE id = ?", id)!.u;
-    const { hits } = await retrieve(d, embedderOf(d.llm.client), message, { unitId, departmentId: unitId === "hq" ? agent.department_id : undefined, limit: 4 });
-    const mem = unitId === "hq" ? approvedMemory(d, agent.department_id, 8) : []; // HQ memory never reaches other units
+    const dept = readsDeptKnowledge(u, agent.department_id) ? agent.department_id : null;
+    const { hits } = await retrieve(d, embedderOf(d.llm.client), message, { unitId, departmentId: unitId === "hq" ? dept : undefined, limit: 4 });
+    const mem = unitId === "hq" ? approvedMemory(d, dept, 8) : []; // HQ memory never reaches other units
     const grounding = [
       ...mem.map((m) => `<context type="kompaniya xotirasi">[${m.kind}] ${m.content.replace(/<\/?(context|document)>/gi, "")}</context>`),
       ...hits.map((h) => `<document source="${h.title.replace(/"/g, "'")}">${h.content.replace(/<\/?(context|document)>/gi, "")}</document>`),

@@ -10,7 +10,7 @@ import { audit, type Actor } from "../lib/audit.js";
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors.js";
 import { uid } from "../lib/ids.js";
 import { hashPassword } from "../lib/passwords.js";
-import { canAssignTo, canManagePerson, canViewPerson, deptsFor, has, isStaffOnly, personRef, rolesOf } from "./access.js";
+import { canAssignTo, canManagePerson, canViewPerson, deptsFor, has, holdsToDelegate, isStaffOnly, personRef, rolesOf } from "./access.js";
 import type { Ctx } from "./context.js";
 import { checkPassword } from "./users.js";
 import { computeWorkload } from "./workload.js";
@@ -19,7 +19,7 @@ interface UserRow {
   id: string; username: string; display_name: string; email: string | null; job_title: string; department_id: string | null;
   floor_id: string | null; manager_id: string | null; status: EmployeeStatus; start_date: string | null;
   capacity_hours_week: number; work_start: string; work_end: string; timezone: string; last_activity_at: string | null;
-  last_login_at: string | null; created_at: string; is_active: number; activation_status: string;
+  last_login_at: string | null; created_at: string; is_active: number; activation_status: string; home_unit_id: string;
 }
 
 const actorOf = (u: AuthUser): Actor => ({ type: "user", id: u.id });
@@ -290,13 +290,15 @@ export function setEmployeeRoles(ctx: Ctx, u: AuthUser, id: string, roles: strin
 }
 
 /**
- * Grant a permission (optionally limited to one department). Administrators and holders of permissions:delegate
- * may grant anything except the admin-only ones; others may pass on only what was delegated to them (can_delegate),
- * never wider than their own scope, never to themselves.
+ * Grant a permission (optionally limited to one department). Administrators may grant anything; holders of
+ * permissions:delegate only what they hold themselves, in at least that scope, and never the admin-only ones; others
+ * may pass on only what was delegated to them (can_delegate), never wider than their own scope. Never to oneself, and
+ * only to people of HQ (a store or franchise account is managed through its unit).
  */
 export function grantPermission(ctx: Ctx, u: AuthUser, id: string, g: { permission: string; departmentId?: string | null; canDelegate?: boolean }) {
   if (id === u.id) throw forbidden("O'zingizga ruxsat bera olmaysiz");
   const target = row(ctx, id);
+  if (target.home_unit_id !== "hq") throw notFound("Xodim");
   if (target.status !== "active") throw badRequest("Xodim faol emas");
   if (!(PERMISSIONS as readonly string[]).includes(g.permission)) throw badRequest("Noma'lum ruxsat");
   const perm = g.permission as Permission;
@@ -307,7 +309,10 @@ export function grantPermission(ctx: Ctx, u: AuthUser, id: string, g: { permissi
   const admin = has(u, "users:manage");
   if (!admin) {
     if (ADMIN_ONLY.includes(perm)) throw forbidden("Bu ruxsatni faqat administrator beradi");
-    if (!has(u, "permissions:delegate")) {
+    if (has(u, "permissions:delegate")) {
+      // delegating never creates rights: a director cannot hand out agents:manage, agent_chat:read_others, … they lack
+      if (!holdsToDelegate(u, perm, dept)) throw forbidden("Faqat o'zingizda bor ruxsatni (o'z doirangizda) bera olasiz");
+    } else {
       const mine = u.grants.find((x) => x.permission === perm && x.canDelegate && (x.departmentId === null || x.departmentId === dept));
       if (!mine || (mine.departmentId && mine.departmentId !== dept)) throw forbidden("Sizga bu ruxsatni berish huquqi berilmagan");
       if (!dept && mine.departmentId) throw forbidden("Ruxsat sizning doirangizdan keng bo'la olmaydi");
@@ -342,9 +347,16 @@ export function setDepartmentHead(ctx: Ctx, u: AuthUser, departmentId: string, u
   if (!has(u, "users:manage") && !has(u, "permissions:delegate")) throw forbidden();
   if (!ctx.db.get("SELECT 1 FROM departments WHERE id = ? AND business_unit_id = 'hq'", departmentId)) throw notFound("Bo'lim");
   if (userId) {
-    const p = personRef(ctx, userId);
-    if (!p) throw notFound("Xodim");
+    const p = row(ctx, userId);
+    if (p.home_unit_id !== "hq") throw notFound("Xodim"); // heads of HQ departments are HQ people
     if (p.status !== "active") throw badRequest("Xodim faol emas");
+    // appointing a head hands over the department_head role's permissions in that department: a non-admin delegator
+    // may do so only when they hold every one of them there themselves
+    if (!has(u, "users:manage")) {
+      const rolePerms = ctx.db.all<{ p: Permission }>("SELECT permission_id p FROM role_permissions WHERE role_id = 'department_head'").map((r) => r.p);
+      const missing = rolePerms.filter((perm) => !holdsToDelegate(u, perm, SCOPABLE_PERMISSIONS.includes(perm) ? departmentId : null));
+      if (missing.length) throw forbidden(`Rahbar tayinlash uchun sizda bu ruxsatlar yo'q: ${missing.join(", ")}`);
+    }
   }
   ctx.db.tx(() => {
     ctx.db.run("UPDATE departments SET head_user_id = ? WHERE id = ?", userId, departmentId);

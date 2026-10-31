@@ -5,6 +5,8 @@ import {
   archiveAgent, createAgent, getAgentProfile, listAgents, setAgentConnectors, setLifecycle, stopAgent, transferAgent, updateAgent,
 } from "../domain/agents.js";
 import { canSeeTask, has, taskRef } from "../domain/access.js";
+import type { AuthUser } from "../lib/auth.js";
+import type { AgentDto } from "@sag/shared";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 const name = z.string().trim().min(1).max(80);
@@ -29,10 +31,17 @@ const Strategy = z
   .optional();
 
 export const agentRoutes = (d: Deps) => async (app: FastifyInstance) => {
+  // The agent card is public (the 3D office shows who is busy); the task it works on only to those who may see it.
+  const card = (u: AuthUser, a: AgentDto): AgentDto => {
+    if (!a.currentTask) return a;
+    const r = taskRef(d, a.currentTask.id);
+    return r && canSeeTask(d, u, r) ? a : { ...a, currentTask: null };
+  };
+
   app.get("/api/agents", async (req) => {
-    requirePerm(req, "agents:read");
+    const u = requirePerm(req, "agents:read");
     const q = parse(z.object({ departmentId: z.string().optional(), includeArchived: z.enum(["true", "false"]).optional() }), req.query);
-    return { agents: listAgents(d, { departmentId: q.departmentId, includeArchived: q.includeArchived === "true" }) };
+    return { agents: listAgents(d, { departmentId: q.departmentId, includeArchived: q.includeArchived === "true" }).map((a) => card(u, a)) };
   });
 
   app.get("/api/agents/:id", async (req) => {
@@ -42,6 +51,7 @@ export const agentRoutes = (d: Deps) => async (app: FastifyInstance) => {
     const sees = (id: string) => { const r = taskRef(d, id); return !!r && canSeeTask(d, u, r); };
     return {
       ...p,
+      agent: card(u, p.agent),
       recentTasks: (p.recentTasks as { id: string }[]).filter((t) => sees(t.id)),
       errors: (p.errors as { taskId: string }[]).filter((t) => sees(t.taskId)),
       usage: has(u, "budget:read") ? p.usage : { ...p.usage, costUsd: 0, inputTokens: 0, outputTokens: 0, hidden: true },

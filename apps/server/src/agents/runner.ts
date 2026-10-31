@@ -23,6 +23,7 @@ import type { LlmMessage } from "../llm/types.js";
 import { directorAgent, directorSettings, selectAgent } from "../domain/workforce.js";
 import { requestHireForAgent } from "../domain/marketplace.js";
 import { notify } from "../domain/notifications.js";
+import { agentKnowledgeDept, requesterOf } from "../domain/access.js";
 
 export interface RunnerOptions {
   concurrency: number;
@@ -734,15 +735,19 @@ export class AgentRunner {
     // the agent works for one unit; a task outside it (should not exist — DB triggers) gets no documents at all
     if (!a || a.business_unit_id !== task.businessUnitId) return { hits: [], grounding: {} };
     const hq = task.businessUnitId === "hq";
+    // the department's private documents and memory only when the person the work is for may read them
+    const dept = hq ? agentKnowledgeDept(this.ctx, a.department_id, requesterOf(this.ctx, task.id)) : null;
     const { hits } = await retrieve(this.ctx, embedderOf(this.llm), `${extraQuery ?? task.title} ${task.description}`, {
-      unitId: task.businessUnitId, departmentId: hq ? a.department_id : undefined, limit: 5,
+      unitId: task.businessUnitId, departmentId: hq ? dept : undefined, limit: 5,
       onError: (e) => this.o.log?.("semantic search fell back to full-text", { err: (e as Error).message }),
     });
-    return { hits, grounding: { docs: hits.map((h) => ({ title: h.title, content: h.content })), ...(hq ? { memory: approvedMemory(this.ctx, a.department_id) } : {}) } };
+    return { hits, grounding: { docs: hits.map((h) => ({ title: h.title, content: h.content })), ...(hq ? { memory: approvedMemory(this.ctx, dept) } : {}) } };
   }
 
   private priorResults(task: TaskDto): PriorResult[] {
-    return task.dependsOn.map((id) => this.resultOf(getTask(this.ctx, id))).filter((p): p is PriorResult => !!p);
+    // prerequisites share the task's unit (createTask + DB trigger); re-checked here so no other unit's result is read
+    return task.dependsOn.map((id) => getTask(this.ctx, id)).filter((t) => t.businessUnitId === task.businessUnitId)
+      .map((t) => this.resultOf(t)).filter((p): p is PriorResult => !!p);
   }
 
   private resultOf(t: TaskDto): PriorResult | null {

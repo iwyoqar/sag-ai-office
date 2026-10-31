@@ -55,9 +55,11 @@ describe("people: accounts, organisation and permissions", () => {
     expect((await head.patch(`/api/employees/${pEmp}`, { jobTitle: "hack" })).status).toBe(403);
     expect((await head.post(`/api/employees/${pEmp}/status`, { status: "inactive" })).status).toBe(403);
     expect((await head.patch(`/api/employees/${c.ids.pHead}`, { jobTitle: "hack" })).status).toBe(403);
-    // an explicit, department-scoped grant from the director opens exactly that department
+    // an explicit, department-scoped grant opens exactly that department; only someone who holds the right may give
+    // it (S0/S5: the director lacks employees:manage_dept/manage_all, so the administrator grants it)
     const dir = await c.login("director");
-    expect((await dir.post(`/api/employees/${c.ids.mHead}/grants`, { permission: "employees:manage_dept", departmentId: "procurement" })).status).toBe(201);
+    expect((await dir.post(`/api/employees/${c.ids.mHead}/grants`, { permission: "employees:manage_dept", departmentId: "procurement" })).status).toBe(403);
+    expect((await c.admin.post(`/api/employees/${c.ids.mHead}/grants`, { permission: "employees:manage_dept", departmentId: "procurement" })).status).toBe(201);
     const head2 = await c.login("m.head");
     expect((await head2.patch(`/api/employees/${pEmp}`, { jobTitle: "Mutaxassis" })).status).toBe(200);
     expect((await head2.patch(`/api/employees/${c.ids.pHead}`, { jobTitle: "hack" })).status).toBe(403); // never other heads

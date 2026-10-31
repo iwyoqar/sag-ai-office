@@ -14,6 +14,8 @@ export interface ToolEnv {
   ctx: Ctx;
   agentId: string;
   departmentId: string | null;
+  /** department whose documents knowledge search may return (connectors/hub.ts: limited to the requester's reach) */
+  knowledgeDepartmentId: string | null;
   /** the agent's business unit: every internal read is limited to it */
   unitId: string;
   taskId: string | null;
@@ -59,7 +61,7 @@ const searchKnowledgeTool = tool({
   summary: (a) => `Bilimlar bazasidan qidirish: “${a.query}”`,
   async run(env, a) {
     const { hits, mode } = await retrieve(env.ctx, env.embedder, a.query, {
-      unitId: env.unitId, departmentId: env.unitId === "hq" ? env.departmentId : undefined, limit: 5,
+      unitId: env.unitId, departmentId: env.unitId === "hq" ? env.knowledgeDepartmentId : undefined, limit: 5,
     });
     return { mode, results: hits.map((h) => ({ source: h.title, text: clip(h.content, 900) })) };
   },

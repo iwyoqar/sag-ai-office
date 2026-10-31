@@ -2,7 +2,8 @@
 // Least privilege: department-scoped permissions held through a role apply to the departments the user heads
 // (and, for tasks:read_team, their own department); grants can add specific departments.
 import type { Permission, Role } from "@sag/shared";
-import type { AuthUser } from "../lib/auth.js";
+import { loadUser, type AuthUser } from "../lib/auth.js";
+import { notFound } from "../lib/errors.js";
 import type { Ctx } from "./context.js";
 import { HQ_UNIT } from "./units.js";
 
@@ -155,4 +156,77 @@ export function visibleTaskSql(u: AuthUser, alias = "t"): { sql: string; params:
     params.push(...depts);
   }
   return { sql: `(${hq} AND (${parts.join(" OR ")}))`, params };
+}
+
+/** Only the ids among `ids` of tasks `u` may see: a hidden task's id, title or existence never reaches a response. */
+export function visibleTaskIds(ctx: Ctx, u: AuthUser, ids: string[]): string[] {
+  return ids.filter((id) => { const r = taskRef(ctx, id); return !!r && canSeeTask(ctx, u, r); });
+}
+
+/**
+ * Tasks named in a request (parent, dependencies) must be ones the caller may see — the same 404 as for a task that
+ * does not exist, so ids of other people's, other units' or franchises' work can be neither used nor probed.
+ */
+export function requireVisibleTask(ctx: Ctx, u: AuthUser, id: string): TaskRef {
+  const r = taskRef(ctx, id);
+  if (!r || !canSeeTask(ctx, u, r)) throw notFound("Vazifa");
+  return r;
+}
+
+export interface RoutineRef { department_id: string | null; agent_id: string | null; created_by: string | null }
+
+/**
+ * Routines (recurring AI work) follow task visibility: unit-wide readers and task managers see every HQ routine;
+ * others the ones they created and those of departments whose tasks they see. Routines of other units never.
+ */
+export function canSeeRoutine(ctx: Ctx, u: AuthUser, r: RoutineRef): boolean {
+  const owner = r.agent_id
+    ? ctx.db.get<{ dep: string; unit: string }>("SELECT department_id dep, business_unit_id unit FROM agents WHERE id = ?", r.agent_id)
+    : r.department_id ? ctx.db.get<{ dep: string; unit: string }>("SELECT id dep, business_unit_id unit FROM departments WHERE id = ?", r.department_id) : undefined;
+  if (owner && owner.unit !== HQ_UNIT) return false;
+  if (readsAllTasks(u) || has(u, "tasks:manage") || r.created_by === u.id) return true;
+  const dep = r.department_id ?? owner?.dep ?? null;
+  return !!dep && taskDepartments(u).has(dep);
+}
+
+/** Departments whose documents and memory `u` may read besides company-wide items (all of them with brain:manage). */
+export function knowledgeDepts(u: AuthUser): Set<string> {
+  const s = taskDepartments(u);
+  if (u.departmentId) s.add(u.departmentId);
+  return s;
+}
+
+export const readsDeptKnowledge = (u: AuthUser, departmentId: string) => has(u, "brain:manage") || knowledgeDepts(u).has(departmentId);
+
+/** The person an AI task is done for: the human creator of the task or of its nearest ancestor (null: system work). */
+export function requesterOf(ctx: Ctx, taskId: string | null): string | null {
+  const t = taskId ? taskRef(ctx, taskId) : undefined;
+  if (!t) return null;
+  return t.created_by ?? ancestors(ctx, t).find((a) => a.created_by)?.created_by ?? null;
+}
+
+/**
+ * Department documents and memory an HQ agent may bring into work done for `requesterId`: the agent's department when
+ * the requester may read it themselves, otherwise company-wide items only (null). Asking another department's agent
+ * never opens that department's private documents. System work (no human requester) keeps the agent's department.
+ */
+export function agentKnowledgeDept(ctx: Ctx, agentDepartmentId: string, requesterId: string | null): string | null {
+  if (!requesterId) return agentDepartmentId;
+  const u = loadUser(ctx.db, requesterId);
+  return u && readsDeptKnowledge(u, agentDepartmentId) ? agentDepartmentId : null;
+}
+
+/** A department-scoped permission that a wider one includes everywhere. */
+const WIDER: Partial<Record<Permission, Permission>> = {
+  "employees:manage_dept": "employees:manage_all", "tasks:assign_dept": "tasks:assign_any", "tasks:read_team": "tasks:read_all",
+};
+
+/**
+ * May `u` pass permission `p` on (to `departmentId`, or unscoped when null)? Only what they hold themselves, in at
+ * least that scope — delegating never creates rights the delegator does not have.
+ */
+export function holdsToDelegate(u: AuthUser, p: Permission, departmentId: string | null): boolean {
+  const wider = WIDER[p];
+  if (wider && has(u, wider)) return true;
+  return departmentId ? deptsFor(u, p).has(departmentId) : has(u, p);
 }

@@ -6,7 +6,7 @@ import {
   cancelTask, createTask, getTask, getTaskDetail, listTasks, reassignTask, retryTask, transitionTask, updateTask,
 } from "../domain/tasks.js";
 import { conflict, forbidden, notFound } from "../lib/errors.js";
-import { canSeeTask, has, taskRef, visibleTaskSql } from "../domain/access.js";
+import { canManageTask, canSeeTask, has, requireVisibleTask, taskRef, visibleTaskIds, visibleTaskSql } from "../domain/access.js";
 import { HQ_UNIT } from "../domain/units.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
@@ -84,7 +84,7 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
       tasks: listTasks(d, {
         status, departmentId: q.departmentId, agentId: q.agentId, limit: q.limit, unitId: HQ_UNIT,
         parentId: q.topLevel === "true" ? null : q.parentId, aiOnly: true, visible: visibleTaskSql(u),
-      }),
+      }).map((t) => ({ ...t, dependsOn: visibleTaskIds(d, u, t.dependsOn) })),
     };
   });
 
@@ -99,7 +99,12 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
     const payloads = has(u, "tool_io:read") || has(u, "tasks:manage");
     return {
       ...detail,
-      subtasks: detail.subtasks.filter((s) => { const sr = taskRef(d, s.id); return !!sr && canSeeTask(d, u, sr); }),
+      // dependency links name only tasks this person may see (ids of hidden work are not revealed)
+      task: { ...detail.task, dependsOn: visibleTaskIds(d, u, detail.task.dependsOn) },
+      dependents: visibleTaskIds(d, u, detail.dependents),
+      subtasks: detail.subtasks
+        .filter((s) => { const sr = taskRef(d, s.id); return !!sr && canSeeTask(d, u, sr); })
+        .map((s) => ({ ...s, dependsOn: visibleTaskIds(d, u, s.dependsOn) })),
       runs: runs ? detail.runs : [],
       tools: runs ? detail.tools : [],
       approvals: payloads ? detail.approvals : detail.approvals.map((a) => ({ ...(a as object), payload: null, payloadHidden: true })),
@@ -111,7 +116,14 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
     // every task here is AI work (human work goes through /api/work)
     const u = requirePerm(req, "ai_tasks:create");
     const body = parse(CreateBody, req.body);
-    if (body.parentId) agentTaskOnly(body.parentId);
+    // Ids from the client are never trusted: the parent and every dependency must be tasks this person may see (HQ
+    // only — other units' and franchises' work is 404 here), and a subtask goes only under work they own or manage.
+    if (body.parentId) {
+      const parent = requireVisibleTask(d, u, body.parentId);
+      if (parent.kind === "human") throw conflict("human_task", "Bu xodim vazifasi — /api/work orqali boshqariladi");
+      if (!canManageTask(d, u, parent) && !has(u, "tasks:manage")) throw forbidden("Bu vazifaga kichik vazifa qo'sha olmaysiz");
+    }
+    for (const dep of body.dependsOn ?? []) requireVisibleTask(d, u, dep);
     reply.status(201);
     return { task: createTask(d, body, actorOf(u)) };
   });

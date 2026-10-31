@@ -8,7 +8,10 @@ import { createTask } from "../src/domain/tasks.js";
 import { SYSTEM } from "../src/lib/audit.js";
 import { uid } from "../src/lib/ids.js";
 import { provisionStoreUnit } from "../src/domain/units.js";
-import { canManageTask, canSeeTask, taskRef } from "../src/domain/access.js";
+import { agentKnowledgeDept, canManageTask, canSeeTask, requesterOf, taskRef } from "../src/domain/access.js";
+import { grantPermission } from "../src/domain/employees.js";
+import { ingestDocument } from "../src/knowledge/service.js";
+import { MockLlm } from "../src/llm/mock.js";
 import { loadUser } from "../src/lib/auth.js";
 
 const PW = "Str0ng-pass-123";
@@ -304,5 +307,206 @@ describe("W0.1 isolation: HQ routes never reach another business unit's work", (
     expect(canSeeTask(c.deps, u, taskRef(c.deps, "t_unit_ai")!)).toBe(false);
     expect(canSeeTask(c.deps, u, taskRef(c.deps, "t_unit_h")!)).toBe(false);
     expect(canManageTask(c.deps, u, taskRef(c.deps, "t_unit_h")!)).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------------------------
+// S0 security remediation (T0 audit S1–S5): regression tests. Each finding is checked for the attack being refused
+// and for the legitimate use still working.
+
+/** A franchise unit with an AI task (t_unit_ai); HQ routes must never reach it. */
+function franchise(c: Awaited<ReturnType<typeof org>>) {
+  const region = c.db.get<{ id: string }>("SELECT id FROM org_nodes WHERE level = 'REGION' LIMIT 1")!.id;
+  const { unitId } = provisionStoreUnit(c.deps, {
+    provisionKey: "s0-store", regionId: region, name: "S0 diler", sourceLabel: "test", businessType: "INDEPENDENT_DEALER",
+    ownershipModel: "FRANCHISE", sourceBrand: "HOME_DESIGN", sourceMarker: "F", importBatchId: null,
+  });
+  c.db.run(
+    "INSERT INTO tasks (id, business_unit_id, kind, title, status, created_at, updated_at) VALUES ('t_unit_ai', ?, 'single', 'Diler sotuvlari', 'BACKLOG', ?, ?)",
+    unitId, T(), T(),
+  );
+  return unitId;
+}
+
+describe("S0/S1: a child task never lands under a task the caller may not use", () => {
+  it("parentId of a franchise task or of hidden HQ work is 404 and writes nothing; own department's parent works", async () => {
+    const c = await org();
+    const unitId = franchise(c);
+    const dir = await c.login("dir"); // tasks:read_all + ai_tasks:create at HQ
+    // without an agent or department nothing else stops it: the old code created this task inside the franchise
+    expect((await dir.post("/api/tasks", { title: "Josuslik", parentId: "t_unit_ai" })).status).toBe(404);
+    expect((await dir.post("/api/tasks", { title: "Josuslik", agentId: "marketing-javohir", parentId: "t_unit_ai" })).status).toBe(404);
+    expect(c.db.get<{ n: number }>("SELECT COUNT(*) n FROM tasks WHERE parent_id = 't_unit_ai' OR (business_unit_id = ? AND id <> 't_unit_ai')", unitId)!.n).toBe(0);
+    // the same answer as for an id that does not exist: existence cannot be probed
+    expect((await dir.post("/api/tasks", { title: "x", parentId: "t_yoq" })).status).toBe(404);
+
+    const head = await c.login("m.head"); // marketing head: sees marketing work only
+    expect((await head.post("/api/tasks", { title: "Moliyaga qo'shimcha", agentId: "marketing-javohir", parentId: c.tasks.tF.id })).status).toBe(404);
+    const ok = await head.post("/api/tasks", { title: "Marketing qo'shimcha", agentId: "marketing-javohir", parentId: c.tasks.tM.id });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+    expect(ok.body.task).toMatchObject({ parentId: c.tasks.tM.id, businessUnitId: "hq" });
+  });
+
+  it("the domain refuses a parent from another unit whoever calls it (backstop behind the route)", async () => {
+    const c = await org();
+    franchise(c);
+    expect(() => createTask(c.deps, { title: "x", agentId: "marketing-javohir", parentId: "t_unit_ai", unitId: "hq" }, SYSTEM)).toThrow();
+  });
+});
+
+describe("S0/S2: calendar, routines and agent cards follow task visibility", () => {
+  it("the calendar shows each person only tasks and routines they may see", async () => {
+    const c = await org();
+    const fEmp = await c.login("f.emp");
+    const own = await fEmp.post("/api/work", { title: "Shaxsiy moliya ishi" }); // a personal human task
+    expect(own.status).toBe(201);
+    expect((await c.admin.post("/api/routines", { name: "Moliya kunlik hisobot", departmentId: "finance", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0" })).status).toBe(201);
+    const from = new Date(Date.now() - 86_400_000).toISOString(), to = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const cal = async (u: string) =>
+      (await (await c.login(u)).get(`/api/calendar?from=${from}&to=${to}`)).body.items as { kind: string; id: string; title: string }[];
+    const emp = await cal("m.emp");
+    expect(emp.filter((i) => i.kind === "task").map((i) => i.id)).toEqual([c.tasks.tM.id]);
+    expect(emp.some((i) => i.title.includes("Moliya") || i.title.includes("moliya"))).toBe(false); // finance tasks, routine, personal task
+    expect(await cal("f.view")).toEqual([]); // department membership alone grants nothing
+    const dir = await cal("dir");
+    expect(dir.map((i) => i.id)).toEqual(expect.arrayContaining([c.tasks.tM.id, c.tasks.tF.id, c.tasks.P.id, own.body.task.id]));
+    expect(dir.some((i) => i.kind === "routine" && i.title === "Moliya kunlik hisobot")).toBe(true);
+  });
+
+  it("routines: hidden ones are absent from the list and 404 by id; their department and managers see them", async () => {
+    const c = await org();
+    const fin = (await c.admin.post("/api/routines", { name: "Moliya kunlik hisobot", departmentId: "finance", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0" })).body.routine;
+    const mk = (await c.admin.post("/api/routines", { name: "Marketing haftalik", departmentId: "marketing", rrule: "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9" })).body.routine;
+    const head = await c.login("m.head");
+    expect((await head.get("/api/routines")).body.routines.map((x: { id: string }) => x.id)).toEqual([mk.id]);
+    expect((await head.get(`/api/routines/${fin.id}`)).status).toBe(404);
+    expect((await head.get(`/api/routines/${mk.id}`)).status).toBe(200);
+    expect((await (await c.login("f.view")).get("/api/routines")).body.routines).toEqual([]);
+    expect((await (await c.login("dir")).get("/api/routines")).body.routines).toHaveLength(2);
+  });
+
+  it("an agent's card shows its current task only to people who may see that task", async () => {
+    const c = await org();
+    const card = async (u: string) =>
+      ((await (await c.login(u)).get("/api/agents")).body.agents as { id: string; currentTask: { id: string } | null }[]).find((a) => a.id === "finance-nilufar")!;
+    expect((await card("m.emp")).currentTask).toBeNull(); // tF is finance's
+    expect((await card("dir")).currentTask?.id).toBe(c.tasks.tF.id);
+    expect((await (await c.login("m.emp")).get("/api/agents/finance-nilufar")).body.agent.currentTask).toBeNull();
+  });
+});
+
+describe("S0/S3: dependencies stay inside what the caller may see", () => {
+  it("a franchise or hidden task cannot be a prerequisite; a visible one can", async () => {
+    const c = await org();
+    franchise(c);
+    const dir = await c.login("dir");
+    expect((await dir.post("/api/tasks", { title: "x", agentId: "marketing-javohir", dependsOn: ["t_unit_ai"] })).status).toBe(404);
+    const head = await c.login("m.head");
+    expect((await head.post("/api/tasks", { title: "x", agentId: "marketing-javohir", dependsOn: [c.tasks.tF.id] })).status).toBe(404);
+    const ok = await head.post("/api/tasks", { title: "Keyingi bosqich", agentId: "marketing-javohir", dependsOn: [c.tasks.tM.id] });
+    expect(ok.status).toBe(201);
+    expect(ok.body.task.dependsOn).toEqual([c.tasks.tM.id]);
+    // backstops: the domain and the database refuse a cross-unit link whoever writes it
+    expect(() => createTask(c.deps, { title: "x", agentId: "marketing-javohir", dependsOn: ["t_unit_ai"] }, SYSTEM)).toThrow();
+    expect(() => c.db.run("INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, 't_unit_ai')", c.tasks.tM.id)).toThrow(/cross_unit/);
+  });
+
+  it("reads never name hidden prerequisites or dependents (AI tasks and people's work)", async () => {
+    const c = await org();
+    // links to work the viewer cannot see, written directly (as older data could be)
+    const X = createTask(c.deps, { title: "Marketing X", agentId: "marketing-javohir", dependsOn: [c.tasks.tF.id] }, { type: "user", id: c.ids.mEmp });
+    const Y = createTask(c.deps, { title: "Moliya Y", agentId: "finance-nilufar", dependsOn: [c.tasks.tM.id] }, SYSTEM);
+    const emp = await c.login("m.emp");
+    expect((await emp.get(`/api/tasks/${X.id}`)).body.task.dependsOn).toEqual([]);
+    expect((await emp.get("/api/tasks")).body.tasks.find((t: { id: string }) => t.id === X.id).dependsOn).toEqual([]);
+    expect((await emp.get(`/api/tasks/${c.tasks.tM.id}`)).body.dependents).toEqual([]);
+    const dir = await c.login("dir");
+    expect((await dir.get(`/api/tasks/${X.id}`)).body.task.dependsOn).toEqual([c.tasks.tF.id]);
+    expect((await dir.get(`/api/tasks/${c.tasks.tM.id}`)).body.dependents).toEqual([Y.id]);
+
+    const w = (await emp.post("/api/work", { title: "Mening ishim" })).body.task;
+    c.db.run("INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)", w.id, c.tasks.tF.id);
+    expect((await emp.get(`/api/work/${w.id}`)).body.task.dependsOn).toEqual([]);
+    const listed = (await emp.get("/api/work?view=my")).body;
+    expect((listed.items ?? listed.tasks).find((t: { id: string }) => t.id === w.id).dependsOn).toEqual([]);
+    // people's work refuses hidden prerequisites outright
+    expect((await emp.post("/api/work", { title: "y", dependsOn: [c.tasks.tF.id] })).status).toBe(404);
+  });
+});
+
+describe("S0/S4: an agent brings in only knowledge its requester may read", () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+
+  it("chat with another department's agent opens company-wide documents only; own department and managers get more", async () => {
+    const c = await org();
+    await ingestDocument(c.deps, { filename: "kassa.md", data: enc("Kassa seyf kodi 7781 maxfiy moliya."), departmentId: "finance" }, SYSTEM);
+    await ingestDocument(c.deps, { filename: "aksiya.md", data: enc("Kassa aksiyasi 42 foiz marketing."), departmentId: "marketing" }, SYSTEM);
+    await ingestDocument(c.deps, { filename: "umumiy.md", data: enc("Kassa ish vaqti 9 dan 18 gacha."), departmentId: null }, SYSTEM);
+    const seen: string[] = [];
+    const llm = new MockLlm("Javob");
+    const generate = llm.generate.bind(llm);
+    llm.generate = async (req) => { seen.push(JSON.stringify(req)); return generate(req); };
+    c.deps.llm = { client: llm, pricing: { inputPerM: 0.3, outputPerM: 2.5 } };
+    const ask = async (u: string, agent: string) => {
+      seen.length = 0;
+      expect((await (await c.login(u)).post(`/api/agents/${agent}/chat`, { message: "kassa" })).status).toBe(200);
+      return seen.join("\n");
+    };
+    const headToFinance = await ask("m.head", "finance-nilufar");
+    expect(headToFinance).not.toContain("7781"); // finance's private document
+    expect(headToFinance).toContain("9 dan 18"); // company-wide stays available
+    expect(await ask("m.head", "marketing-javohir")).toContain("42 foiz"); // own department
+    expect(await ask("dir", "finance-nilufar")).toContain("7781"); // brain:manage reads every department
+  });
+
+  it("task work: the requester is the human creator of the task or its ancestor; system work keeps the agent's scope", async () => {
+    const c = await org();
+    const { P, S, tM, tF } = c.tasks;
+    expect(requesterOf(c.deps, S.id)).toBe(c.ids.fEmp); // a system-made subtask inherits P's creator
+    expect(requesterOf(c.deps, P.id)).toBe(c.ids.fEmp);
+    expect(requesterOf(c.deps, tF.id)).toBeNull();
+    expect(agentKnowledgeDept(c.deps, "finance", c.ids.mHead)).toBeNull(); // a marketing head asking finance's agent
+    expect(agentKnowledgeDept(c.deps, "marketing", requesterOf(c.deps, tM.id))).toBe("marketing"); // own department
+    expect(agentKnowledgeDept(c.deps, "finance", c.ids.director)).toBe("finance");
+    expect(agentKnowledgeDept(c.deps, "finance", null)).toBe("finance"); // system work (routines, Telegram)
+  });
+});
+
+describe("S0/S5: delegation never creates rights the delegator lacks", () => {
+  it("self-escalation, escalation to another user and cross-unit grants are refused; held rights pass on", async () => {
+    const c = await org();
+    const dir = await c.login("dir"); // director: permissions:delegate, no agents:manage / employees:manage_*
+    const grant = (who: string, body: object) => dir.post(`/api/employees/${who}/grants`, body);
+    expect((await grant(c.ids.director, { permission: "agents:manage" })).status).toBe(403); // self
+    expect((await grant(c.ids.mEmp, { permission: "agents:manage" })).status).toBe(403);
+    expect((await grant(c.ids.mEmp, { permission: "agent_chat:read_others" })).status).toBe(403);
+    expect((await grant(c.ids.mEmp, { permission: "employees:manage_dept", departmentId: "marketing" })).status).toBe(403);
+    expect((await grant(c.ids.mEmp, { permission: "users:manage" })).status).toBe(403); // admin-only
+    expect((await grant(c.ids.mEmp, { permission: "budget:read" })).status).toBe(201); // held → may pass on
+    expect((await grant(c.ids.mEmp, { permission: "tasks:assign_dept", departmentId: "marketing" })).status).toBe(201); // tasks:assign_any covers it
+    expect(c.db.get<{ n: number }>(
+      "SELECT COUNT(*) n FROM user_permissions WHERE user_id = ? AND permission_id IN ('agents:manage','agent_chat:read_others','employees:manage_dept','users:manage')", c.ids.mEmp,
+    )!.n).toBe(0);
+
+    // the platform administrator keeps every legitimate capability
+    expect((await c.admin.post(`/api/employees/${c.ids.mEmp}/grants`, { permission: "agents:manage" })).status).toBe(201);
+
+    // a store / franchise account is never granted HQ permissions (route and domain both refuse)
+    const unitId = franchise(c);
+    const store = uid("usr");
+    c.db.run(
+      "INSERT INTO users (id, username, display_name, password_hash, created_at, home_unit_id) VALUES (?, 's0.store', 'Diler', 'x', ?, ?)",
+      store, T(), unitId,
+    );
+    expect((await c.admin.post(`/api/employees/${store}/grants`, { permission: "budget:read" })).status).toBe(404);
+    expect(() => grantPermission(c.deps, loadUser(c.db, c.ids.director)!, store, { permission: "budget:read" })).toThrow();
+  });
+
+  it("appointing a department head (which hands over the head role) needs every right of that role", async () => {
+    const c = await org();
+    const dir = await c.login("dir");
+    expect((await dir.put("/api/departments/finance/head", { userId: c.ids.fEmp })).status).toBe(403);
+    expect(c.db.get<{ h: string | null }>("SELECT head_user_id h FROM departments WHERE id = 'finance'")!.h).toBeNull();
+    expect((await c.admin.put("/api/departments/finance/head", { userId: c.ids.fEmp })).status).toBe(200);
   });
 });

@@ -17,6 +17,7 @@ import { ensureHqInstallations } from "./installations.js";
 import { CredentialVault } from "./vault.js";
 import { STORABLE_AUTH, definitionOf } from "./registry.js";
 import { type Classified, HEALTH_CLASSES, READ_RETRY, RateLimiter, type RetryPolicy, classify, fetchWithTimeout, withRetry } from "./reliability.js";
+import { agentKnowledgeDept, requesterOf } from "../domain/access.js";
 
 /** Why a tool call was refused, in the order the checks run (connectors/hub.ts authorizeTool). */
 export type DenyReason =
@@ -257,6 +258,8 @@ export class ConnectorHub {
     const unit = ag?.business_unit_id ?? "none";
     return {
       ctx: this.ctx, agentId, departmentId: dep, unitId: unit, taskId, correlationId, google: this.google,
+      // department knowledge only within what the person the task is for (or the approver) may read
+      knowledgeDepartmentId: dep ? agentKnowledgeDept(this.ctx, dep, requesterOf(this.ctx, taskId) ?? approver?.id ?? null) : null,
       // every provider call has a deadline; credentials come from the instance serving the agent's unit
       http: fetchWithTimeout(this.http, this.rel.toolTimeoutMs),
       tokens: { slack: this.tokenFor(this.instanceFor(unit, "slack"), "slack"), notion: this.tokenFor(this.instanceFor(unit, "notion"), "notion") },

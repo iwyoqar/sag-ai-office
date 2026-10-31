@@ -10,7 +10,7 @@ import { audit, type Actor } from "../lib/audit.js";
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors.js";
 import { uid } from "../lib/ids.js";
 import {
-  ancestors, canAssignTo, canManageTask, canSeeParentContext, canSeeTask, has, personRef, visibleTaskSql, type TaskRef,
+  ancestors, canAssignTo, canManageTask, canSeeParentContext, canSeeTask, has, personRef, visibleTaskIds, visibleTaskSql, type TaskRef,
 } from "./access.js";
 import type { Ctx } from "./context.js";
 import { checkWorkload, notify } from "./notifications.js";
@@ -482,15 +482,19 @@ export interface WorkItem extends TaskDto {
   overdue: boolean;
 }
 
-function items(ctx: Ctx, rows: TaskRow[]): WorkItem[] {
+function items(ctx: Ctx, u: AuthUser, rows: TaskRow[]): WorkItem[] {
   const names = new Map(ctx.db.all<{ id: string; display_name: string }>("SELECT id, display_name FROM users").map((x) => [x.id, x.display_name]));
   const nowIso = now();
   return rows.map((r) => {
     const c = ctx.db.get<{ total: number; done: number; required: number }>(
       "SELECT COUNT(*) total, SUM(status = 'DONE') done, SUM(is_optional = 0) required FROM tasks WHERE parent_id = ? AND status <> 'CANCELLED'", r.id,
     )!;
+    const dto = toDto(ctx, r);
     return {
-      ...toDto(ctx, r), assigneeName: r.assignee_user_id ? names.get(r.assignee_user_id) ?? null : null,
+      ...dto,
+      // dependency links name only tasks the viewer may see (ids of hidden work are not revealed)
+      dependsOn: visibleTaskIds(ctx, u, dto.dependsOn),
+      assigneeName: r.assignee_user_id ? names.get(r.assignee_user_id) ?? null : null,
       subtasks: { total: c.total, done: c.done ?? 0, required: c.required ?? 0 },
       overdue: !!r.deadline && r.deadline < nowIso && !DONE_LIKE.includes(r.status) && r.status !== "IN_REVIEW",
     };
@@ -555,7 +559,7 @@ export function listWork(
     ...p,
   );
   // final guard: list SQL and per-task rules must agree
-  return items(ctx, rows.filter((r) => canSeeTask(ctx, u, refOf(r))));
+  return items(ctx, u, rows.filter((r) => canSeeTask(ctx, u, refOf(r))));
 }
 
 export function workDetail(ctx: Ctx, u: AuthUser, id: string) {
@@ -565,7 +569,7 @@ export function workDetail(ctx: Ctx, u: AuthUser, id: string) {
   const manage = canManageTask(ctx, u, ref);
   const parent = r.parent_id ? ctx.db.get<TaskRow>("SELECT * FROM tasks WHERE id = ?", r.parent_id) : null;
   return {
-    task: items(ctx, [r])[0],
+    task: items(ctx, u, [r])[0],
     // full parent for those who may see it; otherwise only the context an assignee needs (no comments/files/siblings)
     parent: !parent ? null
       : canSeeTask(ctx, u, refOf(parent)) ? { id: parent.id, title: parent.title, status: parent.status }
@@ -575,7 +579,7 @@ export function workDetail(ctx: Ctx, u: AuthUser, id: string) {
           priority: parent.priority, deadline: parent.deadline, ownerId: parent.assignee_user_id ?? parent.created_by,
         }
         : null,
-    subtasks: items(ctx, subs),
+    subtasks: items(ctx, u, subs),
     comments: ctx.db.all(
       `SELECT c.id, c.kind, c.body, c.created_at createdAt, c.user_id userId, u.display_name userName
        FROM task_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.task_id = ? ORDER BY c.created_at`, id,

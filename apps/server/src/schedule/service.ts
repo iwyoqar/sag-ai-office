@@ -51,9 +51,15 @@ function row(ctx: Ctx, id: string): RoutineRow {
   return r;
 }
 
-export const listRoutines = (ctx: Ctx) =>
-  ctx.db.all<RoutineRow>("SELECT * FROM routines ORDER BY status, next_run_at").map((r) => toDto(ctx, r));
-export const getRoutine = (ctx: Ctx, id: string) => toDto(ctx, row(ctx, id));
+/** `sees` limits the result to routines the caller may see (domain/access.ts canSeeRoutine); hidden ones are 404. */
+type SeesRoutine = (r: RoutineRow) => boolean;
+export const listRoutines = (ctx: Ctx, sees: SeesRoutine = () => true) =>
+  ctx.db.all<RoutineRow>("SELECT * FROM routines ORDER BY status, next_run_at").filter(sees).map((r) => toDto(ctx, r));
+export const getRoutine = (ctx: Ctx, id: string, sees: SeesRoutine = () => true) => {
+  const r = row(ctx, id);
+  if (!sees(r)) throw notFound("Routine");
+  return toDto(ctx, r);
+};
 
 export interface RoutineInput {
   name: string; description?: string; departmentId?: string | null; agentId?: string | null; rrule: string;
@@ -288,22 +294,30 @@ export interface CalendarItem {
 }
 
 /** Everything on the calendar in [from, to): scheduled/created/completed tasks, past routine runs, future occurrences. */
-export function calendar(ctx: Ctx, from: Date, to: Date, f: { departmentId?: string; agentId?: string } = {}, at = new Date()): CalendarItem[] {
+export function calendar(
+  ctx: Ctx, from: Date, to: Date,
+  f: {
+    departmentId?: string; agentId?: string;
+    /** the caller's task visibility (domain/access.ts visibleTaskSql) and routine visibility; omitted only by internal callers */
+    visible?: { sql: string; params: string[] }; seesRoutine?: SeesRoutine;
+  } = {},
+  at = new Date(),
+): CalendarItem[] {
   const F = from.toISOString(), T = to.toISOString();
   const items: CalendarItem[] = [];
   const tasks = ctx.db.all<{ id: string; title: string; status: string; department_id: string | null; agent_id: string | null; scheduled_for: string | null; created_at: string; completed_at: string | null }>(
-    `SELECT id, title, status, department_id, agent_id, scheduled_for, created_at, completed_at FROM tasks
+    `SELECT id, title, status, department_id, agent_id, scheduled_for, created_at, completed_at FROM tasks t
      WHERE parent_id IS NULL AND business_unit_id = 'hq' AND (
        (scheduled_for >= ? AND scheduled_for < ?) OR (completed_at >= ? AND completed_at < ?) OR (scheduled_for IS NULL AND created_at >= ? AND created_at < ?)
-     ) AND id NOT IN (SELECT task_id FROM routine_runs WHERE task_id IS NOT NULL)`,
-    F, T, F, T, F, T,
+     ) AND id NOT IN (SELECT task_id FROM routine_runs WHERE task_id IS NOT NULL)${f.visible ? ` AND ${f.visible.sql}` : ""}`,
+    F, T, F, T, F, T, ...(f.visible?.params ?? []),
   );
   for (const t of tasks)
     items.push({
       kind: "task", id: t.id, title: t.title, status: t.status, departmentId: t.department_id, agentId: t.agent_id, taskId: t.id,
       at: t.completed_at ?? t.scheduled_for ?? t.created_at,
     });
-  const rs = ctx.db.all<RoutineRow>("SELECT * FROM routines");
+  const rs = ctx.db.all<RoutineRow>("SELECT * FROM routines").filter(f.seesRoutine ?? (() => true));
   for (const r of rs) {
     for (const run of ctx.db.all<{ id: string; scheduled_for: string; status: string; task_id: string | null }>(
       "SELECT id, scheduled_for, status, task_id FROM routine_runs WHERE routine_id = ? AND scheduled_for >= ? AND scheduled_for < ?", r.id, F, T,

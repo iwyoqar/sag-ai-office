@@ -192,15 +192,18 @@ export function createTask(ctx: Ctx, input: CreateTaskInput, actor: Actor): Task
     agentId = null;
     stage = "Yo'naltirishni kutmoqda";
   }
-  if (input.parentId) row(ctx, input.parentId);
+  // One business unit per task family: a parent or prerequisite in another unit (a franchise included) is refused
+  // whoever the caller is (routes check visibility first; this and the DB triggers are the backstop).
+  const unitId = input.unitId ?? (input.parentId ? row(ctx, input.parentId).business_unit_id : "hq");
+  if (input.parentId && row(ctx, input.parentId).business_unit_id !== unitId) throw notFound("Vazifa");
   const deps = [...new Set(input.dependsOn ?? [])];
-  for (const d of deps) row(ctx, d);
+  for (const d of deps) if (row(ctx, d).business_unit_id !== unitId) throw notFound("Vazifa");
 
   ctx.db.tx(() => {
     ctx.db.run(
       `INSERT INTO tasks (business_unit_id, id, kind, title, description, created_by, parent_id, department_id, agent_id, priority, deadline, status, stage, limits, max_attempts, created_at, updated_at, requires_approval)
        VALUES (?,?,?,?,?,?,?,?,?,?,?, 'BACKLOG', ?,?,?,?,?,?)`,
-      input.unitId ?? (input.parentId ? row(ctx, input.parentId).business_unit_id : "hq"), id, kind, input.title, input.description ?? "", actor.type === "user" ? actor.id : null, input.parentId ?? null,
+      unitId, id, kind, input.title, input.description ?? "", actor.type === "user" ? actor.id : null, input.parentId ?? null,
       departmentId, agentId, input.priority ?? "MEDIUM", input.deadline ?? null, stage,
       JSON.stringify(input.limits ?? {}), input.maxAttempts ?? 3, t, t, input.requiresApproval ? 1 : 0,
     );

@@ -10,8 +10,7 @@ import { embedPending, embedderOf, retrieve } from "../knowledge/semantic.js";
 import { MAX_UPLOAD_BYTES } from "../knowledge/extract.js";
 import { audit } from "../lib/audit.js";
 import { badRequest, forbidden, notFound } from "../lib/errors.js";
-import type { AuthUser } from "../lib/auth.js";
-import { canSeeTask, has, taskDepartments, taskRef } from "../domain/access.js";
+import { canSeeTask, has, knowledgeDepts, taskRef } from "../domain/access.js";
 import { setHqDocumentVisibility } from "../domain/unitKnowledge.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
@@ -20,13 +19,6 @@ const ScopeQ = z.object({
   scopeId: z.string().max(80).optional(),
   history: z.enum(["true", "false"]).optional(),
 });
-
-/** Departments whose documents and memory a non-manager may read (company-wide items are always readable). */
-const knowledgeDepts = (u: AuthUser) => {
-  const s = taskDepartments(u);
-  if (u.departmentId) s.add(u.departmentId);
-  return s;
-};
 
 export const brainRoutes = (d: Deps) => async (app: FastifyInstance) => {
   const embedder = embedderOf(d.llm.client);

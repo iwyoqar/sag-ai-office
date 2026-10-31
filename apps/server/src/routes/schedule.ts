@@ -6,6 +6,8 @@ import {
   calendar, createRoutine, deleteRoutine, getRoutine, listRoutines, runNow, setRoutineStatus, updateRoutine,
 } from "../schedule/service.js";
 import { badRequest, conflict } from "../lib/errors.js";
+import { canSeeRoutine, visibleTaskSql } from "../domain/access.js";
+import type { AuthUser } from "../lib/auth.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 const iso = z.string().refine((s) => !Number.isNaN(Date.parse(s)), "ISO sana bo'lishi kerak");
@@ -23,14 +25,17 @@ const Body = z.object({
 });
 
 export const scheduleRoutes = (d: Deps) => async (app: FastifyInstance) => {
+  // reads follow task visibility: a routine (and its runs) only for those who may see its department's AI work
+  const sees = (u: AuthUser) => (r: Parameters<typeof canSeeRoutine>[2]) => canSeeRoutine(d, u, r);
+
   app.get("/api/routines", async (req) => {
-    requirePerm(req, "tasks:read");
-    return { routines: listRoutines(d) };
+    const u = requirePerm(req, "tasks:read");
+    return { routines: listRoutines(d, sees(u)) };
   });
 
   app.get("/api/routines/:id", async (req) => {
-    requirePerm(req, "tasks:read");
-    return { routine: getRoutine(d, parse(Id, req.params).id) };
+    const u = requirePerm(req, "tasks:read");
+    return { routine: getRoutine(d, parse(Id, req.params).id, sees(u)) };
   });
 
   app.post("/api/routines", async (req, reply) => {
@@ -69,10 +74,11 @@ export const scheduleRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   app.get("/api/calendar", async (req) => {
-    requirePerm(req, "tasks:read");
+    const u = requirePerm(req, "tasks:read");
     const q = parse(z.object({ from: iso, to: iso, departmentId: z.string().optional(), agentId: z.string().optional() }), req.query);
     const from = new Date(q.from), to = new Date(q.to);
     if (!(from < to) || to.getTime() - from.getTime() > 62 * 86_400_000) throw badRequest("Oraliq noto'g'ri (ko'pi bilan 62 kun)");
-    return { items: calendar(d, from, to, { departmentId: q.departmentId, agentId: q.agentId }) };
+    // only tasks and routines this person may see (personal and other departments' work stays private)
+    return { items: calendar(d, from, to, { departmentId: q.departmentId, agentId: q.agentId, visible: visibleTaskSql(u), seesRoutine: sees(u) }) };
   });
 };
