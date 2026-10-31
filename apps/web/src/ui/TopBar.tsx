@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { FloorDto } from "@sag/shared";
 import { useOffice } from "../api/office";
 import type { SystemStatus } from "../api/system";
@@ -14,6 +15,18 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
   // sections follow the server permissions: a plain employee sees the office, their own work and notifications only
   const lead = can("users:manage") || can("brain:manage") || can("employees:read_all") || !!user?.headOf?.length;
   const aiWork = can("ai_tasks:create") || can("tasks:read_all");
+  // narrow screens fold the section buttons into a menu; picking one closes it
+  const [menu, setMenu] = useState(false);
+  const pick = (fn?: () => void) => () => {
+    setMenu(false);
+    fn?.();
+  };
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
   return (
     <header className="topbar">
       <div className="brand">
@@ -46,17 +59,22 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
       {auth === "authenticated" && (
         <div className="top-status">
           {system && <AiChip s={system} />}
-          {onNetwork && lead && <button className="tasks-btn" onClick={onNetwork} title="Home Design do'konlar tarmog'i (3D)">Do'konlar</button>}
-          {onPeople && <button className="tasks-btn" onClick={onPeople}>Xodimlar</button>}
-          {onBrain && lead && <button className="tasks-btn" onClick={onBrain}>The Brain</button>}
-          {marketplace && <button className="tasks-btn" onClick={onMarketplace} title="AI agentlarni andozalardan yollash">Marketplace</button>}
-          {onWorkforce && (can("brain:manage") || can("users:manage")) && <button className="tasks-btn" onClick={onWorkforce} title="AI Direktor va agentlar ishi">AI ishchi kuchi</button>}
-          {onCalendar && (lead || aiWork) && <button className="tasks-btn" onClick={onCalendar}>Kalendar</button>}
-          {onTasks && (lead || aiWork) && (
-            <button className={`tasks-btn${tasksOpen ? " on" : ""}`} onClick={onTasks} title="AI agentlar vazifalari">
-              AI vazifalar{system?.worker.active ? <b>{system.worker.active}</b> : null}
-            </button>
-          )}
+          {menu && <div className="menu-scrim" onClick={() => setMenu(false)} />}
+          <div className={`top-nav${menu ? " open" : ""}`} id="top-nav">
+            {onNetwork && lead && <button className="tasks-btn" onClick={pick(onNetwork)} title="Home Design do'konlar tarmog'i (3D)">Do'konlar</button>}
+            {onPeople && <button className="tasks-btn" onClick={pick(onPeople)}>Xodimlar</button>}
+            {onBrain && lead && <button className="tasks-btn" onClick={pick(onBrain)}>The Brain</button>}
+            {marketplace && <button className="tasks-btn" onClick={pick(onMarketplace)} title="AI agentlarni andozalardan yollash">Marketplace</button>}
+            {onWorkforce && (can("brain:manage") || can("users:manage")) && <button className="tasks-btn" onClick={pick(onWorkforce)} title="AI Direktor va agentlar ishi">AI ishchi kuchi</button>}
+            {onCalendar && (lead || aiWork) && <button className="tasks-btn" onClick={pick(onCalendar)}>Kalendar</button>}
+            {onTasks && (lead || aiWork) && (
+              <button className={`tasks-btn${tasksOpen ? " on" : ""}`} onClick={pick(onTasks)} title="AI agentlar vazifalari">
+                AI vazifalar{system?.worker.active ? <b>{system.worker.active}</b> : null}
+              </button>
+            )}
+            <button className="user crumb" title={`${user?.roles.join(", ")} — hisob va parol`} onClick={pick(onAccount)}>{user?.displayName}</button>
+            <button className="crumb" onClick={pick(() => void logout())}>Chiqish</button>
+          </div>
           {onOpenWork && <NotificationsBell onOpenTask={onOpenWork} />}
           {!unitAccount && <span
             className={`backend ${live ? "on" : "off"}`}
@@ -64,8 +82,9 @@ export function TopBar({ floor, building, inOffice, onCampus, onOffice, onTasks,
           >
             <i /> {live ? "Live" : "Qayta ulanmoqda…"}
           </span>}
-          <button className="user crumb" title={`${user?.roles.join(", ")} — hisob va parol`} onClick={onAccount}>{user?.displayName}</button>
-          <button className="crumb" onClick={() => void logout()}>Chiqish</button>
+          <button className="menu-btn" aria-label="Menyu" aria-expanded={menu} aria-controls="top-nav" onClick={() => setMenu((m) => !m)}>
+            {menu ? "✕" : "☰"}
+          </button>
         </div>
       )}
     </header>

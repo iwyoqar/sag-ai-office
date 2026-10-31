@@ -558,9 +558,10 @@ export class SceneController {
   private insets() {
     const w = this.host.clientWidth || window.innerWidth;
     const h = this.host.clientHeight || window.innerHeight;
-    const top = 56;
-    if (w <= 860) return { w, h, left: 0, right: 0, top, bottom: Math.round(h * 0.38) };
-    return { w, h, left: 268, right: 392, top, bottom: 0 };
+    // mirrors the breakpoints in styles.css: bottom sheet on phones, compact floor rail on tablets
+    if (w <= 860) return { w, h, left: 0, right: 0, top: 50, bottom: Math.round(h * 0.4) };
+    if (w <= 1180) return { w, h, left: 84, right: 392, top: 56, bottom: 0 };
+    return { w, h, left: 268, right: 392, top: 56, bottom: 0 };
   }
 
   /** Distance that fits a w×h box into the free (uncovered) part of the view. */
@@ -1237,7 +1238,13 @@ export class SceneController {
     window.addEventListener("blur", this.onBlur);
     this.onResize = () => this.resize();
     window.addEventListener("resize", this.onResize);
+    // the host also changes size without a window resize (mobile browser bars, orientation, split view)
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObs = new ResizeObserver(this.onResize);
+      this.resizeObs.observe(this.host);
+    }
   }
+  private resizeObs: ResizeObserver | null = null;
   private onResize = () => {};
   private onKeyDown = (_e: KeyboardEvent) => {};
   private onKeyUp = (_e: KeyboardEvent) => {};
@@ -1348,6 +1355,7 @@ export class SceneController {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     window.removeEventListener("resize", this.onResize);
+    this.resizeObs?.disconnect();
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
     window.removeEventListener("blur", this.onBlur);
