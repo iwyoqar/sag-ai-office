@@ -59,6 +59,12 @@ interface FloorZone {
 
 const OVERVIEW_TARGET = new THREE.Vector3(-1, 11, 2);
 const CAMPUS_TARGET = new THREE.Vector3((CAMPUS_BOUNDS.x0 + CAMPUS_BOUNDS.x1) / 2, 0, (CAMPUS_BOUNDS.z0 + CAMPUS_BOUNDS.z1) / 2 - 8);
+/**
+ * Home view of the world (owner, 2026-10-31): the aerial view over SAG Headquarters, fixed rather than refitted to the
+ * screen — fitting the whole campus put narrow screens far too far away. The intro lands here and "Kampus" returns here.
+ */
+const HOME_TARGET = new THREE.Vector3(-4.3, 0, -6.1);
+const HOME_DISTANCE = 423;
 const NO_CLIP = 1e4;
 /** The model's own demo paving/street; replaced by the campus site (its centre dashes stay as the drive-aisle line). */
 const GLB_GROUND = new Set(["paving", "asphalt"]);
@@ -383,16 +389,16 @@ export class SceneController {
 
   private setupIntro() {
     const end = this.campusCamera().pos;
-    const dir = end.clone().sub(CAMPUS_TARGET).normalize();
+    const dir = end.clone().sub(HOME_TARGET).normalize();
     this.introPath = new THREE.CatmullRomCurve3([
-      CAMPUS_TARGET.clone().addScaledVector(dir, 2600).add(new THREE.Vector3(0, 900, 0)),
-      CAMPUS_TARGET.clone().addScaledVector(dir, 1900).add(new THREE.Vector3(0, 520, 0)),
-      CAMPUS_TARGET.clone().addScaledVector(dir, 1300).add(new THREE.Vector3(0, 200, 0)),
+      HOME_TARGET.clone().addScaledVector(dir, 2600).add(new THREE.Vector3(0, 900, 0)),
+      HOME_TARGET.clone().addScaledVector(dir, 1900).add(new THREE.Vector3(0, 520, 0)),
+      HOME_TARGET.clone().addScaledVector(dir, 1300).add(new THREE.Vector3(0, 200, 0)),
       end.clone().addScaledVector(dir, 120),
       end,
     ]);
     this.camera.position.copy(this.introPath.getPointAt(0));
-    this.camera.lookAt(CAMPUS_TARGET.clone().add(new THREE.Vector3(0, 160, 0)));
+    this.camera.lookAt(HOME_TARGET.clone().add(new THREE.Vector3(0, 160, 0)));
     if (this.reducedMotion) return;
     this.clouds = new CloudBank(this.introPath, 18, 11, 9);
     this.scene.add(this.clouds.root);
@@ -515,11 +521,11 @@ export class SceneController {
     }
     const dur = this.reducedMotion ? 0 : seen ? 2200 : 5200;
     const path = this.introPath!;
-    const lookFrom = CAMPUS_TARGET.clone().add(new THREE.Vector3(0, 160, 0));
+    const lookFrom = HOME_TARGET.clone().add(new THREE.Vector3(0, 160, 0));
     this.tweens
       .run(dur, (k) => {
         this.camera.position.copy(path.getPointAt(k));
-        this.camera.lookAt(lookFrom.clone().lerp(CAMPUS_TARGET, ease.outCubic(k)));
+        this.camera.lookAt(lookFrom.clone().lerp(HOME_TARGET, ease.outCubic(k)));
         this.clouds?.update(k, performance.now());
       }, ease.inOutSine)
       .then(() => this.finishIntro());
@@ -545,7 +551,7 @@ export class SceneController {
       this.camera.updateProjectionMatrix();
     }, ease.inOutCubic);
     this.camera.position.copy(pos);
-    this.controls.target.copy(CAMPUS_TARGET);
+    this.controls.target.copy(HOME_TARGET);
     this.applyLimits("campus");
     this.controls.enabled = true;
     this.controls.update();
@@ -585,14 +591,7 @@ export class SceneController {
   }
 
   private campusCamera() {
-    const w = CAMPUS_BOUNDS.x1 - CAMPUS_BOUNDS.x0;
-    const d = CAMPUS_BOUNDS.z1 - CAMPUS_BOUNDS.z0;
-    // Screen-space extent of the footprint rotated by the view azimuth; depth foreshortened by the tilt.
-    const az = THREE.MathUtils.degToRad(24), po = THREE.MathUtils.degToRad(54);
-    const projW = w * Math.cos(az) + d * Math.sin(az);
-    const projH = (w * Math.sin(az) + d * Math.cos(az)) * Math.cos(po) + 20 * Math.sin(po);
-    const dist = this.fitDistance(projW * 0.9, projH * 0.9);
-    return { pos: this.spherical(CAMPUS_TARGET, dist, this.isoAz, ISO_POLAR), target: CAMPUS_TARGET.clone() };
+    return { pos: this.spherical(HOME_TARGET, HOME_DISTANCE, this.isoAz, ISO_POLAR), target: HOME_TARGET.clone() };
   }
 
   private buildingCamera(id: string) {
