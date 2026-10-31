@@ -4,6 +4,7 @@ import type { AgentProfileDto } from "@sag/shared";
 import { api } from "../api/client";
 import { useOffice } from "../api/office";
 import { StatusPill, TaskStatusPill, fmtTokens, fmtUsd } from "./shared";
+import { confirmDialog } from "./dialog";
 
 export function AgentProfile({ agentId, onClose }: { agentId: string; onClose: () => void }) {
   const { office, can, tick } = useOffice();
@@ -25,7 +26,7 @@ export function AgentProfile({ agentId, onClose }: { agentId: string; onClose: (
   }, [agentId, tick, n]);
 
   const act = async (action: "pause" | "resume" | "stop") => {
-    if (action === "stop" && !window.confirm("Agentning joriy ishini to'xtatasizmi? Faqat shu agentning vazifalari BLOCKED holatiga o'tadi.")) return;
+    if (action === "stop" && !(await confirmDialog("Agentning joriy ishini to'xtatasizmi? Faqat shu agentning vazifalari BLOCKED holatiga o'tadi.", { confirmLabel: "To'xtatish", danger: true }))) return;
     setBusy(true);
     try {
       await api.post(`/api/agents/${encodeURIComponent(agentId)}/${action}`);

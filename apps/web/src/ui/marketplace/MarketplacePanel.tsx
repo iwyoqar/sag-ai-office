@@ -7,6 +7,7 @@ import { api } from "../../api/client";
 import { useOffice } from "../../api/office";
 import { Empty, Loading, Msg, run, useLoad, type Note } from "../people/common";
 import { formatUzs, outcomeLabel } from "./outcome";
+import { confirmDialog, promptDialog } from "../dialog";
 
 type Tab = "catalog" | "requests" | "templates" | "limits" | "archive";
 const STATUS: Record<HireRequestDto["status"], string> = { PENDING: "Kutilmoqda", APPROVED: "Yollandi", REJECTED: "Rad etildi", CANCELLED: "Bekor qilindi" };
@@ -192,8 +193,8 @@ function Requests() {
                 {admin && soft.length > 0 && (
                   <label className="check"><input type="checkbox" checked={!!override[r.id]} onChange={(e) => setOverride({ ...override, [r.id]: e.target.checked })} /> Limitdan oshishini tasdiqlayman</label>
                 )}
-                {admin && <button className="link danger" onClick={() => {
-                  const reason = window.prompt("Rad etish sababi:");
+                {admin && <button className="link danger" onClick={async () => {
+                  const reason = await promptDialog("Rad etish sababi:", { minLength: 3, multiline: true, confirmLabel: "Rad etish", danger: true });
                   if (reason && reason.trim().length >= 3) void run(() => api.post(`/api/marketplace/requests/${r.id}/reject`, { reason: reason.trim() }), setMsg, "Rad etildi.").then(reload);
                 }}>Rad etish</button>}
                 {admin && <button className="primary small" disabled={!now[r.id] || hard || (soft.length > 0 && !override[r.id])}
@@ -293,7 +294,7 @@ function Templates() {
               <td className="agent-actions">
                 {t.status !== "RETIRED" && <button onClick={() => setEditing(editing === t.id ? null : t.id)}>Tahrirlash</button>}
                 {t.draft && t.status !== "RETIRED" && <button onClick={() => void run(() => api.post(`/api/marketplace/templates/${t.id}/versions/${t.draft!.version}/approve`), setMsg, "Tasdiqlandi.").then(reload)}>Tasdiqlash</button>}
-                {t.status !== "RETIRED" && <button className="danger" onClick={() => window.confirm(`${t.name} katalogdan olinsinmi? Yollangan agentlar qoladi.`) && void run(() => api.post(`/api/marketplace/templates/${t.id}/retire`), setMsg, "Eskirgan deb belgilandi.").then(reload)}>Eskirgan</button>}
+                {t.status !== "RETIRED" && <button className="danger" onClick={async () => (await confirmDialog(`${t.name} katalogdan olinsinmi? Yollangan agentlar qoladi.`, { confirmLabel: "Eskirgan deb belgilash", danger: true })) && void run(() => api.post(`/api/marketplace/templates/${t.id}/retire`), setMsg, "Eskirgan deb belgilandi.").then(reload)}>Eskirgan</button>}
               </td>
             </tr>
           ))}
@@ -375,8 +376,8 @@ function ArchiveAll() {
       </p>
       <Msg m={msg} />
       <div className="row-end">
-        <button className="danger" disabled={!data.agents} onClick={() =>
-          window.confirm(`${data.agents} ta agent arxivlansinmi? ${data.openTasks} ta ochiq vazifa bekor qilinadi. Bu amalni qaytarib bo'lmaydi.`)
+        <button className="danger" disabled={!data.agents} onClick={async () =>
+          (await confirmDialog(`${data.agents} ta agent arxivlansinmi? ${data.openTasks} ta ochiq vazifa bekor qilinadi. Bu amalni qaytarib bo'lmaydi.`, { title: "Agentlarni arxivlash", confirmLabel: `${data.agents} ta agentni arxivlash`, danger: true }))
           && void run(() => api.post<{ archived: number; cancelledTasks: number }>("/api/marketplace/archive-all"), setMsg, "Arxivlandi.").then(reload)}>
           {data.agents ? `${data.agents} ta agentni arxivlash` : "Arxivlanadigan agent yo'q"}
         </button>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { TaskPriority } from "@sag/shared";
 import { api } from "../api/client";
 import { useOffice } from "../api/office";
+import { confirmDialog } from "./dialog";
 
 // All calendar math is in Asia/Tashkent (UTC+5, no daylight saving): a "day" is a Tashkent day.
 const TZ_MS = 5 * 3600_000;
@@ -336,7 +337,7 @@ function RoutineList({ routines, onChange, onOpenTask }: { routines: Routine[]; 
                 ? <button onClick={() => void act(() => api.post(`/api/routines/${r.id}/pause`))}>Pause</button>
                 : <button onClick={() => void act(() => api.post(`/api/routines/${r.id}/resume`))}>Resume</button>}
               <button onClick={() => void act(() => api.post(`/api/routines/${r.id}/run`))}>Hozir ishga tushirish</button>
-              <button className="danger" onClick={() => window.confirm(`"${r.name}" o'chirilsinmi? Yaratilgan vazifalar saqlanadi.`) && void act(() => api.del(`/api/routines/${r.id}`))}>O'chirish</button>
+              <button className="danger" onClick={async () => (await confirmDialog(`"${r.name}" o'chirilsinmi? Yaratilgan vazifalar saqlanadi.`, { confirmLabel: "O'chirish", danger: true })) && void act(() => api.del(`/api/routines/${r.id}`))}>O'chirish</button>
               <button className="link" onClick={() => setOpen(open === r.id ? null : r.id)}>Tarix ({r.runs.length})</button>
             </div>
           )}

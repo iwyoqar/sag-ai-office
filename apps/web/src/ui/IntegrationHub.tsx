@@ -3,6 +3,7 @@
 // actually work, are shown; secrets are typed once and never displayed again (the server returns a fingerprint).
 import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api/client";
+import { confirmDialog } from "./dialog";
 
 interface Definition {
   id: string; name: string; provider: string; category: string; version: string; status: "AVAILABLE" | "PLANNED" | "DISCOVERY";
@@ -147,7 +148,7 @@ function InstanceRow({ i, def, unitName, net, act }: {
             <button className="link" type="button" onClick={() => setOpen(false)}>Bekor</button>
           </form>
         ) : <div><button className="link" onClick={() => setOpen(true)}>{active ? "Kalitni almashtirish" : "Kalit kiritish"}</button>
-          {active && <button className="link danger" onClick={() => window.confirm("Kalit bekor qilinsinmi? Agentlar bu connectorni ishlata olmay qoladi.") && void act(() => api.post(`/api/integrations/instances/${i.id}/credentials/${active.id}/revoke`), "Kalit bekor qilindi.")}>Bekor qilish</button>}</div>)}
+          {active && <button className="link danger" onClick={async () => (await confirmDialog("Kalit bekor qilinsinmi? Agentlar bu connectorni ishlata olmay qoladi.", { confirmLabel: "Bekor qilish", danger: true })) && void act(() => api.post(`/api/integrations/instances/${i.id}/credentials/${active.id}/revoke`), "Kalit bekor qilindi.")}>Bekor qilish</button>}</div>)}
       </td>
       <td>
         {i.scopeLevel === "UNIT" ? <span className="muted">—</span> : (

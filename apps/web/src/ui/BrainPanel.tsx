@@ -3,6 +3,7 @@ import type { AgentDto, ConnectorDto } from "@sag/shared";
 import { api, ApiError } from "../api/client";
 import { useOffice } from "../api/office";
 import { IntegrationHub } from "./IntegrationHub";
+import { confirmDialog, promptDialog } from "./dialog";
 
 type Tab = "company" | "instructions" | "knowledge" | "memory" | "approvals" | "agents" | "connectors" | "integrations" | "users";
 const TABS: [Tab, string][] = [
@@ -290,7 +291,7 @@ function KnowledgeTab() {
               <td>{d.departmentId ? office?.departments[d.departmentId]?.name : "Butun kompaniya"}</td>
               <td>v{d.version}</td>
               <td>{d.chunks}</td>
-              <td>{can("brain:manage") && <button className="link danger" onClick={() => window.confirm(`"${d.title}" qidiruvdan olib tashlansinmi? (tarix saqlanadi)`) && void api.del(`/api/knowledge/${d.id}`).then(reload)}>O'chirish</button>}</td>
+              <td>{can("brain:manage") && <button className="link danger" onClick={async () => (await confirmDialog(`"${d.title}" qidiruvdan olib tashlansinmi? (tarix saqlanadi)`, { confirmLabel: "O'chirish", danger: true })) && void api.del(`/api/knowledge/${d.id}`).then(reload)}>O'chirish</button>}</td>
             </tr>
           ))}
           {data && !data.documents.length && <tr><td colSpan={5} className="muted">Hali hujjat yo'q.</td></tr>}
@@ -461,8 +462,9 @@ function AgentsTab() {
       const err = e as ApiError;
       if (err.code === "agent_has_open_tasks") {
         const tasks = (err.details as { tasks: { title: string }[] }).tasks;
-        const target = window.prompt(
+        const target = await promptDialog(
           `${a.name}da ${tasks.length} ta ochiq vazifa bor:\n${tasks.map((t) => `• ${t.title}`).join("\n")}\n\nKimga topshirilsin? Agent ID sini yozing (bo'sh qoldirsangiz — bekor qilinadi):`,
+          { placeholder: "agent-id (ixtiyoriy)", minLength: 0, confirmLabel: "Davom etish" },
         );
         if (target === null) return;
         await act(a, action, { ...(body as object), ...(target.trim() ? { strategy: "reassign", toAgentId: target.trim() } : { strategy: "cancel" }) });
@@ -504,7 +506,7 @@ function AgentsTab() {
                     {deps.filter((d) => d.id !== a.departmentId).map((d) => <option key={d.id} value={d.id}>{d.short}</option>)}
                   </select>
                 )}
-                {manage && <button className="danger" onClick={() => window.confirm(`${a.name} arxivlansinmi? Tarix saqlanadi.`) && void act(a, "archive")}>Arxiv</button>}
+                {manage && <button className="danger" onClick={async () => (await confirmDialog(`${a.name} arxivlansinmi? Tarix saqlanadi.`, { confirmLabel: "Arxivlash", danger: true })) && void act(a, "archive")}>Arxiv</button>}
               </td>
             </tr>
           ))}
@@ -777,8 +779,8 @@ function UsersTab() {
               <td>{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" }) : "—"}</td>
               <td className="agent-actions">
                 <button onClick={() => patch(u, { isActive: !u.isActive }, u.isActive ? "O'chirildi (sessiyalari tugatildi)." : "Faollashtirildi.")}>{u.isActive ? "O'chirish" : "Faollashtirish"}</button>
-                <button onClick={() => {
-                  const pw = window.prompt(`${u.username} uchun yangi parol (kamida 10 belgi):`);
+                <button onClick={async () => {
+                  const pw = await promptDialog(`${u.username} uchun yangi parol (kamida 10 belgi):`, { type: "password", minLength: 10, confirmLabel: "Saqlash" });
                   if (pw) void run(() => api.post(`/api/users/${u.id}/password`, { password: pw }), setMsg, "Parol yangilandi, eski sessiyalar tugatildi.");
                 }}>Parol</button>
               </td>

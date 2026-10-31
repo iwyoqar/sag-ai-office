@@ -9,6 +9,7 @@ import { TASK_STATUS_META } from "../../config/status";
 import { TaskStatusPill } from "../shared";
 import { LifecycleTag, TaskEnginePanel } from "../TaskEnginePanel";
 import { Empty, Loading, Msg, errorText, fmtDate, fromLocalInput, run, useLoad, type Note } from "./common";
+import { confirmDialog } from "../dialog";
 
 export interface WorkItem extends TaskDto {
   assigneeName: string | null;
@@ -132,7 +133,7 @@ export function NewWork({ parent, assigneeId, onClose, onCreated }: {
     if (!f.title.trim()) return setErr("Sarlavha kerak");
     const est = f.estimateHours ? Number(f.estimateHours) : null;
     if (est != null && !(est >= 0 && est <= 1000)) return setErr("Baho 0–1000 soat");
-    if (f.deadline && fromLocalInput(f.deadline)! < new Date().toISOString() && !window.confirm("Muddat o'tib ketgan. Shunday qoldirilsinmi?")) return;
+    if (f.deadline && fromLocalInput(f.deadline)! < new Date().toISOString() && !(await confirmDialog("Muddat o'tib ketgan. Shunday qoldirilsinmi?"))) return;
     setErr(null);
     setBusy(true);
     try {
@@ -308,7 +309,7 @@ export function WorkDetail({ id, onClose, onOpen }: { id: string; onClose: () =>
                     </select>
                     <button className="link" disabled={!assignee} onClick={() => { act("assign", { assigneeId: assignee }, "Biriktirildi."); setAssignee(""); }}>Biriktirish</button>
                   </>}
-                  <button className="link danger" onClick={() => window.confirm("Vazifa (va ochiq kichik vazifalari) bekor qilinsinmi?") && act("cancel", { reason: text }, "Bekor qilindi.")}>Bekor qilish</button>
+                  <button className="link danger" onClick={async () => (await confirmDialog("Vazifa (va ochiq kichik vazifalari) bekor qilinsinmi?", { confirmLabel: "Bekor qilish", danger: true })) && act("cancel", { reason: text }, "Bekor qilindi.")}>Bekor qilish</button>
                 </div>
               )}
 

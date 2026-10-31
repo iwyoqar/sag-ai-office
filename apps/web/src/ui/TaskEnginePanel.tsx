@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { AssigneeType, AssignmentRole, EmployeeCardDto, TaskEngineView, TaskLifecycle } from "@sag/shared";
 import { api } from "../api/client";
 import { useOffice } from "../api/office";
+import { confirmDialog } from "./dialog";
 
 export const LIFECYCLE_LABEL: Record<TaskLifecycle, string> = {
   BACKLOG: "Backlog", PLANNED: "Rejalashtirilgan", ASSIGNED: "Biriktirilgan", IN_PROGRESS: "Bajarilmoqda", BLOCKED: "Bloklangan",
@@ -127,7 +128,7 @@ export function TaskEnginePanel({ taskId, onChanged }: { taskId: string; onChang
           {v.can.transitions.map((to) => (
             <button key={to} className={to === "CANCELLED" || to === "REVISION" ? "link danger" : "primary small"} disabled={busy || (NEEDS_REASON.includes(to) && !reason.trim())}
               title={NEEDS_REASON.includes(to) ? "Sababni yozing" : undefined}
-              onClick={() => (to !== "CANCELLED" || window.confirm("Vazifa bekor qilinsinmi?")) && call("lifecycle", { to, version: t.version, ...(reason.trim() ? { reason } : {}) })}>
+              onClick={async () => (to !== "CANCELLED" || await confirmDialog("Vazifa bekor qilinsinmi?", { confirmLabel: "Bekor qilish", danger: true })) && call("lifecycle", { to, version: t.version, ...(reason.trim() ? { reason } : {}) })}>
               {ACTION[to]}
             </button>
           ))}

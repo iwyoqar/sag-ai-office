@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import { useOffice } from "../api/office";
 import { NetworkScene, type StoreOccupant } from "../scene/network/NetworkScene";
 import { webglAvailable } from "../scene/SceneController";
+import { confirmDialog } from "./dialog";
 
 const OWNERSHIP: Record<string, string> = { SAG_OWNED: "SAG do'koni (HD)", FRANCHISE: "Franshiza (F)", INDEPENDENT: "Mustaqil diler", GROUP_OWNED: "Guruh korxonasi" };
 const ROLE: Record<string, string> = { unit_director: "Direktor", unit_manager: "Menejer", unit_staff: "Xodim" };
@@ -248,7 +249,7 @@ export function UnitPanel({ unitId, onClose, onLoaded }: { unitId: string; onClo
                           .then((r) => setSecret({ who: p.displayName, username: r.username ?? p.username, token: r.activationToken, expiresAt: r.expiresAt }))
                           .catch((e) => setNote({ ok: false, text: e.message }))}>Yangi kod</button>
                       ) : p.status === "active" ? (
-                        <button className="link danger" onClick={() => window.confirm(`${p.displayName} faolsizlantirilsinmi? Tizimga kira olmaydi.`)
+                        <button className="link danger" onClick={async () => (await confirmDialog(`${p.displayName} faolsizlantirilsinmi? Tizimga kira olmaydi.`, { confirmLabel: "Faolsizlantirish", danger: true }))
                           && act(() => api.patch(`/api/units/${u.id}/employees/${p.id}`, { status: "inactive" }), "Faolsizlantirildi.")}>Faolsizlantirish</button>
                       ) : (
                         <button className="link" onClick={() => act(() => api.patch(`/api/units/${u.id}/employees/${p.id}`, { status: "active" }), "Faollashtirildi.")}>Faollashtirish</button>

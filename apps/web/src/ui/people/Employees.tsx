@@ -6,6 +6,7 @@ import { useOffice } from "../../api/office";
 import { DeptChip } from "../shared";
 import { Avatar, Empty, Loading, Msg, PERMISSION_LABEL, ROLE_LABEL, WorkloadBadge, errorText, fmtDate, run, useLoad, type Note } from "./common";
 import { WorkList, type WorkItem } from "./Work";
+import { confirmDialog } from "../dialog";
 
 type DirItem = EmployeeCardDto & { workload?: WorkloadDto; canView: boolean };
 
@@ -192,7 +193,7 @@ export function PersonName({ id }: { id: string | null | undefined }) {
 
 function StatusMenu({ e, onDone, onError }: { e: EmployeeDto; onDone: (t: string) => void; onError: (t: string) => void }) {
   const set = async (status: EmployeeStatus) => {
-    if (status !== "active" && !window.confirm(`${e.displayName}: ${status === "archived" ? "arxivlansinmi" : "faolsizlantirilsinmi"}? Tizimga kira olmaydi, vazifalar tarixi saqlanadi.`)) return;
+    if (status !== "active" && !(await confirmDialog(`${e.displayName}: ${status === "archived" ? "arxivlansinmi" : "faolsizlantirilsinmi"}? Tizimga kira olmaydi, vazifalar tarixi saqlanadi.`, { danger: true }))) return;
     try {
       await api.post(`/api/employees/${e.id}/status`, { status });
       onDone(status === "active" ? "Faollashtirildi." : "Holat o'zgardi, sessiyalari tugatildi.");
