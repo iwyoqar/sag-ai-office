@@ -89,6 +89,11 @@ describe("stores placed on the 3D world map", () => {
     expect(taken.body.error.code).toBe("slot_taken");
     expect((await admin.post("/api/units", body({ gridX: 3, gridZ: 40 }))).status).toBe(400);
     expect((await admin.post("/api/units", body({ gridX: 400, gridZ: 0 }))).status).toBe(400);
+    // the business park, the east ring road with the corporate towers beyond it, and the south ring road
+    for (const s of [{ gridX: 6, gridZ: 1 }, { gridX: 10, gridZ: 1 }, { gridX: 11, gridZ: 3 }, { gridX: 1, gridZ: 6 }]) {
+      const r = await admin.post("/api/units", body(s));
+      expect(r.status, `${s.gridX},${s.gridZ}`).toBe(400);
+    }
     // a slot that becomes taken: the second request for it fails, nothing is written twice
     const slot = await freeSlot();
     expect((await admin.post("/api/units", body(slot))).status).toBe(201);

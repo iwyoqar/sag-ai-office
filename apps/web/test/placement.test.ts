@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { UnitCardDto } from "@sag/shared";
-import { DISTRICT_CONFIG, placementFor, planDistrict, slotAt, slotRect, slotStatus } from "../src/scene/network/districtLayout";
+import { DISTRICT_CONFIG, DISTRICT_KEEP_OUT, placementFor, planDistrict, slotAt, slotFootprint, slotRect, slotStatus } from "../src/scene/network/districtLayout";
 import { buildWorldGraph } from "../src/scene/world/network";
 import { buildLanePath } from "../src/scene/world/roads";
-import { RING, ROAD_W, WALK_W } from "../src/scene/perimeter/layout";
+import { BUSINESS_PARK, RING, ROAD_W, WALK_W, perimeterPlan, ringRoads } from "../src/scene/perimeter/layout";
+import { CAMPUS_BOUNDS, ROADS, WALKS, type Rect } from "../src/scene/campus/layout";
 
 const unit = (id: string, region: string, placement: UnitCardDto["placement"] = null): UnitCardDto => ({
   id, name: `Sag ${id}`, code: id, regionId: region, regionName: region, businessType: "SAG_BRANCH", ownershipModel: "SAG_OWNED",
@@ -43,22 +44,71 @@ describe("map placement grid", () => {
     expect(slotStatus(plan, 1.5, 1)).toBe("outside");
   });
 
-  it("no slot that may be built on reaches the perimeter ring road, its sidewalk or the buildings beyond", () => {
-    const plan = planDistrict([]);
-    const innerX = RING.x1 - ROAD_W / 2 - WALK_W, innerZ = RING.z1 - ROAD_W / 2 - WALK_W;
-    let free = 0;
-    for (let z = 0; z < 20; z++)
-      for (let x = 0; x < 30; x++) {
-        if (slotStatus(plan, x, z) !== "free") continue;
-        free++;
-        const r = slotRect(x, z);
-        // the block and the cross street on its east side stay inside the ring
-        expect(r.x1 + DISTRICT_CONFIG.street).toBeLessThanOrEqual(innerX);
-        expect(r.z1 + DISTRICT_CONFIG.street).toBeLessThanOrEqual(innerZ);
+  // Everything the scene draws round the district land, straight from the scene layouts (not from DISTRICT_KEEP_OUT).
+  const CROWN = 2.6; // street tree crown radius at the largest scale used
+  const h = ROAD_W / 2, vIn = h + WALK_W + 3;
+  const obstacles: (Rect & { id: string })[] = [
+    ...ringRoads().map((r, i) => ({ id: `ring-road-${i}`, ...r })),
+    // inner walks of the ring
+    { id: "walk-w", x0: RING.x0 + h, x1: RING.x0 + h + WALK_W, z0: RING.z0, z1: RING.z1 },
+    { id: "walk-e", x0: RING.x1 - h - WALK_W, x1: RING.x1 - h, z0: RING.z0, z1: RING.z1 },
+    { id: "walk-s", x0: RING.x0, x1: RING.x1, z0: RING.z1 - h - WALK_W, z1: RING.z1 - h },
+    // inner verge trees of the ring
+    { id: "trees-w", x0: RING.x0 + vIn - CROWN, x1: RING.x0 + vIn + CROWN, z0: RING.z0, z1: RING.z1 },
+    { id: "trees-e", x0: RING.x1 - vIn - CROWN, x1: RING.x1 - vIn + CROWN, z0: RING.z0, z1: RING.z1 },
+    { id: "trees-s", x0: RING.x0, x1: RING.x1, z0: RING.z1 - vIn - CROWN, z1: RING.z1 - vIn + CROWN },
+    // corporate towers and office buildings
+    ...perimeterPlan().map((p) => ({ id: `${p.company}${p.main ? "-tower" : "-office"}`, x0: p.x0, x1: p.x1, z0: p.z0, z1: p.z1 })),
+    // business park and its path up to the M37 walk
+    { id: "business-park", ...BUSINESS_PARK },
+    { id: "park-path-m37", x0: (BUSINESS_PARK.x0 + BUSINESS_PARK.x1) / 2 - 1.6, x1: (BUSINESS_PARK.x0 + BUSINESS_PARK.x1) / 2 + 1.6, z0: 90, z1: BUSINESS_PARK.z0 + 10 },
+    // campus, M37, its walks and street trees
+    { id: "campus", ...CAMPUS_BOUNDS },
+    ...ROADS.map((r) => ({ ...r })),
+    ...WALKS.map((w, i) => ({ id: `walk-${i}`, ...w })),
+    { id: "m37-trees-south", x0: -300, x1: 880, z0: 87 - CROWN, z1: 87 + CROWN },
+  ];
+  const overlaps = (a: Rect, b: Rect) => a.x0 < b.x1 - 0.01 && b.x0 < a.x1 - 0.01 && a.z0 < b.z1 - 0.01 && b.z0 < a.z1 - 0.01;
+  const freeSlots = (plan: ReturnType<typeof planDistrict>) => {
+    const out: { gridX: number; gridZ: number }[] = [];
+    for (let z = 0; z < 30; z++) for (let x = 0; x < 30; x++) if (slotStatus(plan, x, z) === "free") out.push({ gridX: x, gridZ: z });
+    return out;
+  };
+
+  it("no free slot, with the streets round it, reaches a ring road, walk, tree, corporate building, the park or the M37", () => {
+    for (const plan of [planDistrict([]), planDistrict(regions())]) {
+      const free = freeSlots(plan);
+      expect(free.length).toBeGreaterThan(0);
+      for (const s of free) {
+        const fp = slotFootprint(slotRect(s.gridX, s.gridZ));
+        const hit = obstacles.filter((o) => overlaps(fp, o)).map((o) => o.id);
+        expect(hit, `slot ${s.gridX},${s.gridZ}`).toEqual([]);
       }
-    expect(free).toBeGreaterThan(0);
-    expect(slotStatus(plan, 9, 0)).toBe("free"); // the last column inside the ring
-    expect(slotStatus(plan, 10, 0)).toBe("outside"); // would sit on the east ring road
+    }
+  });
+
+  it("every perimeter building and ring surface lies inside the shared keep-out list (the server refuses those slots)", () => {
+    const inside = (o: Rect) => DISTRICT_KEEP_OUT.some((k) => o.x0 >= k.x0 && o.x1 <= k.x1 && o.z0 >= k.z0 && o.z1 <= k.z1);
+    for (const o of obstacles) expect(inside(o), o.id).toBe(true);
+  });
+
+  it("the east ring road, the business park and the south ring road are refused; the land west of them is free", () => {
+    const plan = planDistrict([]);
+    expect(slotStatus(plan, 5, 0)).toBe("free"); // last column west of the business park
+    expect(slotStatus(plan, 6, 0)).toBe("outside"); // business park
+    expect(slotStatus(plan, 10, 0)).toBe("outside"); // east ring road
+    expect(slotStatus(plan, 11, 3)).toBe("outside"); // corporate towers east of the ring
+    expect(slotStatus(plan, 0, 5)).toBe("free"); // last row north of the south ring road
+    expect(slotStatus(plan, 0, 6)).toBe("outside"); // south ring road
+    expect(slotStatus(plan, 2, 8)).toBe("outside"); // corporate buildings south of the ring
+  });
+
+  it("the two branches already placed in the dev data keep their slots and coordinates", () => {
+    // SAG shohqadam (2,4) and sag ombor (5,4), stored at x 86 / 254, z 332
+    for (const [gx, gz, x] of [[2, 4, 86], [5, 4, 254]]) {
+      expect(placementFor(gx, gz)).toEqual({ x, z: 332, rotation: 0, gridX: gx, gridZ: gz });
+      expect(slotStatus(planDistrict([]), gx, gz)).toBe("free");
+    }
   });
 
   it("a placed store keeps its slot, leaves every other store where it was, and is reached by the streets", () => {

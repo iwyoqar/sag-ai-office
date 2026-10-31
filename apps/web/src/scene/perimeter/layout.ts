@@ -70,6 +70,11 @@ export const ROAD_W = 16;
 export const WALK_W = 4;
 /** building frontage line, measured from the road centre line */
 export const SETBACK = ROAD_W / 2 + WALK_W + 6;
+/**
+ * Business park on the free land inside the ring, east of the store district and south of the M37 (PerimeterDistrict
+ * draws it; map placement keeps out of it, see DISTRICT_KEEP_OUT in @sag/shared).
+ */
+export const BUSINESS_PARK: Rect = { x0: 316, x1: RING.x1 - ROAD_W / 2 - WALK_W - 10, z0: 104, z1: RING.z1 - ROAD_W / 2 - WALK_W - 10 };
 /** M37 corridor (road + both walks) where it crosses the west and east sides */
 export const M37_GAP = { z0: 54, z1: 96 };
 const CORNER = 14;

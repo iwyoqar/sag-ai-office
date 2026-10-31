@@ -21,14 +21,30 @@ export interface DistrictConfig {
   /** outer-left x and top z of the street grid */
   left: number;
   top: number;
-  /** placement land ends here: the inner kerb of the corporate perimeter ring road (centre x 560 / z 440, 16 m wide)
-   *  less its 4 m sidewalk; the web test checks this against the ring in scene/perimeter/layout.ts */
-  limitX: number;
-  limitZ: number;
+  /** land a placed store, with the streets round it, must keep clear of */
+  keepOut: KeepOut[];
 }
 
+export interface KeepOut { id: string; x0: number; x1: number; z0: number; z1: number }
+
+// What stands round the district land, from the web scene layouts (campus/layout.ts; perimeter/layout.ts with the ring
+// road and BUSINESS_PARK); web/test/placement.test.ts checks every surface, building and tree
+// there against this list, so the two cannot drift apart. Overlaps are fine; the outer edges run to infinity.
+const FAR = Infinity;
+export const DISTRICT_KEEP_OUT: KeepOut[] = [
+  // campus, the M37 road (z 66–84), its walks and street trees (up to z 90)
+  { id: "campus-m37", x0: -FAR, x1: FAR, z0: -FAR, z1: 90 },
+  // perimeter ring road (centre lines x -120 / 560, z 440; 16 m wide), its 4 m inner walk and inner verge trees
+  // (crowns to 2.6 m), and the corporate towers, offices, plazas and car parks beyond it
+  { id: "ring-west", x0: -FAR, x1: -102, z0: -FAR, z1: FAR },
+  { id: "ring-east", x0: 542, x1: FAR, z0: -FAR, z1: FAR },
+  { id: "ring-south", x0: -FAR, x1: FAR, z0: 422, z1: FAR },
+  // business park inside the ring east of the district (x 316–538, z 104–418) and its paths to the M37 walk and the ring
+  { id: "business-park", x0: 316, x1: 548, z0: 90, z1: 428 },
+];
+
 export const DISTRICT_CONFIG: DistrictConfig = {
-  cellW: 38, cellD: 34, sidewalk: 3, street: 12, maxRowCells: 6, left: -60, top: 92, limitX: 548, limitZ: 428,
+  cellW: 38, cellD: 34, sidewalk: 3, street: 12, maxRowCells: 6, left: -60, top: 92, keepOut: DISTRICT_KEEP_OUT,
 };
 
 export interface PlannedStore { unit: UnitCardDto; cx: number; cz: number; row: number }
@@ -79,11 +95,17 @@ export function placementFor(gridX: number, gridZ: number, c: DistrictConfig = D
   return { x: r.cx, z: r.cz, rotation: 0, gridX, gridZ };
 }
 
+/** A slot's block with a full street width on every side: everything a store placed there brings with it. */
+export function slotFootprint(r: { x0: number; x1: number; z0: number; z1: number }, c: DistrictConfig = DISTRICT_CONFIG) {
+  return { x0: r.x0 - c.street, x1: r.x1 + c.street, z0: r.z0 - c.street, z1: r.z1 + c.street };
+}
+
 export type SlotStatus = "free" | "occupied" | "outside";
 
 /**
  * Whether a new store may stand in slot (gridX, gridZ) of the current plan:
- * - "outside": not on the district land (before the first street, or past the perimeter ring);
+ * - "outside": not on the district land: before the first street, or the block or the streets round it would reach
+ *   the campus, the M37, the perimeter ring (road, walks, trees, corporate buildings) or the business park;
  * - "occupied": the store's block or the cross streets it needs would overlap an existing block, or its block would
  *   sit on an existing cross street (streets, lots, trees and buildings all live inside blocks or on streets);
  * - "free" otherwise. Free slots always touch the street grid, so the road network reaches them.
@@ -92,10 +114,10 @@ export function slotStatus(plan: DistrictPlan, gridX: number, gridZ: number): Sl
   const c = plan.cfg;
   if (!Number.isInteger(gridX) || !Number.isInteger(gridZ) || gridX < 0 || gridZ < 0) return "outside";
   const r = slotRect(gridX, gridZ, c);
-  if (r.x1 + c.street > c.limitX || r.z1 + c.street > c.limitZ) return "outside";
   const half = c.street / 2;
   const hits = (a: { x0: number; x1: number; z0: number; z1: number }, b: { x0: number; x1: number; z0: number; z1: number }) =>
     a.x0 < b.x1 - 0.01 && b.x0 < a.x1 - 0.01 && a.z0 < b.z1 - 0.01 && b.z0 < a.z1 - 0.01;
+  if (c.keepOut.some((k) => hits(slotFootprint(r, c), k))) return "outside";
   // the block plus a full street width on each side (its own cross streets) must be clear of other blocks
   const withStreets = { x0: r.x0 - c.street, x1: r.x1 + c.street, z0: r.z0, z1: r.z1 };
   if (plan.blocks.some((b) => hits(withStreets, b))) return "occupied";

@@ -11,7 +11,7 @@ import { buildCorporateBuilding } from "./corporateBuilding";
 import { buildCorporateTower, type BuildCtx } from "./corporateTower";
 import { companyMaterials, perimeterMaterials, type WindowStyle } from "./facade";
 import {
-  COMPANIES, M37_GAP, RING, ROAD_W, SETBACK, WALK_W, perimeterPlan, ringRoads,
+  BUSINESS_PARK, COMPANIES, M37_GAP, RING, ROAD_W, SETBACK, WALK_W, perimeterPlan, ringRoads,
   type Archetype, type PlotSpec,
 } from "./layout";
 
@@ -154,7 +154,7 @@ export class PerimeterDistrict {
    * x ≈ 300) and south of the M37: a footpath loop with diagonals, a pond with a paved edge, and tree groves.
    */
   private park(b: Batch, inst: Instancer, cm: ReturnType<typeof campusMaterials>, trees: BuildCtx["trees"]) {
-    const P = { x0: 316, x1: RING.x1 - ROAD_W / 2 - WALK_W - 10, z0: 104, z1: RING.z1 - ROAD_W / 2 - WALK_W - 10 };
+    const P = BUSINESS_PARK;
     const cx = (P.x0 + P.x1) / 2, cz = (P.z0 + P.z1) / 2, W = P.x1 - P.x0, D = P.z1 - P.z0;
     const path = (len: number, x: number, z: number, rotY: number) => b.add(new THREE.BoxGeometry(len, 0.12, 3.2), cm.paving, { x, y: 0.06, z }, { y: rotY }, false);
     const ins = 10;
