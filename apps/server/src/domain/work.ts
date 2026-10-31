@@ -6,7 +6,7 @@
 import { allowedHumanTransitions, canTransitionHumanTask, type TaskPriority, type TaskStatus, type TaskDto } from "@sag/shared";
 import { now } from "../db/db.js";
 import type { AuthUser } from "../lib/auth.js";
-import { audit, type Actor } from "../lib/audit.js";
+import { actorTag, audit, type Actor } from "../lib/audit.js";
 import { badRequest, conflict, forbidden, notFound } from "../lib/errors.js";
 import { uid } from "../lib/ids.js";
 import {
@@ -73,7 +73,7 @@ function move(ctx: Ctx, r: TaskRow, to: TaskStatus, actor: Actor, o: MoveOpts = 
   if (!o.auto && !canTransitionHumanTask(r.status, to))
     throw conflict("invalid_transition", `${r.status} → ${to} o'tishi mumkin emas`, { from: r.status, to, allowed: allowedHumanTransitions(r.status) });
   const t = now();
-  const sets: Record<string, string | number | null> = { status: to, updated_at: t, ...(o.set ?? {}) };
+  const sets: Record<string, string | number | null> = { status: to, updated_at: t, last_actor: actorTag(actor), ...(o.set ?? {}) };
   if (to === "ACCEPTED" && !r.accepted_at) sets.accepted_at = t;
   if (to === "IN_PROGRESS" && !r.started_at) sets.started_at = t;
   if (to === "IN_REVIEW") sets.submitted_at = t;
@@ -177,6 +177,10 @@ export interface WorkInput {
   requiresReview?: boolean;
   reviewerId?: string | null;
   dependsOn?: string[];
+  /** planned start (the due date is `deadline`) */
+  startAt?: string | null;
+  /** one task per creator and key: a retried request gets the first task back (routes) */
+  idempotencyKey?: string;
 }
 
 export function createWork(ctx: Ctx, u: AuthUser, input: WorkInput): TaskDto {
@@ -218,12 +222,13 @@ export function createWork(ctx: Ctx, u: AuthUser, input: WorkInput): TaskDto {
   ctx.db.tx(() => {
     ctx.db.run(
       `INSERT INTO tasks (id, kind, title, description, created_by, parent_id, department_id, priority, deadline, status,
-         created_at, updated_at, requires_approval, assignee_user_id, assigned_by, reviewer_user_id, estimate_hours, is_optional, weight, accepted_at)
-       VALUES (?, 'human', ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         created_at, updated_at, requires_approval, assignee_user_id, assigned_by, reviewer_user_id, estimate_hours, is_optional, weight, accepted_at,
+         idempotency_key, start_at)
+       VALUES (?, 'human', ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       id, input.title, input.description ?? "", u.id, parent?.id ?? null, departmentId, input.priority ?? "MEDIUM",
       input.deadline ? new Date(input.deadline).toISOString() : null, status, t, t, requiresReview ? 1 : 0,
       assigneeId, assigneeId ? u.id : null, reviewer, input.estimateHours ?? null, input.isOptional ? 1 : 0, input.weight ?? 1,
-      status === "ACCEPTED" ? t : null,
+      status === "ACCEPTED" ? t : null, input.idempotencyKey ?? null, input.startAt ? new Date(input.startAt).toISOString() : null,
     );
     if (deps.length) {
       assertNoCycle(ctx, id, deps);
@@ -636,3 +641,9 @@ export function getAttachment(ctx: Ctx, u: AuthUser, taskId: string, attId: stri
   if (!a) throw notFound("Fayl");
   return a;
 }
+
+/**
+ * People's-work execution adapter for the Task Engine (domain/taskEngine.ts): the same guarded moves, parent
+ * aggregation, review records and notices the routes above use, so engine transitions keep the legacy flow intact.
+ */
+export const humanAdapter = { move, aggregate, rowOf, refOf, notifyReviewer, notifyDone, comment, signal };

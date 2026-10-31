@@ -17,6 +17,7 @@ import { authRoutes } from "./routes/auth.js";
 import { orgRoutes } from "./routes/org.js";
 import { agentRoutes } from "./routes/agents.js";
 import { taskRoutes } from "./routes/tasks.js";
+import { taskEngineRoutes } from "./routes/taskEngine.js";
 import { eventRoutes } from "./routes/events.js";
 import { runtimeRoutes } from "./routes/runtime.js";
 import { brainRoutes } from "./routes/brain.js";
@@ -196,6 +197,7 @@ export async function buildApp(opts: AppOptions) {
   await app.register(orgRoutes(deps));
   await app.register(agentRoutes(deps));
   await app.register(taskRoutes(deps));
+  await app.register(taskEngineRoutes(deps));
   await app.register(peopleRoutes(deps));
   await app.register(connectorRoutes(deps));
   await app.register(eventRoutes(deps));

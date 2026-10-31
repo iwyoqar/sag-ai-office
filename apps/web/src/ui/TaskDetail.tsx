@@ -5,6 +5,7 @@ import { useOffice } from "../api/office";
 import { Markdown } from "./Markdown";
 import { ApprovalsTab } from "./BrainPanel";
 import { TaskStatusPill, fmtTokens, fmtUsd } from "./shared";
+import { TaskEnginePanel } from "./TaskEnginePanel";
 
 interface Detail {
   task: TaskDto;
@@ -93,6 +94,7 @@ export function TaskDetail({ taskId, onClose, onOpen }: { taskId: string; onClos
             {t.error && <div className="login-error">Xato: {t.error}</div>}
             {t.status === "WAITING_APPROVAL" && <ApprovalsTab taskId={t.id} compact />}
             {t.description && <p className="td-desc">{t.description}</p>}
+            <TaskEnginePanel taskId={t.id} />
 
             {(can("tasks:manage") || can("tasks:create")) && (
               <div className="td-actions">

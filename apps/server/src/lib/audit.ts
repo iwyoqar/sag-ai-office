@@ -6,6 +6,9 @@ export interface Actor {
   id: string | null;
 }
 
+/** How a writer names itself in tasks.last_actor (copied into task_transitions by the lifecycle triggers). */
+export const actorTag = (a: Actor) => (a.type === "system" || !a.id ? "system" : `${a.type}:${a.id}`);
+
 export const SYSTEM: Actor = { type: "system", id: null };
 
 const SECRET_KEYS = /pass(word)?|secret|token|api[-_]?key|authorization|cookie/i;

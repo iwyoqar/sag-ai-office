@@ -7,6 +7,7 @@ import { api } from "../../api/client";
 import { useOffice } from "../../api/office";
 import { TASK_STATUS_META } from "../../config/status";
 import { TaskStatusPill } from "../shared";
+import { LifecycleTag, TaskEnginePanel } from "../TaskEnginePanel";
 import { Empty, Loading, Msg, errorText, fmtDate, fromLocalInput, run, useLoad, type Note } from "./common";
 
 export interface WorkItem extends TaskDto {
@@ -15,7 +16,7 @@ export interface WorkItem extends TaskDto {
   overdue: boolean;
 }
 
-const PRIORITY_LABEL: Record<TaskPriority, string> = { LOW: "Past", MEDIUM: "O'rta", HIGH: "Yuqori", URGENT: "Shoshilinch" };
+const PRIORITY_LABEL: Record<TaskPriority, string> = { LOW: "Past", MEDIUM: "O'rta", HIGH: "Yuqori", CRITICAL: "Kritik" };
 const BOARD: TaskStatus[] = ["BACKLOG", "ASSIGNED", "ACCEPTED", "IN_PROGRESS", "IN_REVIEW", "CHANGES_REQUESTED", "BLOCKED", "DONE", "CANCELLED"];
 
 export type View = "my" | "team" | "department" | "company" | "review" | "overdue" | "blocked";
@@ -78,6 +79,7 @@ function Card({ t, onOpen }: { t: WorkItem; onOpen: (id: string) => void }) {
       <span className="muted">{t.assigneeName ?? "Biriktirilmagan"}{t.isOptional ? " · ixtiyoriy" : ""}</span>
       <span className="kmeta">
         <span className={`prio p-${t.priority}`}>{PRIORITY_LABEL[t.priority]}</span>
+        <LifecycleTag lifecycle={t.lifecycle} />
         {t.deadline && <span className={t.overdue ? "err" : "muted"}>{t.overdue ? "⚠ " : ""}{fmtDate(t.deadline)}</span>}
         {t.subtasks.total > 0 && <span className="muted">{t.subtasks.done}/{t.subtasks.total}</span>}
       </span>
@@ -96,7 +98,7 @@ export function WorkList({ items, onOpen, empty, detailed }: { items: WorkItem[]
           {items.map((t) => (
             <tr key={t.id} onClick={() => onOpen(t.id)} className="clickable">
               <td><b>{t.title}</b>{t.parentId && <span className="muted"> · kichik vazifa</span>}{t.subtasks.total > 0 && <span className="muted"> · {t.subtasks.done}/{t.subtasks.total} kichik</span>}</td>
-              <td><TaskStatusPill status={t.status} /></td>
+              <td><TaskStatusPill status={t.status} /> <LifecycleTag lifecycle={t.lifecycle} /></td>
               {detailed && <td>{t.assigneeName ?? "—"}</td>}
               <td>{PRIORITY_LABEL[t.priority]}</td>
               <td className={t.overdue ? "err" : ""}>{fmtDate(t.deadline)}</td>
@@ -264,6 +266,7 @@ export function WorkDetail({ id, onClose, onOpen }: { id: string; onClose: () =>
               </section>
               {t.description && <p className="desc">{t.description}</p>}
               {t.declineReason && t.status === "BACKLOG" && <div className="notice">Rad etilgan: {t.declineReason}</div>}
+              <TaskEnginePanel taskId={id} onChanged={reload} />
 
               {/* assignee actions */}
               {data.can.act && (

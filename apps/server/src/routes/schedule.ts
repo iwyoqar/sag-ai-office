@@ -1,12 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { TASK_PRIORITIES } from "@sag/shared";
 import { type Deps, actorOf, parse, requirePerm } from "../app.js";
 import {
   calendar, createRoutine, deleteRoutine, getRoutine, listRoutines, runNow, setRoutineStatus, updateRoutine,
 } from "../schedule/service.js";
 import { badRequest, conflict } from "../lib/errors.js";
 import { canSeeRoutine, visibleTaskSql } from "../domain/access.js";
+import { priorityInput } from "../lib/priority.js";
 import type { AuthUser } from "../lib/auth.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
@@ -20,7 +20,7 @@ const Body = z.object({
   rrule: z.string().trim().min(8).max(200),
   timezone: z.string().max(60).optional(),
   requiresApproval: z.boolean().optional(),
-  priority: z.enum(TASK_PRIORITIES).optional(),
+  priority: priorityInput.optional(),
   startAt: iso.nullish(),
 });
 

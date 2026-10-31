@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { TASK_PRIORITIES, TASK_STATUSES, type TaskStatus } from "@sag/shared";
+import { TASK_STATUSES, type TaskStatus } from "@sag/shared";
+import { priorityInput } from "../lib/priority.js";
+import { createOnce, idempotencyKey } from "../lib/idempotency.js";
 import { type Deps, actorOf, parse, requirePerm } from "../app.js";
 import {
   cancelTask, createTask, getTask, getTaskDetail, listTasks, reassignTask, retryTask, transitionTask, updateTask,
@@ -36,7 +38,7 @@ const CreateBody = z.object({
   description: z.string().max(20_000).optional(),
   departmentId: z.string().nullish(),
   agentId: z.string().nullish(),
-  priority: z.enum(TASK_PRIORITIES).optional(),
+  priority: priorityInput.optional(),
   deadline: isoDate.nullish(),
   parentId: z.string().nullish(),
   dependsOn: z.array(z.string()).max(50).optional(),
@@ -45,12 +47,13 @@ const CreateBody = z.object({
   backlog: z.boolean().optional(),
   requiresApproval: z.boolean().optional(),
   scheduledFor: isoDate.nullish(),
+  startAt: isoDate.nullish(),
 });
 
 const PatchBody = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   description: z.string().max(20_000).optional(),
-  priority: z.enum(TASK_PRIORITIES).optional(),
+  priority: priorityInput.optional(),
   deadline: isoDate.nullish(),
   limits: Limits.optional(),
 }).strict();
@@ -124,8 +127,15 @@ export const taskRoutes = (d: Deps) => async (app: FastifyInstance) => {
       if (!canManageTask(d, u, parent) && !has(u, "tasks:manage")) throw forbidden("Bu vazifaga kichik vazifa qo'sha olmaysiz");
     }
     for (const dep of body.dependsOn ?? []) requireVisibleTask(d, u, dep);
-    reply.status(201);
-    return { task: createTask(d, body, actorOf(u)) };
+    // a retried or double-submitted request (same Idempotency-Key) gets the first task back instead of a second one
+    const key = idempotencyKey(req);
+    const once = createOnce(d.db, u.id, key, () => createTask(d, { ...body, idempotencyKey: key }, actorOf(u)), (id) => {
+      const t = getTask(d, id);
+      if (t.kind === "human") throw conflict("idempotency_key_reused", "Bu Idempotency-Key boshqa so'rovda ishlatilgan");
+      return t;
+    });
+    reply.status(once.replayed ? 200 : 201);
+    return { task: once.value, replayed: once.replayed };
   });
 
   /** Creator may edit / cancel their own task; anything else needs tasks:manage. */

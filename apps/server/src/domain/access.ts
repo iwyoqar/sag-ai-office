@@ -94,8 +94,11 @@ export function ancestors(ctx: Ctx, t: TaskRef): TaskRef[] {
   return out;
 }
 
-const involved = (u: AuthUser, t: TaskRef) =>
-  t.created_by === u.id || t.assigned_by === u.id || t.assignee_user_id === u.id || t.reviewer_user_id === u.id;
+/** An active engine assignment (T1: owner, contributor, reviewer, approver) makes a person part of the task. */
+const ACTIVE_ASSIGNMENT = "SELECT 1 FROM task_assignments WHERE task_id = ? AND user_id = ? AND state IN ('ASSIGNED','ACCEPTED') LIMIT 1";
+const involved = (u: AuthUser, t: TaskRef, ctx?: Ctx) =>
+  t.created_by === u.id || t.assigned_by === u.id || t.assignee_user_id === u.id || t.reviewer_user_id === u.id
+  || (!!ctx && !!ctx.db.get(ACTIVE_ASSIGNMENT, t.id, u.id));
 
 /** Owns the work: may edit, split, reassign, review and cancel it. */
 export function canManageTask(ctx: Ctx, u: AuthUser, t: TaskRef): boolean {
@@ -124,7 +127,7 @@ export const taskDepartments = (u: AuthUser) =>
 export function canSeeTask(ctx: Ctx, u: AuthUser, t: TaskRef): boolean {
   // HQ's task, work and event routes never reach another business unit's work (units: domain/units.ts unitAccess)
   if (t.business_unit_id !== HQ_UNIT) return false;
-  if (readsAllTasks(u) || involved(u, t)) return true;
+  if (readsAllTasks(u) || involved(u, t, ctx)) return true;
   if (t.department_id && taskDepartments(u).has(t.department_id)) return true;
   return canManageTask(ctx, u, t);
 }
@@ -134,7 +137,7 @@ export function canSeeTask(ctx: Ctx, u: AuthUser, t: TaskRef): boolean {
  * even when the parent itself is not theirs to see — but not the parent's comments, files or other subtasks.
  */
 export function canSeeParentContext(ctx: Ctx, u: AuthUser, child: TaskRef): boolean {
-  return (child.business_unit_id === HQ_UNIT && involved(u, child)) || canSeeTask(ctx, u, child);
+  return (child.business_unit_id === HQ_UNIT && involved(u, child, ctx)) || canSeeTask(ctx, u, child);
 }
 
 /** SQL fragment + params limiting a task query to tasks `u` may see (for list endpoints and stats). */
@@ -149,8 +152,10 @@ export function visibleTaskSql(u: AuthUser, alias = "t"): { sql: string; params:
   const below = `${alias}.id IN (WITH RECURSIVE sub(id) AS (
       SELECT id FROM tasks WHERE assignee_user_id = ? OR created_by = ? OR assigned_by = ?
       UNION SELECT c.id FROM tasks c JOIN sub ON c.parent_id = sub.id) SELECT id FROM sub)`;
-  const parts = [own, below];
-  const params = [me, me, me, me, me, me, me];
+  // tasks this person is assigned to through the engine (any role, while the assignment is active)
+  const assigned = `${alias}.id IN (SELECT task_id FROM task_assignments WHERE user_id = ? AND state IN ('ASSIGNED','ACCEPTED'))`;
+  const parts = [own, below, assigned];
+  const params = [me, me, me, me, me, me, me, me];
   if (depts.length) {
     parts.push(`${alias}.department_id IN (${depts.map(() => "?").join(",")})`);
     params.push(...depts);

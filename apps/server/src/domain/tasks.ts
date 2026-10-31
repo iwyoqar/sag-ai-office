@@ -1,7 +1,7 @@
-import type { TaskPriority, TaskStatus } from "@sag/shared";
+import type { TaskLifecycle, TaskPriority, TaskStatus } from "@sag/shared";
 import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, allowedTaskTransitions, canTransitionTask } from "@sag/shared";
 import { json, now } from "../db/db.js";
-import { type Actor, audit } from "../lib/audit.js";
+import { type Actor, actorTag, audit } from "../lib/audit.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { uid } from "../lib/ids.js";
 import type { Ctx } from "./context.js";
@@ -21,10 +21,11 @@ interface TaskRow {
   assignee_user_id: string | null; assigned_by: string | null; reviewer_user_id: string | null; estimate_hours: number | null;
   actual_hours: number | null; is_optional: number; weight: number; decline_reason: string | null; accepted_at: string | null;
   submitted_at: string | null; business_unit_id: string;
+  lifecycle: TaskLifecycle; version: number; start_at: string | null; blocked_reason: string | null; idempotency_key: string | null;
 }
 
 const OPEN = OPEN_TASK_STATUSES.map((s) => `'${s}'`).join(",");
-const PRIORITY_RANK = "CASE priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END";
+const PRIORITY_RANK = "CASE priority WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END";
 
 export type { TaskRow };
 
@@ -37,6 +38,7 @@ export function toDto(ctx: Ctx, r: TaskRow): TaskDto {
     limits: json(r.limits, {}), dependsOn: deps.map((d) => d.depends_on_id),
     startedAt: r.started_at, completedAt: r.completed_at, tokensIn: r.tokens_in, tokensOut: r.tokens_out, costUsd: r.cost_usd,
     createdAt: r.created_at, updatedAt: r.updated_at, businessUnitId: r.business_unit_id,
+    lifecycle: r.lifecycle, version: r.version, startAt: r.start_at,
     ...(r.kind === "human"
       ? {
           assigneeUserId: r.assignee_user_id, assignedBy: r.assigned_by, reviewerUserId: r.reviewer_user_id,
@@ -162,6 +164,10 @@ export interface CreateTaskInput {
   scheduledFor?: string | null;
   /** owning unit (default 'hq'); the database refuses departments, agents or parents of another unit */
   unitId?: string;
+  /** planned start (T1; the due date is `deadline`) */
+  startAt?: string | null;
+  /** one task per creator and key: a retried request gets the first task back (routes) */
+  idempotencyKey?: string;
 }
 
 /** Department whose agent plans and combines multi-department work. */
@@ -201,11 +207,12 @@ export function createTask(ctx: Ctx, input: CreateTaskInput, actor: Actor): Task
 
   ctx.db.tx(() => {
     ctx.db.run(
-      `INSERT INTO tasks (business_unit_id, id, kind, title, description, created_by, parent_id, department_id, agent_id, priority, deadline, status, stage, limits, max_attempts, created_at, updated_at, requires_approval)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'BACKLOG', ?,?,?,?,?,?)`,
+      `INSERT INTO tasks (business_unit_id, id, kind, title, description, created_by, parent_id, department_id, agent_id, priority, deadline, status, stage, limits, max_attempts, created_at, updated_at, requires_approval, idempotency_key, start_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'BACKLOG', ?,?,?,?,?,?,?,?)`,
       unitId, id, kind, input.title, input.description ?? "", actor.type === "user" ? actor.id : null, input.parentId ?? null,
       departmentId, agentId, input.priority ?? "MEDIUM", input.deadline ?? null, stage,
       JSON.stringify(input.limits ?? {}), input.maxAttempts ?? 3, t, t, input.requiresApproval ? 1 : 0,
+      input.idempotencyKey ?? null, input.startAt ?? null,
     );
     if (deps.length) {
       assertNoCycle(ctx, id, deps);
@@ -272,9 +279,9 @@ export function transitionTask(
          lease_owner = CASE WHEN ? = 'IN_PROGRESS' THEN lease_owner ELSE NULL END,
          lease_until = CASE WHEN ? = 'IN_PROGRESS' THEN lease_until ELSE NULL END,
          error = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'QUEUED' THEN NULL ELSE error END,
-         result = COALESCE(?, result)
+         result = COALESCE(?, result), last_actor = ?
        WHERE id = ? AND status = ?`,
-      to, t, to, t, to, t, to, to, to, to, extra.error ?? null, extra.error ?? null, to, extra.result ?? null, id, r.status,
+      to, t, to, t, to, t, to, to, to, to, extra.error ?? null, extra.error ?? null, to, extra.result ?? null, actorTag(actor), id, r.status,
     );
     if (res.changes !== 1) throw conflict("concurrent_update", "Vazifa holati boshqa jarayon tomonidan o'zgartirildi");
     audit(ctx.db, actor, "task.transition", { type: "task", id }, { from: r.status, to, reason: extra.reason });
@@ -326,9 +333,9 @@ export function reassignTask(ctx: Ctx, id: string, agentId: string, actor: Actor
       ? depsSatisfied(ctx, id) ? "QUEUED" : "WAITING_FOR_DEPENDENCY"
       : r.status;
     const res = ctx.db.run(
-      `UPDATE tasks SET agent_id = ?, department_id = ?, status = ?, stage = NULL, lease_owner = NULL, lease_until = NULL, updated_at = ?
+      `UPDATE tasks SET agent_id = ?, department_id = ?, status = ?, stage = NULL, lease_owner = NULL, lease_until = NULL, updated_at = ?, last_actor = ?
        WHERE id = ? AND status = ?`,
-      a.id, a.department_id, nextStatus, t, id, r.status,
+      a.id, a.department_id, nextStatus, t, actorTag(actor), id, r.status,
     );
     if (res.changes !== 1) throw conflict("concurrent_update", "Vazifa holati boshqa jarayon tomonidan o'zgartirildi");
     audit(ctx.db, actor, "task.reassign", { type: "task", id }, { from: r.agent_id, to: a.id });

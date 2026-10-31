@@ -34,7 +34,7 @@ export interface WorkloadPolicy {
 
 export const DEFAULT_POLICY: WorkloadPolicy = {
   yellow: 60, orange: 80, red: 100, horizonDays: 5,
-  defaultHours: { LOW: 2, MEDIUM: 4, HIGH: 8, URGENT: 8 },
+  defaultHours: { LOW: 2, MEDIUM: 4, HIGH: 8, CRITICAL: 8 },
   noDeadlineFactor: 0.5, blockedFactor: 0.25, dueSoonHours: 24, dueSoonOrange: 3, overdueRed: 2,
 };
 

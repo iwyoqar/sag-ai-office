@@ -154,11 +154,11 @@ describe("worker claim (parallel safety)", () => {
   it("respects priority, paused agents and dependencies", async () => {
     const { deps } = await makeApp();
     const low = createTask(deps, { title: "low", agentId: "it-aziz", priority: "LOW" }, SYSTEM);
-    const urgent = createTask(deps, { title: "urgent", agentId: "it-malika", priority: "URGENT" }, SYSTEM);
-    const paused = createTask(deps, { title: "paused", agentId: "it-jasur", priority: "URGENT" }, SYSTEM);
+    const urgent = createTask(deps, { title: "urgent", agentId: "it-malika", priority: "CRITICAL" }, SYSTEM);
+    const paused = createTask(deps, { title: "paused", agentId: "it-jasur", priority: "CRITICAL" }, SYSTEM);
     deps.db.run("UPDATE agents SET lifecycle = 'PAUSED' WHERE id = 'it-jasur'");
-    createTask(deps, { title: "dep", agentId: "it-nodira", priority: "URGENT", dependsOn: [low.id] }, SYSTEM);
-    createTask(deps, { title: "second for busy agent", agentId: "it-malika", priority: "URGENT" }, SYSTEM);
+    createTask(deps, { title: "dep", agentId: "it-nodira", priority: "CRITICAL", dependsOn: [low.id] }, SYSTEM);
+    createTask(deps, { title: "second for busy agent", agentId: "it-malika", priority: "CRITICAL" }, SYSTEM);
     expect(claimNextTask(deps, "w", 60_000)!.id).toBe(urgent.id);
     expect(claimNextTask(deps, "w", 60_000)!.id).toBe(low.id);
     // dep not done, paused agent skipped, it-malika already busy

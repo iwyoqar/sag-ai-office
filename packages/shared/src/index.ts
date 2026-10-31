@@ -79,8 +79,11 @@ export function allowedTaskTransitions(from: TaskStatus): readonly TaskStatus[] 
   return TASK_TRANSITIONS[from];
 }
 
-export const TASK_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
+export const TASK_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
+/** Accepted on input for one phase after T1 (migration 022): URGENT is the old name of CRITICAL. */
+export const TASK_PRIORITY_INPUTS = [...TASK_PRIORITIES, "URGENT"] as const;
+export const normalizePriority = (p: (typeof TASK_PRIORITY_INPUTS)[number]): TaskPriority => (p === "URGENT" ? "CRITICAL" : p);
 
 export const ROLES = ["admin", "director", "department_head", "employee", "hr", "member", "viewer"] as const;
 export type Role = (typeof ROLES)[number];
@@ -158,3 +161,4 @@ export interface OfficeEvent {
 }
 export * from "./dto.js";
 export * from "./district.js";
+export * from "./taskEngine.js";

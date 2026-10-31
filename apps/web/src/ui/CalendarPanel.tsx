@@ -265,7 +265,7 @@ function ScheduleForm({ day, onDone, onCancel, canRepeat }: { day: number; onDon
       <div className="nt-row">
         <input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
         <select value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}>
-          <option value="LOW">Past</option><option value="MEDIUM">O'rta</option><option value="HIGH">Yuqori</option><option value="URGENT">Shoshilinch</option>
+          <option value="LOW">Past</option><option value="MEDIUM">O'rta</option><option value="HIGH">Yuqori</option><option value="CRITICAL">Kritik</option>
         </select>
       </div>
       <label className="toggle"><input type="checkbox" checked={approval} onChange={(e) => setApproval(e.target.checked)} /> Natija tasdiqlansin</label>

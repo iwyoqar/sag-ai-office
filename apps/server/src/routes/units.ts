@@ -8,6 +8,7 @@ import {
   listUnitTasks, moveUnitTask, network, proposeAgreement, reissueInvitation, revokeAgreement, setUnitFunctions, unitOverview, updateUnitEmployee,
 } from "../domain/units.js";
 import { BUSINESS_FUNCTIONS } from "@sag/shared";
+import { priorityInput } from "../lib/priority.js";
 import { closeBudget, createBudget, decideBudget, listBudgets, listEntries, recordEntry, submitBudget, updateBudget } from "../domain/budgets.js";
 import { addUnitDocument, listUnitDocuments, removeUnitDocument, searchUnitKnowledge } from "../domain/unitKnowledge.js";
 import { grantUnitAgentConnectors, installUnitConnector, listUnitConnectors, setUnitConnectorEnabled } from "../connectors/installations.js";
@@ -114,7 +115,7 @@ export const unitRoutes = (d: Deps) => async (app: FastifyInstance) => {
     const u = requireUser(req);
     const body = parse(z.object({
       title: z.string().trim().min(1).max(200), description: z.string().max(10_000).optional(),
-      priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
+      priority: priorityInput.optional(),
       assigneeUserId: Id.optional(), toAiDirector: z.boolean().optional(),
     }).strict(), req.body);
     reply.status(201);

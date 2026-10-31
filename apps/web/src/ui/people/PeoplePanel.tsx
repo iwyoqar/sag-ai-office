@@ -114,7 +114,7 @@ function OrgChart({ onOpen }: { onOpen: (id: string) => void }) {
 // ---------------------------------------------------------------- workload policy
 
 interface Policy {
-  yellow: number; orange: number; red: number; horizonDays: number; defaultHours: Record<"LOW" | "MEDIUM" | "HIGH" | "URGENT", number>;
+  yellow: number; orange: number; red: number; horizonDays: number; defaultHours: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", number>;
   noDeadlineFactor: number; blockedFactor: number; dueSoonHours: number; dueSoonOrange: number; overdueRed: number;
 }
 
@@ -139,7 +139,7 @@ function WorkloadSettings() {
         {num("yellow", "Sariq chegarasi, %")}{num("orange", "To'q sariq chegarasi, %")}{num("red", "Qizil chegarasi, %")}
         {num("horizonDays", "Reja oralig'i, ish kuni")}{num("dueSoonHours", "“Yaqin muddat”, soat")}{num("dueSoonOrange", "Shuncha yaqin muddat → to'q sariq")}
         {num("overdueRed", "Shuncha kechikkan → qizil")}{num("noDeadlineFactor", "Muddatsiz ish koeffitsienti", 0.05)}{num("blockedFactor", "Bloklangan ish koeffitsienti", 0.05)}
-        {(["LOW", "MEDIUM", "HIGH", "URGENT"] as const).map((k) => (
+        {(["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const).map((k) => (
           <label key={k} className="field">Baho yo'q — {k}, soat<input type="number" step={0.5} value={p.defaultHours[k]} onChange={(e) => setP({ ...p, defaultHours: { ...p.defaultHours, [k]: Number(e.target.value) } })} /></label>
         ))}
       </div>

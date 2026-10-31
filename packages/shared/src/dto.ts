@@ -1,5 +1,6 @@
 // API shapes shared by server responses and the web client.
 import type { AgentLifecycle, AgentStatus, Permission, Role, TaskPriority, TaskStatus } from "./index.js";
+import type { TaskLifecycle } from "./taskEngine.js";
 
 export interface UserDto {
   id: string; username: string; displayName: string; roles: Role[]; permissions: Permission[];
@@ -112,6 +113,8 @@ export interface TaskDto {
   createdAt: string; updatedAt: string;
   /** owning business unit ('hq' = SAG Head Office) */
   businessUnitId: string;
+  /** T1 engine: business lifecycle (status stays the execution / legacy status), optimistic version, planned start */
+  lifecycle: TaskLifecycle; version: number; startAt: string | null;
   /** human workflow (kind = "human") */
   assigneeUserId?: string | null; assignedBy?: string | null; reviewerUserId?: string | null;
   estimateHours?: number | null; actualHours?: number | null; isOptional?: boolean; weight?: number;

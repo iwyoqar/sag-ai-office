@@ -792,3 +792,20 @@ pre.args { font-family: var(--mono); font-size: 11.5px; background: #f8fafc; bor
 .modal.branch .chip { position: relative; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border-strong); font-size: 12.5px; cursor: pointer; }
 .modal.branch .chip.on { background: #1b4e9b; border-color: #1b4e9b; color: #fff; }
 .modal.branch .branch-actions .ghost { border: 1px solid var(--border-strong); background: #fff; border-radius: 10px; padding: 7px 14px; font-size: 13px; }
+
+/* T1 Unified Task Engine panel (TaskEnginePanel.tsx) */
+.engine { border: 1px solid var(--line, #e5e7eb); border-radius: 10px; padding: 10px 12px; margin: 10px 0; display: grid; gap: 8px; }
+.engine h3 { margin: 4px 0 0; font-size: 13px; }
+.engine-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.engine-asg td { vertical-align: middle; }
+.engine-add, .engine-moves { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.engine-moves input { flex: 1 1 200px; min-width: 0; }
+.engine-log ul { margin: 6px 0 0; padding-left: 16px; display: grid; gap: 3px; font-size: 12px; }
+.tag.ai { background: #ede9fe; color: #5b21b6; }
+.tag.human { background: #e0f2fe; color: #075985; }
+.tag.lc { background: #f1f5f9; }
+.tag.lc-in_progress, .tag.lc-assigned { background: #dbeafe; color: #1e40af; }
+.tag.lc-blocked, .tag.lc-revision { background: #fee2e2; color: #991b1b; }
+.tag.lc-in_review, .tag.lc-approved { background: #fef3c7; color: #92400e; }
+.tag.lc-completed { background: #dcfce7; color: #166534; }
+.tag.lc-cancelled { background: #e5e7eb; color: #4b5563; }

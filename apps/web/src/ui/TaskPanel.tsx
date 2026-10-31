@@ -4,11 +4,12 @@ import { api } from "../api/client";
 import { useOffice } from "../api/office";
 import type { SystemStatus } from "../api/system";
 import { TaskStatusPill } from "./shared";
+import { LifecycleTag } from "./TaskEnginePanel";
 
 const FILTERS: [string, string][] = [
   ["ALL", "Hammasi"], ["BACKLOG", "Navbat"], ["IN_PROGRESS", "Jarayonda"], ["WAITING", "Kutmoqda"], ["DONE", "Bajarildi"], ["FAILED", "Xato"],
 ];
-const PRIORITIES: [TaskPriority, string][] = [["LOW", "Past"], ["MEDIUM", "O'rta"], ["HIGH", "Yuqori"], ["URGENT", "Shoshilinch"]];
+const PRIORITIES: [TaskPriority, string][] = [["LOW", "Past"], ["MEDIUM", "O'rta"], ["HIGH", "Yuqori"], ["CRITICAL", "Kritik"]];
 
 export function TaskPanel({ onClose, onOpen, system }: { onClose: () => void; onOpen: (id: string) => void; system: SystemStatus | null }) {
   const { office, tick, can } = useOffice();
@@ -62,6 +63,7 @@ export function TaskPanel({ onClose, onOpen, system }: { onClose: () => void; on
               <div className="tc-top">
                 <span className="tc-title">{t.title}</span>
                 <TaskStatusPill status={t.status} />
+                <LifecycleTag lifecycle={t.lifecycle} />
               </div>
               <div className="tc-meta">
                 {t.kind === "orchestrate" ? <span className="badge">Bo'limlararo</span> : <span>{agentName(t.agentId)}</span>}

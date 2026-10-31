@@ -2,6 +2,7 @@
 // server. "read" tools run immediately; "write" tools (send, post, create, append) only run after a person approves
 // that exact call in The Brain — the agent is told it is waiting for approval and must not claim it happened.
 import { z, type ZodTypeAny } from "zod";
+import { priorityInput } from "../lib/priority.js";
 import type { ToolSpec } from "../llm/types.js";
 import type { Ctx } from "../domain/context.js";
 import { addMemory } from "../domain/brain.js";
@@ -107,14 +108,14 @@ const createEmployeeTaskTool = tool({
     properties: {
       title: str("Vazifa sarlavhasi"), description: str("Nima qilish kerak, kutilgan natija"),
       assignee_name: str("Xodimning to'liq ismi (list_company_people dan)"), deadline: str("Muddat, ISO 8601 (ixtiyoriy)"),
-      priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH", "URGENT"] },
+      priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"] },
     },
     required: ["title", "assignee_name"],
   },
   schema: z.object({
     title: z.string().trim().min(3).max(200), description: z.string().max(5000).default(""), assignee_name: z.string().trim().min(2).max(80),
     deadline: z.string().refine((s) => !Number.isNaN(Date.parse(s)), "ISO sana").optional(),
-    priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).default("MEDIUM"),
+    priority: priorityInput.default("MEDIUM"),
   }),
   summary: (a) => `Xodimga vazifa: “${a.title}” → ${a.assignee_name}`,
   async run(env, a) {

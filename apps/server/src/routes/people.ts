@@ -2,7 +2,8 @@
 // UI is only a convenience.
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ROLES, TASK_PRIORITIES } from "@sag/shared";
+import { ROLES } from "@sag/shared";
+import { priorityInput } from "../lib/priority.js";
 import { type Deps, parse, requireUser } from "../app.js";
 import { has } from "../domain/access.js";
 import { setSetting } from "../domain/brain.js";
@@ -17,7 +18,9 @@ import {
   reportWork, reviewWork, startWork, submitWork, updateWork, workDetail,
 } from "../domain/work.js";
 import { DEFAULT_POLICY, workloadPolicy } from "../domain/workload.js";
-import { badRequest, forbidden } from "../lib/errors.js";
+import { badRequest, conflict, forbidden } from "../lib/errors.js";
+import { createOnce, idempotencyKey } from "../lib/idempotency.js";
+import { getTask } from "../domain/tasks.js";
 
 const Id = z.object({ id: z.string().min(1).max(80) });
 const isoDate = z.string().refine((s) => !Number.isNaN(Date.parse(s)), "Sana noto'g'ri");
@@ -61,7 +64,7 @@ const WorkBody = z.object({
   assigneeId: z.string().nullish(),
   departmentId: z.string().nullish(),
   parentId: z.string().nullish(),
-  priority: z.enum(TASK_PRIORITIES).optional(),
+  priority: priorityInput.optional(),
   deadline: isoDate.nullish(),
   estimateHours: z.number().min(0).max(1000).nullish(),
   isOptional: z.boolean().optional(),
@@ -69,12 +72,13 @@ const WorkBody = z.object({
   requiresReview: z.boolean().optional(),
   reviewerId: z.string().nullish(),
   dependsOn: z.array(z.string()).max(50).optional(),
+  startAt: isoDate.nullish(),
 });
 
 const WorkPatch = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   description: z.string().max(20_000).optional(),
-  priority: z.enum(TASK_PRIORITIES).optional(),
+  priority: priorityInput.optional(),
   deadline: isoDate.nullish(),
   estimateHours: z.number().min(0).max(1000).nullish(),
   isOptional: z.boolean().optional(),
@@ -86,7 +90,7 @@ const WorkPatch = z.object({
 const Policy = z.object({
   yellow: z.number().min(1).max(500), orange: z.number().min(1).max(500), red: z.number().min(1).max(1000),
   horizonDays: z.number().int().min(1).max(30),
-  defaultHours: z.object({ LOW: z.number().min(0).max(80), MEDIUM: z.number().min(0).max(80), HIGH: z.number().min(0).max(80), URGENT: z.number().min(0).max(80) }),
+  defaultHours: z.object({ LOW: z.number().min(0).max(80), MEDIUM: z.number().min(0).max(80), HIGH: z.number().min(0).max(80), CRITICAL: z.number().min(0).max(80) }),
   noDeadlineFactor: z.number().min(0).max(1), blockedFactor: z.number().min(0).max(1),
   dueSoonHours: z.number().int().min(1).max(168), dueSoonOrange: z.number().int().min(1).max(50), overdueRed: z.number().int().min(1).max(50),
 }).strict().refine((p) => p.yellow < p.orange && p.orange < p.red, "Chegaralar o'sib borishi kerak: sariq < to'q sariq < qizil");
@@ -214,8 +218,14 @@ export const peopleRoutes = (d: Deps) => async (app: FastifyInstance) => {
 
   app.post("/api/work", async (req, reply) => {
     const u = requireUser(req);
-    reply.status(201);
-    return { task: createWork(d, u, parse(WorkBody, req.body)) };
+    const body = parse(WorkBody, req.body);
+    const once = createOnce(d.db, u.id, idempotencyKey(req), () => createWork(d, u, { ...body, idempotencyKey: idempotencyKey(req) }), (id) => {
+      const t = getTask(d, id);
+      if (t.kind !== "human") throw conflict("idempotency_key_reused", "Bu Idempotency-Key boshqa so'rovda ishlatilgan");
+      return t;
+    });
+    reply.status(once.replayed ? 200 : 201);
+    return { task: once.value, replayed: once.replayed };
   });
 
   app.get("/api/work/:id", async (req) => workDetail(d, requireUser(req), parse(Id, req.params).id));

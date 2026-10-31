@@ -16,7 +16,7 @@ import {
   type AgreementAccess, type AgreementDto, type AgreementStatus, BUSINESS_FUNCTIONS, type BusinessFunction, type BusinessType,
   type CreatePlacedUnitInput, type DataClass, type NetworkDto, type OwnershipModel, type ShareLevel, type UnitAccessDto, type UnitCardDto,
   placementFor, planDistrict, slotStatus,
-  type Role, type UnitOverviewDto, type UnitPersonDto, type UnitRole, type UnitTaskDto,
+  type Role, type TaskPriority, type UnitOverviewDto, type UnitPersonDto, type UnitRole, type UnitTaskDto,
 } from "@sag/shared";
 import { json, now } from "../db/db.js";
 import { type Actor, SYSTEM, audit } from "../lib/audit.js";
@@ -601,7 +601,7 @@ export function reissueInvitation(ctx: Ctx, u: AuthUser, unitId: string, userId:
 
 export function createUnitTask(
   ctx: Ctx, u: AuthUser, unitId: string,
-  i: { title: string; description?: string; priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT"; assigneeUserId?: string; toAiDirector?: boolean },
+  i: { title: string; description?: string; priority?: TaskPriority; assigneeUserId?: string; toAiDirector?: boolean },
 ): UnitTaskDto {
   const a = unitAccess(ctx, u, unitId);
   if (!a.canAssignTasks) throw forbidden();
@@ -650,8 +650,8 @@ export function moveUnitTask(ctx: Ctx, u: AuthUser, unitId: string, taskId: stri
   if (to === "CANCELLED" && !lead) throw forbidden();
   if (rule.who === "lead" && !lead) throw forbidden();
   ctx.db.run(
-    "UPDATE tasks SET status = ?, updated_at = ?, completed_at = CASE WHEN ? IN ('DONE','CANCELLED') THEN ? ELSE completed_at END WHERE id = ?",
-    to, now(), to, now(), taskId,
+    "UPDATE tasks SET status = ?, updated_at = ?, completed_at = CASE WHEN ? IN ('DONE','CANCELLED') THEN ? ELSE completed_at END, last_actor = ? WHERE id = ?",
+    to, now(), to, now(), `user:${u.id}`, taskId,
   );
   audit(ctx.db, { type: "user", id: u.id }, "unit.task.transition", { type: "task", id: taskId }, { unitId, from: t.status, to });
   return listUnitTasks(ctx, u, unitId).find((x) => x.id === taskId) ?? toTask({ ...t, status: to });
