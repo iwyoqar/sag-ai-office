@@ -12,7 +12,7 @@ import { Character } from "../office/character";
 import { buildStore, lookFor } from "./storeLooks";
 import { buildStoreInterior, type Rect, type Spot } from "./storeInterior";
 import { buildBlockLamps, buildRegionPlot, buildStoreLot } from "./storeLot";
-import { planDistrict, type DistrictPlan } from "./districtLayout";
+import { planDistrict, slotAt, slotRect, slotStatus, type DistrictPlan, type PlannedBlock, type PlannedStore } from "./districtLayout";
 /** lot props (cars, trees, lamps, fences) are drawn only closer than this */
 const DETAIL_DISTANCE = 1400;
 /** lot props are instanced per 120 m tile, so frustum culling drops the off-screen ones */
@@ -52,6 +52,10 @@ export function label(text: string, cls: string, badge?: { text: string; cls: st
 }
 
 const RING = new THREE.RingGeometry(0.42, 0.5, 32);
+/** Group.add(...[]) logs a three.js error, so empty batches (a network without stores) are skipped. */
+const addAll = (g: THREE.Object3D, list: THREE.Object3D[]) => {
+  if (list.length) g.add(...list);
+};
 
 /** A vacant position reads as a translucent figure: same body, no identity. */
 function ghost(c: Character) {
@@ -98,49 +102,93 @@ export class StoreDistrict {
 
   /** the current layout (streets for the road graph, store positions) */
   plan: DistrictPlan | null = null;
+  /** the layout input (regions with units), kept so a store placed on the map can be added without a rebuild */
+  private regions: { name: string; units: UnitCardDto[] }[] = [];
 
   /** Builds the district from the compact layout plan (districtLayout.ts) and returns the plan. */
   setNetwork(net: NetworkDto): DistrictPlan {
     this.clear();
-    const plan = planDistrict(net.regions.filter((r) => r.units.length));
-    this.plan = plan;
-    const { cellW, cellD } = plan.cfg;
-    this.bounds.set(new THREE.Vector3(plan.bounds.x0, 0, plan.bounds.z0), new THREE.Vector3(plan.bounds.x1, 0, plan.bounds.z1));
-    plan.blocks.forEach((blk, i) => {
-      const inBlock = plan.stores.filter((s) => s.row === blk.row && s.cx > blk.x0 && s.cx < blk.x1);
-      // keep street trees off the driveways (front) and the loading gates (rear)
-      const front = inBlock.map((s) => ({ x0: s.cx + 9, x1: s.cx + 17 }));
-      const rear = inBlock.map((s) => {
-        const dock = s.cx + lookFor(s.unit.name, s.unit.isHeadOffice).w / 4;
-        return { x0: dock - 4, x1: dock + 4 };
-      });
-      buildRegionPlot(blk.x0, blk.z0, blk.x1 - blk.x0, blk.z1 - blk.z0, this.lotBatch, this.lotProps, i * 7 + 3, { front, rear });
-      buildBlockLamps(blk.x0, blk.z0, blk.x1 - blk.x0, blk.z1 - blk.z0, this.lotProps);
-      if (blk.label) {
-        const title = label(blk.region, "network-region");
-        title.position.set((blk.x0 + blk.x1) / 2, 1, blk.z1 + plan.cfg.street / 2);
-        this.root.add(title);
-      }
-    });
-    plan.stores.forEach((p, i) => {
-      const u = p.unit;
-      const own = u.ownershipModel === "SAG_OWNED";
-      // the building sits back on its lot: forecourt, a parking row and a drive aisle in front, loading yard behind
-      const look = lookFor(u.name, u.isHeadOffice);
-      const bz = p.cz - 4;
-      const b = buildStore(look, p.cx, bz, true);
-      buildStoreLot({ cx: p.cx, cz: p.cz, cellW, cellD, bz, look, own, seed: i * 3 + 7 }, this.lotBatch, this.lotProps);
-      this.addStore(u, b, p.cx, p.cz, own);
-    });
-    this.root.add(...this.lotBatch.build());
+    this.regions = net.regions.filter((r) => r.units.length).map((r) => ({ name: r.name, units: [...r.units] }));
+    const plan = this.replan();
+    plan.blocks.forEach((blk, i) => this.buildBlock(plan, blk, i, this.lotBatch, this.lotProps));
+    plan.stores.forEach((p, i) => this.buildPlannedStore(plan, p, i, this.lotBatch, this.lotProps));
+    addAll(this.root, this.lotBatch.build());
     this.details = new THREE.Group();
     this.details.name = "store-lot-props";
-    this.details.add(...this.lotProps.build());
+    addAll(this.details, this.lotProps.build());
     this.details.visible = this.detailOn;
     this.root.add(this.details);
     this.lotProps = new Instancer(PROP_TILE);
     this.applyLabels();
     return plan;
+  }
+
+  private replan(): DistrictPlan {
+    const plan = planDistrict(this.regions);
+    this.plan = plan;
+    this.bounds.set(new THREE.Vector3(plan.bounds.x0, 0, plan.bounds.z0), new THREE.Vector3(plan.bounds.x1, 0, plan.bounds.z1));
+    return plan;
+  }
+
+  /** A region block: lawn, sidewalks and street trees (kept off driveways and loading gates), corner lamps, label. */
+  private buildBlock(plan: DistrictPlan, blk: PlannedBlock, i: number, batch: Batch, props: Instancer) {
+    const inBlock = plan.stores.filter((s) => s.row === blk.row && s.cx > blk.x0 && s.cx < blk.x1);
+    const front = inBlock.map((s) => ({ x0: s.cx + 9, x1: s.cx + 17 }));
+    const rear = inBlock.map((s) => {
+      const dock = s.cx + lookFor(s.unit.name, s.unit.isHeadOffice).w / 4;
+      return { x0: dock - 4, x1: dock + 4 };
+    });
+    buildRegionPlot(blk.x0, blk.z0, blk.x1 - blk.x0, blk.z1 - blk.z0, batch, props, i * 7 + 3, { front, rear });
+    buildBlockLamps(blk.x0, blk.z0, blk.x1 - blk.x0, blk.z1 - blk.z0, props);
+    if (blk.label) {
+      const title = label(blk.region, "network-region");
+      title.position.set((blk.x0 + blk.x1) / 2, 1, blk.z1 + plan.cfg.street / 2);
+      this.root.add(title);
+    }
+  }
+
+  /** A store on its lot: the building sits back, with forecourt, parking row and drive aisle in front, yard behind. */
+  private buildPlannedStore(plan: DistrictPlan, p: PlannedStore, i: number, batch: Batch, props: Instancer) {
+    const u = p.unit;
+    const own = u.ownershipModel === "SAG_OWNED";
+    const look = lookFor(u.name, u.isHeadOffice);
+    const bz = p.cz - 4;
+    const b = buildStore(look, p.cx, bz, true);
+    buildStoreLot({ cx: p.cx, cz: p.cz, cellW: plan.cfg.cellW, cellD: plan.cfg.cellD, bz, look, own, seed: i * 3 + 7 }, batch, props);
+    this.addStore(u, b, p.cx, p.cz, own);
+  }
+
+  /**
+   * A store just created on the map: only its own block, lot and building are built and added (the rest of the
+   * district stays as it is). Returns the new plan, whose streets now reach the new block.
+   */
+  addPlacedStore(unit: UnitCardDto): DistrictPlan {
+    if (!unit.placement || this.buildings.has(unit.id)) return this.plan ?? this.replan();
+    let region = this.regions.find((r) => r.name === unit.regionName);
+    if (!region) this.regions.push((region = { name: unit.regionName, units: [] }));
+    region.units.push(unit);
+    const plan = this.replan();
+    const store = plan.stores.find((s) => s.unit.id === unit.id)!;
+    const blk = plan.blocks.find((b) => b.placed && store.cx > b.x0 && store.cx < b.x1 && store.cz > b.z0 && store.cz < b.z1)!;
+    const batch = new Batch(), props = new Instancer();
+    this.buildBlock(plan, blk, plan.blocks.length, batch, props);
+    this.buildPlannedStore(plan, store, plan.stores.length, batch, props);
+    addAll(this.root, batch.build());
+    addAll(this.details, props.build());
+    this.applyLabels();
+    return plan;
+  }
+
+  /**
+   * Map placement: the free grid slot under a ground point (x, z), with its lot rectangle for the hover tile, or null
+   * when the slot is taken, off the district land, or there is no plan yet. The server checks the same rule again.
+   */
+  freeSlotAt(x: number, z: number): { gridX: number; gridZ: number; cx: number; cz: number } | null {
+    if (!this.plan) return null;
+    const s = slotAt(x, z, this.plan.cfg);
+    if (!s || slotStatus(this.plan, s.gridX, s.gridZ) !== "free") return null;
+    const r = slotRect(s.gridX, s.gridZ, this.plan.cfg);
+    return { ...s, cx: r.cx, cz: r.cz };
   }
 
   private addStore(u: UnitCardDto, b: ReturnType<typeof buildStore>, cx: number, cz: number, own: boolean) {

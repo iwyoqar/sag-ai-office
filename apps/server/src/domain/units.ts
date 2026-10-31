@@ -14,7 +14,8 @@
 //   the unit's own members; other units' accounts do not see it.
 import {
   type AgreementAccess, type AgreementDto, type AgreementStatus, BUSINESS_FUNCTIONS, type BusinessFunction, type BusinessType,
-  type DataClass, type NetworkDto, type OwnershipModel, type ShareLevel, type UnitAccessDto, type UnitCardDto,
+  type CreatePlacedUnitInput, type DataClass, type NetworkDto, type OwnershipModel, type ShareLevel, type UnitAccessDto, type UnitCardDto,
+  placementFor, planDistrict, slotStatus,
   type Role, type UnitOverviewDto, type UnitPersonDto, type UnitRole, type UnitTaskDto,
 } from "@sag/shared";
 import { json, now } from "../db/db.js";
@@ -42,6 +43,7 @@ interface NodeRow {
   business_type: BusinessType | null; ownership_model: OwnershipModel | null; source_brand: string | null;
   source_marker: "HD" | "F" | null; source_label: string | null; status: string; address: string | null; geo: string | null;
   human_director_user_id: string | null; provision_key: string | null; functions: string;
+  world_x: number | null; world_z: number | null; world_rotation: number | null; world_grid_x: number | null; world_grid_z: number | null;
 }
 
 const nodeRow = (ctx: Ctx, id: string) => ctx.db.get<NodeRow>("SELECT * FROM org_nodes WHERE id = ?", id);
@@ -154,6 +156,8 @@ function toCard(n: NodeRow, region: NodeRow | undefined): UnitCardDto {
     businessType: n.business_type!, ownershipModel: n.ownership_model, sourceBrand: n.source_brand, sourceMarker: n.source_marker,
     status: n.status, geo: json<{ lat: number; lng: number } | null>(n.geo, null), address: n.address, isHeadOffice: n.id === HQ_UNIT,
     functions: json<BusinessFunction[]>(n.functions, []),
+    placement: n.world_grid_x === null || n.world_grid_z === null || n.world_x === null || n.world_z === null ? null
+      : { x: n.world_x, z: n.world_z, rotation: n.world_rotation ?? 0, gridX: n.world_grid_x, gridZ: n.world_grid_z },
   };
 }
 
@@ -298,11 +302,13 @@ export interface ProvisionStoreInput {
   provisionKey: string;
   regionId: string;
   name: string;
-  sourceLabel: string;
+  /** original text from the workbook; null for units created in the app */
+  sourceLabel: string | null;
   businessType: BusinessType;
   ownershipModel: OwnershipModel;
   sourceBrand: string;
-  sourceMarker: "HD" | "F";
+  /** workbook marker; null for units created in the app (there is no workbook row) */
+  sourceMarker: "HD" | "F" | null;
   importBatchId: string | null;
 }
 
@@ -398,6 +404,63 @@ export function provisionStoreUnit(ctx: Ctx, i: ProvisionStoreInput, actor: Acto
       aiDirectorCreated = true;
     }
     return { unitId, created, directorCreated, aiDirectorCreated };
+  });
+}
+
+// ---------- stores placed on the 3D world map ----------
+
+/** Every live unit as the district layout sees it: the same regions, order and cards as the HQ network view. */
+function layoutRegions(ctx: Ctx): { name: string; units: UnitCardDto[] }[] {
+  const nodes = ctx.db.all<NodeRow>("SELECT * FROM org_nodes WHERE status <> 'ARCHIVED' ORDER BY level, name");
+  return nodes.filter((n) => n.level === "REGION")
+    .map((r) => ({ name: r.name, units: nodes.filter((n) => n.level === "UNIT" && n.parent_id === r.id).map((n) => toCard(n, r)) }))
+    .filter((r) => r.units.length);
+}
+
+/**
+ * A new store / branch on a free slot of the 3D world map (owner request 2026-10-31). Structure work, so HQ platform
+ * admins only (the same rule as assigning directors and editing unit functions). One transaction: the slot is checked
+ * against the current district layout, the unit is provisioned exactly like an imported store (policy, store team,
+ * pending human director, AI Director: provisionStoreUnit), then its placement, address, functions and description are
+ * stored. The unique slot index turns a racing second request into a 409 instead of a second store on the same spot.
+ * Ownership follows the type as in the store import: SAG_BRANCH → SAG_OWNED, INDEPENDENT_DEALER → FRANCHISE.
+ */
+export function createPlacedUnit(ctx: Ctx, u: AuthUser, i: CreatePlacedUnitInput): UnitCardDto {
+  if (!isPlatformAdmin(u)) throw forbidden("Yangi filialni faqat HQ platforma administratori yarata oladi");
+  const name = i.name.trim().replace(/\s+/g, " ");
+  if (name.length < 2 || name.length > 80) throw badRequest("Filial nomi 2–80 belgi bo'lsin");
+  const functions = [...new Set(i.functions)];
+  if (!functions.length) throw badRequest("Kamida bitta funksiya kerak");
+  const bad = functions.filter((f) => !(BUSINESS_FUNCTIONS as readonly string[]).includes(f) || f === "HEADQUARTERS");
+  if (bad.length) throw badRequest(`Bu funksiya filial uchun emas: ${bad.join(", ")}`);
+  const { gridX, gridZ } = i.placement;
+  const actor: Actor = { type: "user", id: u.id };
+  return ctx.db.tx(() => {
+    const region = nodeRow(ctx, i.regionId);
+    if (!region || region.level !== "REGION" || region.status === "ARCHIVED") throw badRequest("Region topilmadi");
+    if (ctx.db.get("SELECT 1 FROM org_nodes WHERE level = 'UNIT' AND status <> 'ARCHIVED' AND lower(name) = lower(?)", name))
+      throw conflict("name_taken", "Bu nomdagi filial allaqachon bor");
+    const status = slotStatus(planDistrict(layoutRegions(ctx)), gridX, gridZ);
+    if (status === "outside") throw badRequest("Bu joy do'konlar hududidan tashqarida");
+    if (status === "occupied") throw conflict("slot_taken", "Bu joy band. Boshqa bo'sh katakni tanlang.");
+    const ownership: OwnershipModel = i.businessType === "SAG_BRANCH" ? "SAG_OWNED" : "FRANCHISE";
+    const { unitId } = provisionStoreUnit(ctx, {
+      provisionKey: `world:${uid("pl")}`, regionId: region.id, name, sourceLabel: null, businessType: i.businessType,
+      ownershipModel: ownership, sourceBrand: "HOME_DESIGN", sourceMarker: null, importBatchId: null,
+    }, actor);
+    const p = placementFor(gridX, gridZ);
+    try {
+      ctx.db.run(
+        `UPDATE org_nodes SET world_x = ?, world_z = ?, world_rotation = ?, world_grid_x = ?, world_grid_z = ?, address = ?, description = ?,
+           functions = ?, updated_at = ? WHERE id = ?`,
+        p.x, p.z, p.rotation, p.gridX, p.gridZ, i.address?.trim() || null, i.description?.trim() || null, JSON.stringify(functions), now(), unitId,
+      );
+    } catch (e) {
+      if (/UNIQUE constraint failed: org_nodes\.world_grid/.test(String((e as Error).message))) throw conflict("slot_taken", "Bu joy band. Boshqa bo'sh katakni tanlang.");
+      throw e;
+    }
+    audit(ctx.db, actor, "unit.world.place", { type: "unit", id: unitId }, { gridX, gridZ, x: p.x, z: p.z, regionId: region.id });
+    return toCard(unitRow(ctx, unitId), region);
   });
 }
 

@@ -776,3 +776,19 @@ pre.args { font-family: var(--mono); font-size: 11.5px; background: #f8fafc; bor
 .workforce .wf-project.s-BLOCKED, .workforce .wf-project.s-FAILED { border-left: 3px solid #dc2626; }
 .workforce .wf-project.s-WAITING_APPROVAL { border-left: 3px solid #f59e0b; }
 .workforce .wf-project.s-DONE { border-left: 3px solid #16a34a; }
+
+/* ---- create branch (3D map placement) ---- */
+.modal.branch { width: min(520px, 100%); }
+.modal.branch .field { display: flex; flex-direction: column; gap: 5px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.modal.branch .field > span { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.modal.branch .field small { font-weight: 400; color: var(--text-3); }
+.modal.branch select, .modal.branch textarea { font: inherit; font-size: 13.5px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: #fff; }
+.modal.branch textarea { resize: vertical; }
+.modal.branch .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.modal.branch .seg label { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; border: 1px solid var(--border-strong); border-radius: 10px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.modal.branch .seg label.on { border-color: #1b4e9b; box-shadow: 0 0 0 2px rgba(27, 78, 155, 0.15); }
+.modal.branch .seg input, .modal.branch .chip input { position: absolute; opacity: 0; pointer-events: none; }
+.modal.branch .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.modal.branch .chip { position: relative; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border-strong); font-size: 12.5px; cursor: pointer; }
+.modal.branch .chip.on { background: #1b4e9b; border-color: #1b4e9b; color: #fff; }
+.modal.branch .branch-actions .ghost { border: 1px solid var(--border-strong); background: #fff; border-radius: 10px; padding: 7px 14px; font-size: 13px; }

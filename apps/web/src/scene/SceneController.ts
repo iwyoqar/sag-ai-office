@@ -19,6 +19,9 @@ import { TrafficManager } from "./world/traffic";
 import { hazeRing, worldRect, type WorldRect } from "./world/boundary";
 import type { RoadGraph } from "./world/roads";
 import { StoreDistrict, type StoreOccupant } from "./network/district";
+import { PlaceTile } from "./world/placeTile";
+import { DISTRICT_CONFIG } from "./network/districtLayout";
+import type { UnitCardDto } from "@sag/shared";
 
 export interface SceneEvents {
   onProgress(p: number): void;
@@ -35,6 +38,8 @@ export interface SceneEvents {
   onSelectBuilding(id: string): void;
   /** a store of the SAG network (district beside the campus) was clicked */
   onSelectStore(unitId: string): void;
+  /** right-click on a free map slot while placement is enabled: open the "new branch" form for it */
+  onPlaceRequest?(slot: { gridX: number; gridZ: number }): void;
 }
 
 /** City-builder camera outside the office: fixed tilt (degrees from vertical), rotation only in 90° steps (Q / E). */
@@ -143,6 +148,10 @@ export class SceneController {
   private zoomAnchor = new THREE.Vector3();
   private keys = new Set<string>();
   private ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  // placing new stores on the map (HQ platform admins; the server checks permission and the slot again)
+  private placing = false;
+  private placeTile = new PlaceTile(DISTRICT_CONFIG.cellW, DISTRICT_CONFIG.cellD);
+  private rightDownAt: { x: number; y: number } | null = null;
 
   constructor(private host: HTMLElement, private ev: SceneEvents) {
     // Log depth keeps ground layers (paving, asphalt, markings) stable from 20 m to 1.5 km away.
@@ -172,7 +181,7 @@ export class SceneController {
     this.campus = new CampusScene();
     this.scene.add(this.campus.root, this.district.root, this.world);
     this.world.name = "world";
-    this.world.add(...renderRoundabout(), this.traffic.root);
+    this.world.add(...renderRoundabout(), this.traffic.root, this.placeTile.root);
     this.setRoadGraph(buildWorldGraph(null));
     this.applyWorldBounds();
     this.campus.setActive(false);
@@ -754,7 +763,7 @@ export class SceneController {
     this.graph = g;
     for (const o of this.roadMeshes) o.removeFromParent();
     this.roadMeshes = renderRoads(g);
-    this.world.add(...this.roadMeshes);
+    if (this.roadMeshes.length) this.world.add(...this.roadMeshes); // add() with no argument logs a three.js error
     this.traffic.setGraph(g);
   }
 
@@ -772,6 +781,26 @@ export class SceneController {
     this.haze?.removeFromParent();
     this.haze = hazeRing(r);
     this.scene.add(this.haze);
+  }
+
+  /** Map placement of new stores on / off (the UI enables it for HQ platform admins only). */
+  setPlacementEnabled(on: boolean) {
+    this.placing = on;
+    if (!on) this.placeTile.set(null);
+    this.invalidate();
+  }
+
+  /**
+   * A store created on the map: build just that store and its block, then extend the streets and the traffic to it
+   * (the road graph is regenerated from the new plan; the rest of the world is left as it is).
+   */
+  addPlacedStore(unit: UnitCardDto) {
+    const plan = this.district.addPlacedStore(unit);
+    this.placeTile.set(null);
+    this.setRoadGraph(buildWorldGraph(plan));
+    this.applyWorldBounds();
+    this.renderer.shadowMap.needsUpdate = true;
+    this.invalidate(4);
   }
 
   /** Road network and traffic facts for the debug hook and tests. */
@@ -1075,7 +1104,17 @@ export class SceneController {
         this.campus.setHovered(id ?? this.focusedBuilding);
         this.invalidate();
       }
-      this.renderer.domElement.style.cursor = id || store ? "pointer" : "";
+      // free land under the pointer (no building or store in the way): the placement marker
+      let slot: ReturnType<StoreDistrict["freeSlotAt"]> = null;
+      if (this.placing && !id && !shell) {
+        const p = new THREE.Vector3();
+        if (this.raycaster.ray.intersectPlane(this.ground, p)) slot = this.district.freeSlotAt(p.x, p.z);
+      }
+      if (slot?.gridX !== this.placeTile.slot?.gridX || slot?.gridZ !== this.placeTile.slot?.gridZ) {
+        this.placeTile.set(slot);
+        this.invalidate();
+      }
+      this.renderer.domElement.style.cursor = id || store ? "pointer" : slot ? "copy" : "";
       const card = store ? this.district.card(store) : undefined;
       const info: CampusBuildingInfo | null = card
         ? { id: card.id, name: card.name, interaction: "inspect", category: `${card.regionName} · ${card.isHeadOffice ? "Bosh ofis" : card.ownershipModel === "SAG_OWNED" ? "HD · SAG do'koni" : "F · Franshiza do'koni"}` }
@@ -1112,6 +1151,8 @@ export class SceneController {
       this.pointerDirty = true;
     });
     el.addEventListener("pointerleave", () => {
+      this.placeTile.set(null);
+      this.invalidate();
       this.setHovered(null);
       this.hoveredBuilding = null;
       this.hoveredStore = null;
@@ -1121,8 +1162,24 @@ export class SceneController {
       this.ev.onHoverAgent(null, 0, 0);
       this.ev.onHoverBuilding(null, 0, 0);
     });
-    el.addEventListener("pointerdown", (e) => (this.downAt = { x: e.clientX, y: e.clientY }));
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button === 2) this.rightDownAt = { x: e.clientX, y: e.clientY };
+      else this.downAt = { x: e.clientX, y: e.clientY };
+    });
+    // the browser menu is replaced on the 3D canvas only (OrbitControls also uses the right button to pan)
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
     el.addEventListener("pointerup", (e) => {
+      if (e.button === 2) {
+        // a right click (not a right-drag pan) on a free slot opens the new-branch form
+        const d = this.rightDownAt;
+        this.rightDownAt = null;
+        if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6 || !this.placing || !this.worldNav) return;
+        setPointer(e);
+        this.pick();
+        const slot = this.placeTile.slot;
+        if (slot) this.ev.onPlaceRequest?.(slot);
+        return;
+      }
       if (!this.downAt || Math.hypot(e.clientX - this.downAt.x, e.clientY - this.downAt.y) > 6) return;
       this.downAt = null;
       setPointer(e);
@@ -1241,7 +1298,8 @@ export class SceneController {
     if (this.worldNav) {
       if (this.stepZoom(this.frameDt)) animating = true;
       if (this.stepKeys(this.frameDt)) animating = true;
-    }
+    } else if (this.placeTile.slot) this.placeTile.set(null);
+    if (this.placeTile.step(this.frameDt)) animating = true;
     // the fleet drives whenever the world is on screen (not inside the office diorama)
     this.world.visible = this.campus.root.visible;
     if (this.haze) this.haze.visible = this.outerGround.visible;

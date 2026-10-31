@@ -9,7 +9,7 @@ import { BUILDINGS, PARKING, type BuildingSpec } from "../src/scene/campus/layou
 const unit = (id: string, region: string, i: number): UnitCardDto => ({
   id, name: `Sag Test ${id}`, code: id, regionId: region, regionName: region, businessType: "SAG_BRANCH" as UnitCardDto["businessType"],
   ownershipModel: i % 2 ? "FRANCHISE" : "SAG_OWNED", sourceBrand: null, sourceMarker: null, status: "ACTIVE",
-  geo: null, address: null, isHeadOffice: false, functions: [],
+  geo: null, address: null, isHeadOffice: false, functions: [], placement: null,
 });
 // region sizes like the real network (1–6 stores per region, 23 in all)
 const sizes = [2, 4, 1, 6, 3, 2, 1, 3, 1];

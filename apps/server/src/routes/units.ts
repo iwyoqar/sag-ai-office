@@ -4,7 +4,7 @@ import { type Deps, parse, requireUser } from "../app.js";
 import { LoginThrottle } from "../lib/throttle.js";
 import { HttpError } from "../lib/errors.js";
 import {
-  DATA_CLASSES, activateAccount, addUnitEmployee, approveAgreement, assignDirector, createUnitTask, listAgreements, listUnitEmployees,
+  DATA_CLASSES, activateAccount, addUnitEmployee, approveAgreement, assignDirector, createPlacedUnit, createUnitTask, listAgreements, listUnitEmployees,
   listUnitTasks, moveUnitTask, network, proposeAgreement, reissueInvitation, revokeAgreement, setUnitFunctions, unitOverview, updateUnitEmployee,
 } from "../domain/units.js";
 import { BUSINESS_FUNCTIONS } from "@sag/shared";
@@ -47,6 +47,22 @@ export const unitRoutes = (d: Deps) => async (app: FastifyInstance) => {
   });
 
   app.get("/api/units", async (req) => ({ network: network(d, requireUser(req)) }));
+
+  // ---- new store / branch placed on the 3D world map (HQ platform admin; the slot is validated on the server)
+  app.post("/api/units", async (req, reply) => {
+    const u = requireUser(req);
+    const body = parse(z.object({
+      name: z.string().trim().min(2).max(80),
+      regionId: Id,
+      businessType: z.enum(["SAG_BRANCH", "INDEPENDENT_DEALER"]),
+      address: z.string().trim().max(200).nullish(),
+      functions: z.array(z.enum(BUSINESS_FUNCTIONS)).min(1).max(BUSINESS_FUNCTIONS.length),
+      description: z.string().trim().max(1000).nullish(),
+      placement: z.object({ gridX: z.number().int().min(0).max(1000), gridZ: z.number().int().min(0).max(1000) }).strict(),
+    }).strict(), req.body);
+    reply.status(201);
+    return { unit: createPlacedUnit(d, u, body) };
+  });
 
   app.get("/api/units/:unitId", async (req) => {
     const u = requireUser(req);

@@ -143,7 +143,7 @@ function extrude(profile: [number, number][], width: number, bevel = 0.06): THRE
   const shape = new THREE.Shape(profile.map(([x, y]) => new THREE.Vector2(x, y)));
   const g = new THREE.ExtrudeGeometry(shape, { depth: width - 2 * bevel, bevelEnabled: bevel > 0, bevelSize: bevel, bevelThickness: bevel, bevelSegments: 2, curveSegments: 4 });
   g.translate(0, 0, -(width - 2 * bevel) / 2);
-  return g.toNonIndexed();
+  return g; // ExtrudeGeometry is already non-indexed
 }
 function box(w: number, h: number, d: number, x: number, y: number, z: number) {
   const g = new THREE.BoxGeometry(w, h, d);

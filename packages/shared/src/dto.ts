@@ -141,6 +141,29 @@ export interface UnitCardDto {
   address: string | null;
   isHeadOffice: boolean;
   functions: BusinessFunction[];
+  /** where the unit stands in the 3D world when it was placed on the map; null = automatic district layout */
+  placement: UnitPlacement | null;
+}
+
+/** A unit's spot in the 3D world (metres, world frame of the campus; grid slot of the store district, see district.ts). */
+export interface UnitPlacement {
+  x: number;
+  z: number;
+  /** radians about the vertical axis; 0 = store front facing +z, like every district store */
+  rotation: number;
+  gridX: number;
+  gridZ: number;
+}
+
+/** New store / branch placed on the 3D map (POST /api/units). Ownership follows the type, as in the store import. */
+export interface CreatePlacedUnitInput {
+  name: string;
+  regionId: string;
+  businessType: "SAG_BRANCH" | "INDEPENDENT_DEALER";
+  address?: string | null;
+  functions: BusinessFunction[];
+  description?: string | null;
+  placement: { gridX: number; gridZ: number };
 }
 
 export interface NetworkDto {

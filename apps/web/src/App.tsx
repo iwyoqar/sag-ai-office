@@ -28,7 +28,8 @@ import { Login } from "./ui/Login";
 import { FallbackBuilding } from "./ui/FallbackBuilding";
 import { NetworkView, UnitPanel, occupantsOf } from "./ui/NetworkView";
 import { api } from "./api/client";
-import type { NetworkDto } from "@sag/shared";
+import type { NetworkDto, UnitCardDto } from "@sag/shared";
+import { CreateBranchModal } from "./ui/CreateBranchModal";
 
 const BUILDING_IDS = BUILDINGS.map((b) => b.id);
 const LABELS_KEY = "sag.campusLabels";
@@ -42,7 +43,7 @@ function readLabelsPref() {
 }
 
 export function App() {
-  const { auth, office, error, lastEvent, unitAccount } = useOffice();
+  const { auth, office, error, lastEvent, unitAccount, user } = useOffice();
   const floorIds = useMemo(() => office?.floors.map((f) => f.id) ?? [], [office]);
   const reducer = useMemo(() => viewReducer(floorIds, BUILDING_IDS), [floorIds]);
   const [view, dispatch] = useReducer(reducer, initialView);
@@ -72,6 +73,11 @@ export function App() {
   const [newWork, setNewWork] = useState<{ assigneeId?: string } | null>(null);
   /** a store of the network opened on the campus */
   const [storeId, setStoreId] = useState<string | null>(null);
+  /** the store network as loaded (regions for the new-branch form) and the free map slot right-clicked for it */
+  const [network, setNetwork] = useState<NetworkDto | null>(null);
+  const [placeSlot, setPlaceSlot] = useState<{ gridX: number; gridZ: number } | null>(null);
+  // placing new stores on the map is structure work: HQ platform admins (the server enforces the same rule)
+  const canPlace = !!user?.roles.includes("admin") && (user.homeUnitId ?? "hq") === "hq";
 
   useEffect(() => {
     if (!has3d || !host.current) {
@@ -97,6 +103,7 @@ export function App() {
       onHoverBuilding: (info, x, y) => setBuildingTip(info ? { info, x, y } : null),
       onSelectBuilding: (id) => dispatch({ type: "selectBuilding", buildingId: id }),
       onSelectStore: (id) => setStoreId(id),
+      onPlaceRequest: (slot) => setPlaceSlot(slot),
     });
     ctrl.current = c;
     c.setLabelsVisible(readLabelsPref());
@@ -136,11 +143,25 @@ export function App() {
   useEffect(() => {
     if (auth !== "authenticated" || unitAccount || !office) return;
     let alive = true;
-    api.get<{ network: NetworkDto }>("/api/units").then((r) => alive && ctrl.current?.setNetwork(r.network)).catch(() => {});
+    api.get<{ network: NetworkDto }>("/api/units").then((r) => {
+      if (!alive) return;
+      setNetwork(r.network);
+      ctrl.current?.setNetwork(r.network);
+    }).catch(() => {});
     return () => {
       alive = false;
     };
   }, [auth, unitAccount, !!office]);
+  useEffect(() => ctrl.current?.setPlacementEnabled(canPlace), [canPlace]);
+  /** a branch created on the map: into the scene (just that store and its streets) and into the network list */
+  const onBranchCreated = useCallback((unit: UnitCardDto) => {
+    ctrl.current?.addPlacedStore(unit);
+    setNetwork((n) => n && {
+      ...n,
+      regions: n.regions.map((r) => (r.id === unit.regionId ? { ...r, units: [...r.units, unit] } : r)),
+    });
+    setPlaceSlot(null);
+  }, []);
   useEffect(() => {
     if (storeId) void ctrl.current?.focusStore(storeId);
     else ctrl.current?.closeStore();
@@ -297,6 +318,9 @@ export function App() {
       {ready && tasksOpen && <TaskPanel onClose={() => setTasksOpen(false)} onOpen={setTaskId} system={system} />}
       {ready && brainOpen && <BrainPanel onClose={() => setBrainOpen(false)} />}
       {accountOpen && auth === "authenticated" && <AccountDialog onClose={() => setAccountOpen(false)} />}
+      {placeSlot && network && canPlace && (
+        <CreateBranchModal slot={placeSlot} network={network} onClose={() => setPlaceSlot(null)} onCreated={onBranchCreated} />
+      )}
       {ready && calendarOpen && <CalendarPanel onClose={() => setCalendarOpen(false)} onOpenTask={setTaskId} />}
       {ready && taskId && <TaskDetail taskId={taskId} onClose={() => setTaskId(null)} onOpen={setTaskId} />}
       {ready && marketplaceOpen && <MarketplacePanel onClose={() => setMarketplaceOpen(false)} />}
